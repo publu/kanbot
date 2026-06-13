@@ -79,17 +79,10 @@ function updateLiveBadge() {
 
 async function loadBoards() {
   const { boards } = await api.get('/api/boards');
-  S.boards = boards;
-  if (S.boards.length === 0) {
-    const created = await api.post('/api/boards', { name: 'My Board' });
-    S.boards = [created.board];
-  }
-  const sel = $('#boardSelect');
-  sel.innerHTML = '';
-  for (const b of S.boards) { const o = el('option', null, b.name); o.value = b.id; sel.appendChild(o); }
-  const target = S.boardId && S.boards.find(b => b.id === S.boardId) ? S.boardId : S.boards[0].id;
-  sel.value = target;
-  await selectBoard(target);
+  let board = boards[0];
+  if (!board) board = (await api.post('/api/boards', { name: 'Deckhand' })).board;
+  S.boards = [board];
+  await selectBoard(board.id);
 }
 
 async function selectBoard(boardId) {
@@ -914,8 +907,6 @@ function closeModal() { $('#modalScrim').classList.remove('open'); S.sessionsMod
 
 // ---- global UI ----------------------------------------------------------
 function wireGlobalUI() {
-  $('#boardSelect').onchange = (e) => selectBoard(e.target.value);
-  $('#newBoardBtn').onclick = openNewBoardModal;
   $('#sessionsBtn').onclick = openSessionsModal;
   $('#manageTagsBtn').onclick = openManageTags;
   $('#drawerClose').onclick = closeDrawer;
