@@ -59,7 +59,7 @@ def _is_noise(text: Optional[str]) -> bool:
     return False
 
 
-def _read_tail(path: Path, nbytes: int = 24000) -> List[str]:
+def _read_tail(path: Path, nbytes: int = 80000) -> List[str]:
     """Return the last lines of a file cheaply (for 'where did it leave off')."""
     try:
         size = path.stat().st_size
@@ -81,6 +81,38 @@ def _name_from_cwd(cwd: str, fallback: str) -> str:
     return fallback
 
 
+def _parse_ts(s: Any) -> Optional[float]:
+    """Parse an ISO8601 timestamp to epoch seconds, tolerantly."""
+    if not isinstance(s, str):
+        return None
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+def _build(agent: str, sid: str, cwd: Optional[str], preview: Optional[str],
+           msgs: List, n_user: int, started_at: Optional[float], name: str) -> Dict[str, Any]:
+    """Assemble a session record from a parsed head preview + message tail."""
+    tail = [{"role": r, "text": _truncate(t, 1400)} for (r, t) in msgs[-12:]]
+    last_user = next((m["text"] for m in reversed(tail) if m["role"] == "user"), None)
+    last_text = next((m["text"] for m in reversed(tail) if m["role"] == "assistant"), None)
+    return {
+        "agent": agent,
+        "session_id": sid,
+        "cwd": cwd or "",
+        "name": name,
+        "title": _truncate(preview),          # first prompt (for reference)
+        "recap": last_text or last_user or "",  # latest activity — NOT the first msg
+        "last_user": last_user,
+        "last_text": last_text,
+        "tail": tail,                           # recent conversation for the modal
+        "turns": n_user,
+        "started_at": started_at,
+    }
+
+
 def _claude_home() -> Path:
     return Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude")))
 
@@ -100,11 +132,12 @@ def _extract_text(content: Any) -> Optional[str]:
 def _scan_claude_file(path: Path) -> Optional[Dict[str, Any]]:
     cwd = None
     preview = None
+    started_at = None
     n_user = 0
     try:
         with path.open("r", errors="replace") as fh:
             for i, line in enumerate(fh):
-                if i > MAX_LINES_SCAN and preview and cwd:
+                if i > MAX_LINES_SCAN and preview and cwd and started_at:
                     break
                 line = line.strip()
                 if not line:
@@ -113,6 +146,8 @@ def _scan_claude_file(path: Path) -> Optional[Dict[str, Any]]:
                     d = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if started_at is None and d.get("timestamp"):
+                    started_at = _parse_ts(d["timestamp"])
                 if not cwd and d.get("cwd"):
                     cwd = d["cwd"]
                 if d.get("type") == "user" and not d.get("isMeta"):
@@ -123,7 +158,7 @@ def _scan_claude_file(path: Path) -> Optional[Dict[str, Any]]:
                             preview = txt
     except OSError:
         return None
-    last_user = last_text = None
+    msgs = []
     for line in _read_tail(path):
         try:
             d = json.loads(line)
@@ -133,21 +168,13 @@ def _scan_claude_file(path: Path) -> Optional[Dict[str, Any]]:
         if t == "user" and not d.get("isMeta"):
             txt = _extract_text((d.get("message") or {}).get("content"))
             if not _is_noise(txt):
-                last_user = txt
+                msgs.append(("user", txt))
         elif t == "assistant":
             txt = _extract_text((d.get("message") or {}).get("content"))
             if txt and txt.strip():
-                last_text = txt
-    return {
-        "agent": "claude",
-        "session_id": path.stem,
-        "cwd": cwd or "",
-        "name": _name_from_cwd(cwd or "", f"claude·{path.stem[:6]}"),
-        "title": _truncate(preview),
-        "last_user": _truncate(last_user, 400),
-        "last_text": _truncate(last_text, 700),
-        "turns": n_user,
-    }
+                msgs.append(("assistant", txt))
+    return _build("claude", path.stem, cwd, preview, msgs, n_user, started_at,
+                  _name_from_cwd(cwd or "", f"claude·{path.stem[:6]}"))
 
 
 def discover_claude() -> List[Dict[str, Any]]:
@@ -176,6 +203,7 @@ def discover_claude() -> List[Dict[str, Any]]:
             continue
         info["mtime"] = mtime
         info["active"] = (nowt - mtime) <= ACTIVE_WINDOW_S
+        info["duration"] = max(0, mtime - (info.get("started_at") or mtime))
         out.append(info)
     return out
 
@@ -190,11 +218,12 @@ def _scan_codex_file(path: Path) -> Optional[Dict[str, Any]]:
     sid = m.group(1)
     cwd = None
     preview = None
+    started_at = None
     n_user = 0
     try:
         with path.open("r", errors="replace") as fh:
             for i, line in enumerate(fh):
-                if i > MAX_LINES_SCAN and preview and cwd:
+                if i > MAX_LINES_SCAN and preview and cwd and started_at:
                     break
                 line = line.strip()
                 if not line:
@@ -203,12 +232,13 @@ def _scan_codex_file(path: Path) -> Optional[Dict[str, Any]]:
                     d = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if started_at is None and d.get("timestamp"):
+                    started_at = _parse_ts(d["timestamp"])
                 payload = d.get("payload", d)
                 if not isinstance(payload, dict):
                     continue
                 if not cwd and payload.get("cwd"):
                     cwd = payload["cwd"]
-                # user turns appear as response_item/event_msg with role user
                 role = payload.get("role")
                 if role == "user" or payload.get("type") == "user_message":
                     n_user += 1
@@ -218,7 +248,7 @@ def _scan_codex_file(path: Path) -> Optional[Dict[str, Any]]:
                             preview = txt
     except OSError:
         return None
-    last_user = last_text = None
+    msgs = []
     for line in _read_tail(path):
         try:
             d = json.loads(line)
@@ -232,21 +262,13 @@ def _scan_codex_file(path: Path) -> Optional[Dict[str, Any]]:
         if role == "user" or payload.get("type") == "user_message":
             txt = _extract_text(content)
             if not _is_noise(txt):
-                last_user = txt
+                msgs.append(("user", txt))
         elif role == "assistant" or payload.get("type") in ("agent_message", "assistant_message"):
             txt = _extract_text(content)
             if txt and txt.strip():
-                last_text = txt
-    return {
-        "agent": "codex",
-        "session_id": sid,
-        "cwd": cwd or "",
-        "name": _name_from_cwd(cwd or "", f"codex·{sid[:6]}"),
-        "title": _truncate(preview),
-        "last_user": _truncate(last_user, 400),
-        "last_text": _truncate(last_text, 700),
-        "turns": n_user,
-    }
+                msgs.append(("assistant", txt))
+    return _build("codex", sid, cwd, preview, msgs, n_user, started_at,
+                  _name_from_cwd(cwd or "", f"codex·{sid[:6]}"))
 
 
 def discover_codex() -> List[Dict[str, Any]]:
@@ -268,6 +290,7 @@ def discover_codex() -> List[Dict[str, Any]]:
             continue
         info["mtime"] = mtime
         info["active"] = (nowt - mtime) <= ACTIVE_WINDOW_S
+        info["duration"] = max(0, mtime - (info.get("started_at") or mtime))
         out.append(info)
     return out
 

@@ -248,7 +248,18 @@ function renderColumns() {
 }
 
 function sessionPreview(s) {
-  return s.last_text || s.last_user || s.title || '';
+  // latest activity — never the stale first message
+  return s.recap || s.last_text || s.last_user || '';
+}
+
+function fmtDur(sec) {
+  sec = sec || 0;
+  if (sec < 60) return `${Math.round(sec)}s`;
+  const m = Math.floor(sec / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return `${h}h ${m % 60}m`;
+  return `${Math.floor(h / 24)}d`;
 }
 
 function renderSessionCard(s) {
@@ -274,7 +285,7 @@ function renderSessionCard(s) {
     card.appendChild(pv);
   }
   const foot = el('div', 'sess-foot');
-  foot.appendChild(el('span', 'sess-turns', `${s.turns} turns`));
+  foot.appendChild(el('span', 'sess-turns', `${s.turns} turns · brewed ${fmtDur(s.duration)}`));
   const rev = el('button', 'sess-revive', s.active ? '⟳ continue' : '⟳ revive');
   rev.onclick = (e) => { e.stopPropagation(); promptRevive(s); };
   foot.appendChild(rev);
@@ -801,14 +812,21 @@ function promptRevive(s) {
   };
   const commentLine = (txt) => body.appendChild(el('span', 'term-line term-comment', txt));
   const outLine = (txt) => body.appendChild(el('span', 'term-line term-out', txt));
-  if (s.last_user) { commentLine('# last asked'); userLine(s.last_user); }
-  if (s.last_text) { commentLine('# last reply'); outLine(s.last_text); }
-  if (!s.last_user && !s.last_text) {
-    commentLine('# session started with');
-    if (s.title) userLine(s.title); else outLine('(no readable transcript)');
+  const tail = s.tail || [];
+  if (tail.length) {
+    commentLine(`# recent transcript — ${s.turns} turns · brewed ${fmtDur(s.duration)}`);
+    for (const msg of tail) (msg.role === 'user' ? userLine : outLine)(msg.text);
+  } else if (s.recap) {
+    outLine(s.recap);
+  } else if (s.title) {
+    commentLine('# started with'); userLine(s.title);
+  } else {
+    outLine('(no readable transcript)');
   }
   term.appendChild(body);
   m.appendChild(term);
+  // jump to the most recent message
+  requestAnimationFrame(() => { body.scrollTop = body.scrollHeight; });
 
   const prompt = textareaField('What should the agent do next?',
     'e.g. Now write tests for the change you just made.');
