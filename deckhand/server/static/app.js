@@ -35,6 +35,8 @@ const S = {
   openCardId: null,
   terminals: {},        // session_id -> terminal DOM node (while drawer open)
   sessionsCache: {},    // card_id -> [sessions]
+  agentSessions: [],    // discovered claude/codex sessions across runners
+  sessionsModalOpen: false,
 };
 
 const COLOR_BY_KIND = { backlog: 'backlog', queued: 'queued', running: 'running', review: 'review', done: 'done', custom: 'custom' };
@@ -52,8 +54,26 @@ async function boot() {
 
   await refreshRunners();
   await loadBoards();
+  await loadAgentSessions();
   connectWS();
   wireGlobalUI();
+}
+
+async function loadAgentSessions() {
+  try {
+    const { sessions } = await api.get('/api/agent-sessions');
+    S.agentSessions = sessions;
+  } catch (e) { S.agentSessions = []; }
+  updateLiveBadge();
+  renderColumns();
+  if (S.sessionsModalOpen) openSessionsModal();
+}
+
+function updateLiveBadge() {
+  const active = S.agentSessions.filter(s => s.active).length;
+  const badge = $('#liveBadge');
+  if (active > 0) { badge.textContent = active; badge.classList.remove('hidden'); }
+  else badge.classList.add('hidden');
 }
 
 async function loadBoards() {
@@ -119,6 +139,9 @@ function handleEvent(msg) {
     case 'runner.updated':
       refreshRunners();
       break;
+    case 'agent.sessions.updated':
+      loadAgentSessions();
+      break;
     case 'board.created':
       loadBoards();
       break;
@@ -162,6 +185,11 @@ function renderColumns() {
   const board = $('#board');
   board.innerHTML = '';
   if (!S.board) return;
+
+  // synthetic "Live" rail: external agent sessions currently being worked on
+  const live = S.agentSessions.filter(s => s.active);
+  if (live.length) board.appendChild(renderLiveColumn(live));
+
   for (const col of S.columns) {
     const column = el('div', 'column');
     column.dataset.colId = col.id;
@@ -194,6 +222,38 @@ function renderColumns() {
   }
 }
 
+function renderLiveColumn(live) {
+  const column = el('div', 'column live');
+  const head = el('div', 'col-head');
+  head.appendChild(el('span', 'kind-dot kind-running'));
+  head.appendChild(el('span', 'title', 'Live agents'));
+  head.appendChild(el('span', 'count', live.length));
+  column.appendChild(head);
+  const body = el('div', 'col-body');
+  for (const s of live) body.appendChild(renderLiveCard(s));
+  column.appendChild(body);
+  return column;
+}
+
+function renderLiveCard(s) {
+  const card = el('div', 'live-card');
+  const top = el('div', 'lc-top');
+  top.appendChild(agentBadge(s.agent));
+  const working = el('span', 'working');
+  working.appendChild(el('span', 'spinner'));
+  working.appendChild(el('span', null, 'WORKING'));
+  top.appendChild(working);
+  card.appendChild(top);
+  card.appendChild(el('div', 'ctitle', s.title));
+  card.appendChild(el('div', 'lc-cwd', `${s.runner_name} · ${s.cwd || '?'} · ${s.turns} turns`));
+  const actions = el('div', 'lc-actions');
+  const cont = el('button', 'btn primary small', '⟳ Continue here');
+  cont.onclick = () => promptRevive(s);
+  actions.appendChild(cont);
+  card.appendChild(actions);
+  return card;
+}
+
 function renderCard(c) {
   const card = el('div', 'card s-' + c.status);
   card.draggable = true;
@@ -203,6 +263,7 @@ function renderCard(c) {
 
   const meta = el('div', 'cmeta');
   meta.appendChild(agentBadge(c.agent));
+  if (c.resume_of) meta.appendChild(el('span', 'resume-badge', '⟳ resumed'));
   card.appendChild(meta);
 
   if (c.tags && c.tags.length) {
@@ -635,6 +696,90 @@ function openManageTags() {
   m.appendChild(actions); openModal();
 }
 
+// ---- sessions browser + revive -----------------------------------------
+function openSessionsModal() {
+  S.sessionsModalOpen = true;
+  const m = $('#modal'); m.innerHTML = '';
+  const h = el('h3', null, 'Claude / Codex sessions');
+  m.appendChild(h);
+
+  const sessions = S.agentSessions;
+  if (!sessions.length) {
+    m.appendChild(el('div', 'label',
+      'No agent sessions discovered. The runner reports recent Claude (~/.claude) and Codex (~/.codex) sessions; make sure a runner is connected.'));
+  } else {
+    const browser = el('div', 'sess-browser');
+    const active = sessions.filter(s => s.active);
+    const recent = sessions.filter(s => !s.active);
+    if (active.length) {
+      browser.appendChild(el('div', 'sess-section-label', '● working now'));
+      for (const s of active) browser.appendChild(sessRow(s));
+    }
+    if (recent.length) {
+      browser.appendChild(el('div', 'sess-section-label', 'recent'));
+      for (const s of recent) browser.appendChild(sessRow(s));
+    }
+    m.appendChild(browser);
+  }
+
+  const actions = el('div', 'modal-actions');
+  const close = el('button', 'btn primary', 'Done');
+  close.onclick = () => { S.sessionsModalOpen = false; closeModal(); };
+  actions.appendChild(close);
+  m.appendChild(actions);
+  openModal();
+}
+
+function sessRow(s) {
+  const row = el('div', 'sess-row' + (s.active ? ' active' : ''));
+  row.appendChild(el('span', s.active ? 'working-dot' : 'idle-dot'));
+  const info = el('div', 'sinfo');
+  const title = el('div', 'stitle');
+  title.appendChild(agentBadge(s.agent));
+  title.appendChild(document.createTextNode(' ' + s.title));
+  info.appendChild(title);
+  info.appendChild(el('div', 'ssub', `${s.runner_name} · ${s.cwd || '?'} · ${s.turns} turns · ${timeAgo(s.mtime)}`));
+  row.appendChild(info);
+  const btn = el('button', 'btn small', s.active ? '⟳ continue' : '⟳ revive');
+  btn.onclick = () => promptRevive(s);
+  row.appendChild(btn);
+  return row;
+}
+
+function promptRevive(s) {
+  const m = $('#modal'); m.innerHTML = '';
+  m.appendChild(el('h3', null, (s.active ? 'Continue ' : 'Revive ') + s.agent + ' session'));
+  m.appendChild(el('div', 'label', s.title));
+  const sub = el('div', 'ssub', `${s.runner_name} · ${s.cwd || '?'} · ${s.session_id.slice(0,8)}`);
+  sub.style.cssText = 'font-family:var(--mono);font-size:10px;color:var(--text-faint);';
+  m.appendChild(sub);
+  const prompt = textareaField('What should the agent do next?',
+    'e.g. Now write tests for the change you just made.');
+  m.appendChild(prompt.wrap);
+  const actions = el('div', 'modal-actions');
+  const back = el('button', 'btn ghost', 'Back');
+  back.onclick = openSessionsModal;
+  const addBtn = el('button', 'btn', 'Add to backlog');
+  const runBtn = el('button', 'btn primary', '⏵ Resume now');
+  const submit = async (run) => {
+    try {
+      await api.post(`/api/boards/${S.boardId}/revive`, {
+        runner_id: s.runner_id, agent: s.agent, session_id: s.session_id,
+        cwd: s.cwd, title: `↻ ${s.title}`.slice(0, 80),
+        prompt: prompt.input.value, run,
+      });
+      S.sessionsModalOpen = false; closeModal();
+      toast(run ? 'resuming session…' : 'added to backlog');
+    } catch (e) { toast('revive failed: ' + e.message); }
+  };
+  addBtn.onclick = () => submit(false);
+  runBtn.onclick = () => submit(true);
+  actions.appendChild(back); actions.appendChild(addBtn); actions.appendChild(runBtn);
+  m.appendChild(actions);
+  openModal();
+  setTimeout(() => prompt.input.focus(), 50);
+}
+
 // ---- small field builders ----------------------------------------------
 function inputField(label, ph) {
   const wrap = el('div', 'field');
@@ -663,12 +808,13 @@ function agentSelectField(value) {
 
 // ---- modal helpers ------------------------------------------------------
 function openModal() { $('#modalScrim').classList.add('open'); }
-function closeModal() { $('#modalScrim').classList.remove('open'); }
+function closeModal() { $('#modalScrim').classList.remove('open'); S.sessionsModalOpen = false; }
 
 // ---- global UI ----------------------------------------------------------
 function wireGlobalUI() {
   $('#boardSelect').onchange = (e) => selectBoard(e.target.value);
   $('#newBoardBtn').onclick = openNewBoardModal;
+  $('#sessionsBtn').onclick = openSessionsModal;
   $('#manageTagsBtn').onclick = openManageTags;
   $('#drawerClose').onclick = closeDrawer;
   $('#drawerScrim').onclick = closeDrawer;

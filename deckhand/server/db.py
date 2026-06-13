@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS cards (
     status      TEXT DEFAULT 'idle',  -- idle|queued|running|review|done|failed|cancelled
     position    INTEGER NOT NULL DEFAULT 0,
     auto_advance INTEGER DEFAULT 1,
+    resume_of   TEXT DEFAULT '',   -- external agent session id this card resumes
+    pin_runner  TEXT DEFAULT '',   -- if set, only this runner may execute the card
     created_at  REAL NOT NULL,
     updated_at  REAL NOT NULL,
     FOREIGN KEY (board_id) REFERENCES boards(id) ON DELETE CASCADE
@@ -131,7 +133,16 @@ class DB:
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA journal_mode = WAL")
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        """Additive migrations for DBs created by an earlier version."""
+        cols = {r["name"] for r in self.q("PRAGMA table_info(cards)")}
+        for name, ddl in (("resume_of", "TEXT DEFAULT ''"),
+                          ("pin_runner", "TEXT DEFAULT ''")):
+            if name not in cols:
+                self.conn.execute(f"ALTER TABLE cards ADD COLUMN {name} {ddl}")
 
     # -- low level ---------------------------------------------------------
     def q(self, sql: str, args: tuple = ()) -> List[Dict[str, Any]]:
@@ -183,15 +194,17 @@ class DB:
 
     # -- cards -------------------------------------------------------------
     def create_card(self, board_id: str, column_id: str, title: str, prompt: str = "",
-                     agent: str = "auto", cwd: str = "") -> Dict[str, Any]:
+                     agent: str = "auto", cwd: str = "", resume_of: str = "",
+                     pin_runner: str = "") -> Dict[str, Any]:
         cid = gen_id()
         pos = self._next_position(column_id)
         ts = now()
         self.exec(
             """INSERT INTO cards (id, board_id, column_id, title, prompt, agent, cwd,
-               status, position, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-            (cid, board_id, column_id, title, prompt, agent, cwd, "idle", pos, ts, ts),
+               status, position, resume_of, pin_runner, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (cid, board_id, column_id, title, prompt, agent, cwd, "idle", pos,
+             resume_of, pin_runner, ts, ts),
         )
         return self.get_card(cid)
 

@@ -24,6 +24,9 @@ class AgentSpec:
     description: str = ""
     env: Dict[str, str] = field(default_factory=dict)
     color: str = "#8b5cf6"
+    # argv template to resume/continue an existing agent session. Tokens may
+    # contain {prompt} and {session_id}. Empty => resume not supported.
+    resume_argv: List[str] = field(default_factory=list)
 
 
 # Non-interactive / headless invocations for each known coding CLI.
@@ -33,6 +36,8 @@ BUILTIN_AGENTS: List[AgentSpec] = [
         label="Claude Code",
         bin="claude",
         argv=["claude", "-p", "{prompt}", "--dangerously-skip-permissions"],
+        resume_argv=["claude", "--resume", "{session_id}", "-p", "{prompt}",
+                     "--dangerously-skip-permissions"],
         description="Anthropic Claude Code in headless print mode.",
         color="#d97757",
     ),
@@ -41,6 +46,7 @@ BUILTIN_AGENTS: List[AgentSpec] = [
         label="Codex",
         bin="codex",
         argv=["codex", "exec", "--full-auto", "{prompt}"],
+        resume_argv=["codex", "exec", "resume", "{session_id}", "{prompt}"],
         description="OpenAI Codex CLI, non-interactive exec.",
         color="#10a37f",
     ),
@@ -57,6 +63,8 @@ BUILTIN_AGENTS: List[AgentSpec] = [
         label="GLM / Z.ai",
         bin="claude",
         argv=["claude", "-p", "{prompt}", "--dangerously-skip-permissions"],
+        resume_argv=["claude", "--resume", "{session_id}", "-p", "{prompt}",
+                     "--dangerously-skip-permissions"],
         description="Z.ai GLM coding plan via Claude Code (set ANTHROPIC_BASE_URL).",
         env={"ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic"},
         color="#2563eb",

@@ -42,3 +42,13 @@ class TagCreate(BaseModel):
 
 class TagAttach(BaseModel):
     tag_id: str
+
+
+class ReviveRequest(BaseModel):
+    runner_id: str
+    agent: str
+    session_id: str
+    cwd: str = ""
+    title: str = ""
+    prompt: str = ""
+    run: bool = True

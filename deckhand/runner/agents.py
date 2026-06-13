@@ -27,6 +27,11 @@ class ResolvedAgent:
     label: str
     argv: List[str]
     env: Dict[str, str]
+    resume_argv: List[str] = None  # type: ignore[assignment]
+
+    @property
+    def can_resume(self) -> bool:
+        return bool(self.resume_argv)
 
 
 def _override_argv(template: str) -> List[str]:
@@ -47,18 +52,19 @@ def detect_agents(cfg: Config) -> Dict[str, ResolvedAgent]:
         if not shutil.which(binary):
             continue
         found[spec.name] = ResolvedAgent(
-            name=spec.name, label=spec.label, argv=list(argv), env=dict(spec.env)
+            name=spec.name, label=spec.label, argv=list(argv), env=dict(spec.env),
+            resume_argv=list(spec.resume_argv),
         )
     return found
 
 
-def build_argv(agent: ResolvedAgent, prompt: str) -> List[str]:
+def build_argv(agent: ResolvedAgent, prompt: str, resume_of: str = "") -> List[str]:
+    template = agent.resume_argv if (resume_of and agent.can_resume) else agent.argv
     out: List[str] = []
-    for tok in agent.argv:
-        if "{prompt}" in tok:
-            out.append(tok.replace("{prompt}", prompt))
-        else:
-            out.append(tok)
+    for tok in template:
+        tok = tok.replace("{prompt}", prompt)
+        tok = tok.replace("{session_id}", resume_of)
+        out.append(tok)
     return out
 
 
@@ -88,9 +94,14 @@ class Execution:
 
 
 async def run_agent(agent: ResolvedAgent, prompt: str, cwd: str, on_log: LogCb,
-                    register: Callable[[Execution], None]) -> int:
+                    register: Callable[[Execution], None], resume_of: str = "") -> int:
     """Run the agent, streaming output. Returns the process exit code."""
-    argv = build_argv(agent, prompt)
+    if resume_of and not agent.can_resume:
+        await on_log("system", f"agent '{agent.name}' can't resume sessions; starting fresh.")
+        resume_of = ""
+    argv = build_argv(agent, prompt, resume_of)
+    if resume_of:
+        await on_log("system", f"resuming {agent.name} session {resume_of}")
     workdir = cwd if cwd and os.path.isdir(cwd) else os.getcwd()
     env = os.environ.copy()
     env.update(agent.env)

@@ -325,3 +325,40 @@ input, textarea, select { font-family: var(--ui); }
 @keyframes toastin { from { opacity: 0; transform: translateY(8px); } }
 
 .hidden { display: none !important; }
+
+/* live badge on the sessions button */
+.live-badge {
+  background: var(--cyan); color: #062227; font-family: var(--mono); font-weight: 700;
+  font-size: 10px; padding: 1px 6px; border-radius: 100px; margin-left: 2px;
+  animation: pulse 1.3s infinite;
+}
+
+/* live column (external agent sessions in progress) */
+.column.live { border-color: rgba(79,209,224,.35); background: linear-gradient(180deg, #0f1a1d, #0c1216); }
+.column.live .col-head .title { color: var(--cyan); }
+.live-card {
+  background: var(--surface-2); border: 1px solid rgba(79,209,224,.25);
+  border-left: 3px solid var(--cyan); border-radius: var(--radius-sm); padding: 11px 12px;
+}
+.live-card .lc-top { display: flex; align-items: center; gap: 7px; margin-bottom: 7px; }
+.live-card .working { display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 9.5px; color: var(--cyan); letter-spacing: .08em; }
+.live-card .ctitle { font-size: 13px; font-weight: 500; line-height: 1.35; margin-bottom: 6px; }
+.live-card .lc-cwd { font-family: var(--mono); font-size: 10px; color: var(--text-faint); margin-bottom: 9px; word-break: break-all; }
+.live-card .lc-actions { display: flex; gap: 6px; }
+
+/* resume badge on cards */
+.resume-badge { font-family: var(--mono); font-size: 9.5px; color: var(--cyan); border: 1px solid rgba(79,209,224,.3); padding: 1px 6px; border-radius: 5px; }
+
+/* sessions browser */
+.sess-browser { display: flex; flex-direction: column; gap: 8px; max-height: 60vh; overflow-y: auto; }
+.sess-row {
+  display: flex; align-items: center; gap: 11px; padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-2);
+}
+.sess-row.active { border-color: rgba(79,209,224,.4); }
+.sess-row .sinfo { flex: 1; min-width: 0; }
+.sess-row .stitle { font-size: 12.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sess-row .ssub { font-family: var(--mono); font-size: 10px; color: var(--text-faint); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sess-row .working-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 8px var(--cyan); animation: pulse 1.2s infinite; flex: 0 0 auto; }
+.sess-row .idle-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); flex: 0 0 auto; }
+.sess-section-label { font-family: var(--mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--text-faint); margin: 6px 0 2px; }

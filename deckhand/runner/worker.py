@@ -12,6 +12,7 @@ import websockets
 
 from ..config import Config
 from .agents import Execution, ResolvedAgent, detect_agents, run_agent
+from .discovery import discover_all
 
 
 class Runner:
@@ -58,7 +59,11 @@ class Runner:
                     self.log(f"connected to {self.cfg.server_url} as "
                              f"'{self.cfg.runner_name}' with agents: "
                              f"{', '.join(self.agents) or '(none)'}")
-                    await self._consume()
+                    discover_task = asyncio.create_task(self._discover_loop())
+                    try:
+                        await self._consume()
+                    finally:
+                        discover_task.cancel()
             except (OSError, websockets.exceptions.WebSocketException) as e:
                 self.log(f"connection lost ({e}); retrying in {backoff}s")
             except asyncio.CancelledError:
@@ -79,6 +84,19 @@ class Runner:
             "capabilities": list(self.agents.keys()),
             "max_concurrency": self.cfg.max_concurrency,
         })
+
+    async def _discover_loop(self) -> None:
+        """Periodically report the agents' own sessions so the board can show
+        in-progress work and offer to revive past sessions."""
+        names = list(self.agents.keys())
+        while True:
+            try:
+                sessions = await asyncio.to_thread(discover_all, names)
+                await self.send({"type": "agent.sessions",
+                                 "runner_id": self.cfg.runner_id, "sessions": sessions})
+            except Exception as e:
+                self.log(f"discovery error: {e}")
+            await asyncio.sleep(6)
 
     async def _consume(self) -> None:
         assert self.ws is not None
@@ -105,6 +123,7 @@ class Runner:
         agent_name = msg.get("agent", "")
         prompt = msg.get("prompt", "")
         cwd = msg.get("cwd", "")
+        resume_of = msg.get("resume_of", "")
         agent = self.agents.get(agent_name)
         await self.send({"type": "session.start", "session_id": sid})
         self.log(f"running session {sid} with '{agent_name}'")
@@ -123,7 +142,7 @@ class Runner:
             self.executions[sid] = ex
 
         try:
-            rc = await run_agent(agent, prompt, cwd, on_log, register)
+            rc = await run_agent(agent, prompt, cwd, on_log, register, resume_of=resume_of)
             status = "success" if rc == 0 else "failed"
             await self.send({"type": "session.end", "session_id": sid,
                              "status": status, "exit_code": rc})

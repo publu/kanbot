@@ -53,6 +53,7 @@ class Hub:
         self.db = db
         self.web: Set[Any] = set()
         self.runners: Dict[str, RunnerConn] = {}
+        self.agent_sessions: Dict[str, List[dict]] = {}  # runner_id -> discovered sessions
         self._lock = asyncio.Lock()
 
     # -- web clients -------------------------------------------------------
@@ -85,10 +86,28 @@ class Hub:
         await self.broadcast({"type": "runner.updated", "runner": self.db.get_runner(conn.runner_id)})
         await self.try_dispatch()
 
+    async def set_agent_sessions(self, runner_id: str, sessions: List[dict]) -> None:
+        conn = self.runners.get(runner_id)
+        rname = conn.name if conn else runner_id
+        for s in sessions:
+            s["runner_id"] = runner_id
+            s["runner_name"] = rname
+        self.agent_sessions[runner_id] = sessions
+        await self.broadcast({"type": "agent.sessions.updated"})
+
+    def all_agent_sessions(self) -> List[dict]:
+        out: List[dict] = []
+        for sessions in self.agent_sessions.values():
+            out.extend(sessions)
+        out.sort(key=lambda s: s.get("mtime", 0), reverse=True)
+        return out
+
     async def deregister_runner(self, runner_id: str) -> None:
         conn = self.runners.pop(runner_id, None)
+        self.agent_sessions.pop(runner_id, None)
         self.db.set_runner_status(runner_id, "offline", active=0)
         await self.broadcast({"type": "runner.updated", "runner": self.db.get_runner(runner_id)})
+        await self.broadcast({"type": "agent.sessions.updated"})
         # Any sessions left mid-flight are marked failed so cards don't hang.
         if conn:
             for sid in list(conn.active):
@@ -110,12 +129,15 @@ class Hub:
                 for card in queued:
                     if card["status"] in ("running", "assigned"):
                         continue
-                    runner = self._find_runner(card["agent"])
+                    runner = self._find_runner(card["agent"], card.get("pin_runner") or "")
                     if not runner:
                         continue
                     await self._assign(card, runner)
 
-    def _find_runner(self, agent: str) -> Optional[RunnerConn]:
+    def _find_runner(self, agent: str, pin_runner: str = "") -> Optional[RunnerConn]:
+        if pin_runner:
+            r = self.runners.get(pin_runner)
+            return r if (r and r.can_run(agent)) else None
         candidates = [r for r in self.runners.values() if r.can_run(agent)]
         if not candidates:
             return None
@@ -151,6 +173,7 @@ class Hub:
             "agent": agent,
             "prompt": card.get("prompt", ""),
             "cwd": card.get("cwd", ""),
+            "resume_of": card.get("resume_of", "") or "",
         }
         try:
             await runner.ws.send_text(json.dumps(payload))

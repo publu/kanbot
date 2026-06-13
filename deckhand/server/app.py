@@ -15,8 +15,8 @@ from ..agents import catalog
 from .db import DB, now
 from .hub import Hub, RunnerConn
 from .insights import PROVIDER_META, compute
-from .schemas import (BoardCreate, CardCreate, CardMove, CardPatch, TagAttach,
-                      TagCreate)
+from .schemas import (BoardCreate, CardCreate, CardMove, CardPatch, ReviveRequest,
+                      TagAttach, TagCreate)
 
 STATIC_DIR = Path(__file__).parent / "static"
 SERVER_TOKEN = os.environ.get("DECKHAND_TOKEN", "")
@@ -69,6 +69,33 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
     @app.get("/api/runners")
     async def runners():
         return {"runners": db.list_runners()}
+
+    @app.get("/api/agent-sessions")
+    async def agent_sessions():
+        """Recent Claude/Codex sessions discovered on connected runners,
+        including which are actively being worked on right now."""
+        return {"sessions": hub.all_agent_sessions()}
+
+    @app.post("/api/boards/{board_id}/revive")
+    async def revive(board_id: str, body: ReviveRequest):
+        """Adopt an external agent session as a card that resumes it."""
+        board = db.get_board(board_id)
+        if not board:
+            raise HTTPException(404, "board not found")
+        title = body.title or f"Resume {body.agent} {body.session_id[:8]}"
+        prompt = body.prompt or "Continue where you left off."
+        target_kind = "queued" if body.run else "backlog"
+        col = db.column_by_kind(board_id, target_kind) or db.columns(board_id)[0]
+        card = db.create_card(board_id, col["id"], title, prompt, body.agent,
+                              body.cwd, resume_of=body.session_id,
+                              pin_runner=body.runner_id)
+        if body.run:
+            db.update_card(card["id"], status="queued")
+            card = db.get_card(card["id"])
+        await hub.broadcast({"type": "card.created", "card": card})
+        if body.run:
+            await hub.try_dispatch()
+        return card
 
     # -- boards ------------------------------------------------------------
     @app.get("/api/boards")
@@ -262,6 +289,8 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                     status = msg.get("status", "success")
                     await hub.finish_session(msg["session_id"], status=status,
                                              exit_code=msg.get("exit_code"))
+                elif mtype == "agent.sessions" and conn:
+                    await hub.set_agent_sessions(conn.runner_id, msg.get("sessions", []))
         except WebSocketDisconnect:
             pass
         except Exception:
