@@ -247,6 +247,10 @@ function renderColumns() {
   }
 }
 
+function sessionPreview(s) {
+  return s.last_text || s.last_user || s.title || '';
+}
+
 function renderSessionCard(s) {
   const card = el('div', 'card sess' + (s.active ? ' s-running' : ''));
   card.style.cursor = 'pointer';
@@ -262,7 +266,13 @@ function renderSessionCard(s) {
     top.appendChild(el('span', 'sess-age', timeAgo(s.mtime)));
   }
   card.appendChild(top);
-  if (s.title) card.appendChild(el('div', 'sess-preview', s.title));
+  const preview = sessionPreview(s);
+  if (preview) {
+    const pv = el('div', 'sess-preview');
+    if (s.last_text || s.last_user) pv.appendChild(el('span', 'sess-pv-tag', s.last_text ? '↩ ' : '› '));
+    pv.appendChild(document.createTextNode(preview));
+    card.appendChild(pv);
+  }
   const foot = el('div', 'sess-foot');
   foot.appendChild(el('span', 'sess-turns', `${s.turns} turns`));
   const rev = el('button', 'sess-revive', s.active ? '⟳ continue' : '⟳ revive');
@@ -757,7 +767,8 @@ function sessRow(s) {
   title.appendChild(agentBadge(s.agent));
   title.appendChild(document.createTextNode(' ' + (s.name || 'session')));
   info.appendChild(title);
-  const sub = (s.title ? s.title + ' · ' : '') + `${s.turns} turns · ${timeAgo(s.mtime)} · ${shortCwd(s.cwd)}`;
+  const pv = sessionPreview(s);
+  const sub = (pv ? pv + ' · ' : '') + `${s.turns} turns · ${timeAgo(s.mtime)} · ${shortCwd(s.cwd)}`;
   info.appendChild(el('div', 'ssub', sub));
   row.appendChild(info);
   const btn = el('button', 'btn small', s.active ? '⟳ continue' : '⟳ revive');
@@ -769,10 +780,23 @@ function sessRow(s) {
 function promptRevive(s) {
   const m = $('#modal'); m.innerHTML = '';
   m.appendChild(el('h3', null, (s.active ? 'Continue ' : 'Revive ') + (s.name || s.agent)));
-  if (s.title) m.appendChild(el('div', 'label', s.title));
-  const sub = el('div', 'ssub', `${s.agent} · ${s.cwd || '?'} · ${s.session_id.slice(0,8)}`);
-  sub.style.cssText = 'font-family:var(--mono);font-size:10px;color:var(--text-faint);';
+  const sub = el('div', 'ssub', `${s.agent} · ${s.cwd || '?'} · ${s.session_id.slice(0,8)} · ${s.turns} turns · ${timeAgo(s.mtime)}`);
+  sub.style.cssText = 'font-family:var(--mono);font-size:10px;color:var(--text-faint);margin-bottom:4px;';
   m.appendChild(sub);
+
+  // "where it left off" preview
+  const previewBox = el('div', 'revive-preview');
+  const addLine = (tag, text) => {
+    if (!text) return;
+    const line = el('div', 'rp-line');
+    line.appendChild(el('span', 'rp-tag', tag));
+    line.appendChild(el('div', 'rp-text', text));
+    previewBox.appendChild(line);
+  };
+  addLine('last asked', s.last_user);
+  addLine('last reply', s.last_text);
+  if (!s.last_user && !s.last_text) addLine('started', s.title);
+  if (previewBox.children.length) m.appendChild(previewBox);
   const prompt = textareaField('What should the agent do next?',
     'e.g. Now write tests for the change you just made.');
   m.appendChild(prompt.wrap);

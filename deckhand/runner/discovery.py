@@ -59,6 +59,20 @@ def _is_noise(text: Optional[str]) -> bool:
     return False
 
 
+def _read_tail(path: Path, nbytes: int = 24000) -> List[str]:
+    """Return the last lines of a file cheaply (for 'where did it leave off')."""
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as fh:
+            if size > nbytes:
+                fh.seek(size - nbytes)
+                fh.readline()  # discard partial line
+            data = fh.read()
+        return data.decode("utf-8", "replace").splitlines()
+    except OSError:
+        return []
+
+
 def _name_from_cwd(cwd: str, fallback: str) -> str:
     if cwd:
         base = os.path.basename(cwd.rstrip("/"))
@@ -109,12 +123,29 @@ def _scan_claude_file(path: Path) -> Optional[Dict[str, Any]]:
                             preview = txt
     except OSError:
         return None
+    last_user = last_text = None
+    for line in _read_tail(path):
+        try:
+            d = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        t = d.get("type")
+        if t == "user" and not d.get("isMeta"):
+            txt = _extract_text((d.get("message") or {}).get("content"))
+            if not _is_noise(txt):
+                last_user = txt
+        elif t == "assistant":
+            txt = _extract_text((d.get("message") or {}).get("content"))
+            if txt and txt.strip():
+                last_text = txt
     return {
         "agent": "claude",
         "session_id": path.stem,
         "cwd": cwd or "",
         "name": _name_from_cwd(cwd or "", f"claude·{path.stem[:6]}"),
         "title": _truncate(preview),
+        "last_user": _truncate(last_user, 200),
+        "last_text": _truncate(last_text, 240),
         "turns": n_user,
     }
 
@@ -187,12 +218,33 @@ def _scan_codex_file(path: Path) -> Optional[Dict[str, Any]]:
                             preview = txt
     except OSError:
         return None
+    last_user = last_text = None
+    for line in _read_tail(path):
+        try:
+            d = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        payload = d.get("payload", d)
+        if not isinstance(payload, dict):
+            continue
+        role = payload.get("role")
+        content = payload.get("content") or payload.get("message")
+        if role == "user" or payload.get("type") == "user_message":
+            txt = _extract_text(content)
+            if not _is_noise(txt):
+                last_user = txt
+        elif role == "assistant" or payload.get("type") in ("agent_message", "assistant_message"):
+            txt = _extract_text(content)
+            if txt and txt.strip():
+                last_text = txt
     return {
         "agent": "codex",
         "session_id": sid,
         "cwd": cwd or "",
         "name": _name_from_cwd(cwd or "", f"codex·{sid[:6]}"),
         "title": _truncate(preview),
+        "last_user": _truncate(last_user, 200),
+        "last_text": _truncate(last_text, 240),
         "turns": n_user,
     }
 
