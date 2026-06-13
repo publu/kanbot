@@ -19,9 +19,9 @@ from typing import Any, Dict, List, Optional
 
 # A session whose transcript was written within this window is treated as "working".
 ACTIVE_WINDOW_S = 45
-# Only surface sessions touched within this window in the "recent" list.
-RECENT_WINDOW_S = 14 * 24 * 3600
-MAX_SESSIONS_PER_AGENT = 40
+# Surface sessions touched within this window (older ones are listed too).
+RECENT_WINDOW_S = 60 * 24 * 3600
+MAX_SESSIONS_PER_AGENT = 60
 MAX_LINES_SCAN = 250
 
 

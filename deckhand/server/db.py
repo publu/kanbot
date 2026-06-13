@@ -108,6 +108,7 @@ CREATE INDEX IF NOT EXISTS idx_events_session ON session_events(session_id);
 """
 
 DEFAULT_COLUMNS = [
+    ("Sessions", "info"),
     ("Backlog", "backlog"),
     ("Queued", "queued"),
     ("Running", "running"),
@@ -143,6 +144,17 @@ class DB:
                           ("pin_runner", "TEXT DEFAULT ''")):
             if name not in cols:
                 self.conn.execute(f"ALTER TABLE cards ADD COLUMN {name} {ddl}")
+        # Ensure every board has a leftmost "Sessions" (info) column.
+        for board in self.q("SELECT id FROM boards"):
+            row = self.one("SELECT id FROM columns WHERE board_id=? AND kind='info'",
+                           (board["id"],))
+            if not row:
+                self.conn.execute("UPDATE columns SET position = position + 1 WHERE board_id=?",
+                                  (board["id"],))
+                self.conn.execute(
+                    "INSERT INTO columns (id, board_id, name, kind, position) VALUES (?,?,?,?,?)",
+                    (gen_id(), board["id"], "Sessions", "info", 0),
+                )
 
     # -- low level ---------------------------------------------------------
     def q(self, sql: str, args: tuple = ()) -> List[Dict[str, Any]]:

@@ -148,6 +148,7 @@ input, textarea, select { font-family: var(--ui); }
 .kind-review  { background: var(--violet); }
 .kind-done    { background: var(--green); }
 .kind-custom  { background: var(--blue); }
+.kind-info    { background: var(--blue); }
 
 .col-body { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 9px; }
 .col-body.empty-hint::after {
@@ -333,13 +334,18 @@ input, textarea, select { font-family: var(--ui); }
   animation: pulse 1.3s infinite;
 }
 
-/* live column (external agent sessions in progress) */
-.column.live { border-color: rgba(79,209,224,.35); background: linear-gradient(180deg, #0f1a1d, #0c1216); }
-.column.live .col-head .title { color: var(--cyan); }
+/* info column (discovered agent sessions) + live session cards */
+.column.info { border-color: rgba(106,166,255,.25); background: linear-gradient(180deg, #0f141d, #0c0f16); }
+.column.info .col-head .title { color: var(--blue); }
 .live-card {
   background: var(--surface-2); border: 1px solid rgba(79,209,224,.25);
   border-left: 3px solid var(--cyan); border-radius: var(--radius-sm); padding: 11px 12px;
+  cursor: pointer; transition: .14s;
 }
+.live-card:hover { background: var(--surface-3); transform: translateY(-1px); }
+.live-card.idle { border-color: var(--line); border-left-color: var(--text-faint); }
+.live-card.idle:hover { border-left-color: var(--amber); }
+.live-card .lc-age { font-family: var(--mono); font-size: 9.5px; color: var(--text-faint); margin-left: auto; }
 .live-card .lc-top { display: flex; align-items: center; gap: 7px; margin-bottom: 7px; }
 .live-card .working { display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 9.5px; color: var(--cyan); letter-spacing: .08em; }
 .live-card .ctitle { font-size: 13px; font-weight: 500; line-height: 1.35; margin-bottom: 6px; }

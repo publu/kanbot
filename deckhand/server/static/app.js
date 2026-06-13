@@ -39,7 +39,7 @@ const S = {
   sessionsModalOpen: false,
 };
 
-const COLOR_BY_KIND = { backlog: 'backlog', queued: 'queued', running: 'running', review: 'review', done: 'done', custom: 'custom' };
+const COLOR_BY_KIND = { info: 'info', backlog: 'backlog', queued: 'queued', running: 'running', review: 'review', done: 'done', custom: 'custom' };
 
 // ---- boot ---------------------------------------------------------------
 async function boot() {
@@ -186,25 +186,45 @@ function renderColumns() {
   board.innerHTML = '';
   if (!S.board) return;
 
-  // synthetic "Live" rail: external agent sessions currently being worked on
-  const live = S.agentSessions.filter(s => s.active);
-  if (live.length) board.appendChild(renderLiveColumn(live));
+  // External agent sessions are injected inline: ones working *now* land in the
+  // Running column; idle/older ones fill the leftmost Sessions (info) column.
+  const activeSessions = S.agentSessions.filter(s => s.active);
+  const idleSessions = S.agentSessions.filter(s => !s.active);
+  const INFO_CAP = 40;
 
   for (const col of S.columns) {
-    const column = el('div', 'column');
+    const column = el('div', 'column' + (col.kind === 'info' ? ' info' : ''));
     column.dataset.colId = col.id;
     column.dataset.kind = col.kind;
+
+    const cards = S.cards.filter(c => c.column_id === col.id).sort((a, b) => a.position - b.position);
+    let injected = [];
+    if (col.kind === 'running') injected = activeSessions;
+    else if (col.kind === 'info') injected = idleSessions;
 
     const head = el('div', 'col-head');
     head.appendChild(el('span', 'kind-dot kind-' + (COLOR_BY_KIND[col.kind] || 'custom')));
     head.appendChild(el('span', 'title', col.name));
-    const cards = S.cards.filter(c => c.column_id === col.id).sort((a, b) => a.position - b.position);
-    head.appendChild(el('span', 'count', cards.length));
+    head.appendChild(el('span', 'count', cards.length + injected.length));
     column.appendChild(head);
 
     const body = el('div', 'col-body');
-    if (cards.length === 0) body.classList.add('empty-hint');
+    if (cards.length + injected.length === 0 && col.kind !== 'info') body.classList.add('empty-hint');
+
+    // active sessions show at the top of Running; real cards below
+    if (col.kind === 'running') for (const s of injected) body.appendChild(renderSessionCard(s));
     for (const c of cards) body.appendChild(renderCard(c));
+
+    if (col.kind === 'info') {
+      const shown = injected.slice(0, INFO_CAP);
+      for (const s of shown) body.appendChild(renderSessionCard(s));
+      if (!injected.length) body.appendChild(el('div', 'add-card', 'no discovered sessions yet'));
+      else if (injected.length > INFO_CAP) {
+        const more = el('div', 'add-card', `+${injected.length - INFO_CAP} more — open ⟳ sessions`);
+        more.onclick = openSessionsModal;
+        body.appendChild(more);
+      }
+    }
 
     if (col.kind === 'backlog') {
       const add = el('div', 'add-card', '+ add task');
@@ -222,35 +242,27 @@ function renderColumns() {
   }
 }
 
-function renderLiveColumn(live) {
-  const column = el('div', 'column live');
-  const head = el('div', 'col-head');
-  head.appendChild(el('span', 'kind-dot kind-running'));
-  head.appendChild(el('span', 'title', 'Live agents'));
-  head.appendChild(el('span', 'count', live.length));
-  column.appendChild(head);
-  const body = el('div', 'col-body');
-  for (const s of live) body.appendChild(renderLiveCard(s));
-  column.appendChild(body);
-  return column;
-}
-
-function renderLiveCard(s) {
-  const card = el('div', 'live-card');
+function renderSessionCard(s) {
+  const card = el('div', 'live-card' + (s.active ? '' : ' idle'));
   const top = el('div', 'lc-top');
   top.appendChild(agentBadge(s.agent));
-  const working = el('span', 'working');
-  working.appendChild(el('span', 'spinner'));
-  working.appendChild(el('span', null, 'WORKING'));
-  top.appendChild(working);
+  if (s.active) {
+    const working = el('span', 'working');
+    working.appendChild(el('span', 'spinner'));
+    working.appendChild(el('span', null, 'WORKING'));
+    top.appendChild(working);
+  } else {
+    top.appendChild(el('span', 'lc-age', timeAgo(s.mtime)));
+  }
   card.appendChild(top);
   card.appendChild(el('div', 'ctitle', s.title));
-  card.appendChild(el('div', 'lc-cwd', `${s.runner_name} · ${s.cwd || '?'} · ${s.turns} turns`));
+  card.appendChild(el('div', 'lc-cwd', `${shortCwd(s.cwd)} · ${s.turns} turns`));
   const actions = el('div', 'lc-actions');
-  const cont = el('button', 'btn primary small', '⟳ Continue here');
-  cont.onclick = () => promptRevive(s);
+  const cont = el('button', 'btn primary small', s.active ? '⟳ continue here' : '⟳ revive');
+  cont.onclick = (e) => { e.stopPropagation(); promptRevive(s); };
   actions.appendChild(cont);
   card.appendChild(actions);
+  card.onclick = () => promptRevive(s);
   return card;
 }
 
@@ -830,6 +842,11 @@ function hexA(hex, a) {
   const h = (hex || '#888888').replace('#', '');
   const n = parseInt(h.length === 3 ? h.split('').map(c => c + c).join('') : h, 16);
   return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+}
+function shortCwd(p) {
+  if (!p) return '?';
+  const parts = p.split('/').filter(Boolean);
+  return parts.length <= 2 ? p : '…/' + parts.slice(-2).join('/');
 }
 function timeAgo(ts) {
   if (!ts) return 'just now';
