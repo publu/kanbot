@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Deckhand · agent control room</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23ff9d3d'/><text x='50' y='72' font-size='64' font-family='monospace' font-weight='800' text-anchor='middle' fill='%231a1205'>D</text></svg>" />
+</head>
+<body>
+  <div id="app">
+    <!-- top bar -->
+    <header class="topbar">
+      <div class="brand">
+        <div class="mark">D</div>
+        <div>
+          <div class="name">deck<span>hand</span></div>
+        </div>
+        <span class="ver" id="version"></span>
+      </div>
+
+      <select class="board-select" id="boardSelect" title="Switch board"></select>
+      <button class="btn ghost small" id="newBoardBtn">+ board</button>
+
+      <div class="spacer"></div>
+
+      <div class="runners" id="runners"></div>
+      <button class="btn ghost small" id="manageTagsBtn" title="Manage tags">🏷 tags</button>
+    </header>
+
+    <!-- board -->
+    <main class="board" id="board"></main>
+  </div>
+
+  <!-- card drawer -->
+  <div class="drawer-scrim" id="drawerScrim"></div>
+  <aside class="drawer" id="drawer">
+    <div class="drawer-head">
+      <input class="title-input" id="dTitle" placeholder="Task title" />
+      <button class="x" id="drawerClose">×</button>
+    </div>
+    <div class="drawer-body" id="drawerBody"></div>
+  </aside>
+
+  <!-- modal -->
+  <div class="modal-scrim" id="modalScrim">
+    <div class="modal" id="modal"></div>
+  </div>
+
+  <div class="toast-wrap" id="toasts"></div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
