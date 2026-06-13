@@ -109,7 +109,6 @@ CREATE INDEX IF NOT EXISTS idx_events_session ON session_events(session_id);
 
 DEFAULT_COLUMNS = [
     ("Backlog", "backlog"),
-    ("Queued", "queued"),
     ("Running", "running"),
     ("Review", "review"),
     ("Done", "done"),
@@ -143,23 +142,28 @@ class DB:
                           ("pin_runner", "TEXT DEFAULT ''")):
             if name not in cols:
                 self.conn.execute(f"ALTER TABLE cards ADD COLUMN {name} {ddl}")
-        # Drop the deprecated standalone "Sessions"/info column — discovered
-        # sessions now live inline in Backlog/Running/Done by recency.
+        # Drop deprecated columns from older boards, relocating any stray cards:
+        #   info  -> backlog (sessions now live inline by recency)
+        #   queued -> running (a card is queued via status, not a column)
+        deprecated = {"info": "backlog", "queued": "running"}
         for board in self.q("SELECT id FROM boards"):
-            info_cols = self.q("SELECT id FROM columns WHERE board_id=? AND kind='info'",
-                               (board["id"],))
-            if not info_cols:
-                continue
-            bk = self.one("SELECT id FROM columns WHERE board_id=? AND kind='backlog'",
-                          (board["id"],))
-            for col in info_cols:
-                if bk:
-                    self.conn.execute("UPDATE cards SET column_id=? WHERE column_id=?",
-                                      (bk["id"], col["id"]))
-                self.conn.execute("DELETE FROM columns WHERE id=?", (col["id"],))
-            for i, cc in enumerate(self.q(
-                    "SELECT id FROM columns WHERE board_id=? ORDER BY position", (board["id"],))):
-                self.conn.execute("UPDATE columns SET position=? WHERE id=?", (i, cc["id"]))
+            bid = board["id"]
+            changed = False
+            for kind, into in deprecated.items():
+                dead = self.q("SELECT id FROM columns WHERE board_id=? AND kind=?", (bid, kind))
+                if not dead:
+                    continue
+                target = self.one("SELECT id FROM columns WHERE board_id=? AND kind=?", (bid, into))
+                for col in dead:
+                    if target:
+                        self.conn.execute("UPDATE cards SET column_id=? WHERE column_id=?",
+                                          (target["id"], col["id"]))
+                    self.conn.execute("DELETE FROM columns WHERE id=?", (col["id"],))
+                    changed = True
+            if changed:
+                for i, cc in enumerate(self.q(
+                        "SELECT id FROM columns WHERE board_id=? ORDER BY position", (bid,))):
+                    self.conn.execute("UPDATE columns SET position=? WHERE id=?", (i, cc["id"]))
 
     # -- low level ---------------------------------------------------------
     def q(self, sql: str, args: tuple = ()) -> List[Dict[str, Any]]:
@@ -267,6 +271,12 @@ class DB:
             return []
         return self.q(
             "SELECT * FROM cards WHERE column_id=? ORDER BY position", (col["id"],)
+        )
+
+    def cards_with_status(self, board_id: str, status: str) -> List[Dict[str, Any]]:
+        return self.q(
+            "SELECT * FROM cards WHERE board_id=? AND status=? ORDER BY position",
+            (board_id, status),
         )
 
     # -- tags --------------------------------------------------------------

@@ -51,19 +51,21 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         }
 
     async def enqueue_if_needed(card: dict, prev_status: str) -> None:
-        """If a card landed in a queued column, mark it queued and dispatch."""
+        """If a card landed in the Running column, queue it for a runner."""
         col = db.get_column(card["column_id"])
         if not col:
             return
         kind = col["kind"]
-        mapping = {"backlog": "idle", "queued": "queued", "review": "review",
-                   "done": "done"}
-        if kind in mapping and card["status"] not in ("running",):
-            new_status = mapping[kind]
-            if new_status != card["status"]:
-                db.update_card(card["id"], status=new_status)
-        if kind == "queued":
-            await hub.try_dispatch()
+        # Dropping into Running means "run it" -> queue for dispatch (unless it's
+        # already executing). Other columns just park the card.
+        mapping = {"backlog": "idle", "review": "review", "done": "done"}
+        if kind == "running":
+            if card["status"] not in ("running", "queued"):
+                db.update_card(card["id"], status="queued")
+                await hub.try_dispatch()
+        elif kind in mapping and card["status"] != "running":
+            if mapping[kind] != card["status"]:
+                db.update_card(card["id"], status=mapping[kind])
 
     # -- meta --------------------------------------------------------------
     @app.get("/api/health")
@@ -92,7 +94,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             raise HTTPException(404, "board not found")
         title = body.title or f"Resume {body.agent} {body.session_id[:8]}"
         prompt = body.prompt or "Continue where you left off."
-        target_kind = "queued" if body.run else "backlog"
+        target_kind = "running" if body.run else "backlog"
         col = db.column_by_kind(board_id, target_kind) or db.columns(board_id)[0]
         card = db.create_card(board_id, col["id"], title, prompt, body.agent,
                               body.cwd, resume_of=body.session_id,
@@ -170,9 +172,9 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         card = db.get_card(card_id)
         if not card:
             raise HTTPException(404, "card not found")
-        col = db.column_by_kind(card["board_id"], "queued")
+        col = db.column_by_kind(card["board_id"], "running")
         if not col:
-            raise HTTPException(400, "board has no queued column")
+            raise HTTPException(400, "board has no running column")
         card = db.move_card(card_id, col["id"], db._next_position(col["id"]))
         db.update_card(card_id, status="queued")
         card = db.get_card(card_id)

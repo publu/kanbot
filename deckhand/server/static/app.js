@@ -37,6 +37,7 @@ const S = {
   sessionsCache: {},    // card_id -> [sessions]
   agentSessions: [],    // discovered claude/codex sessions across runners
   sessionsModalOpen: false,
+  dragSession: null,    // session object currently being dragged
 };
 
 const COLOR_BY_KIND = { info: 'info', backlog: 'backlog', queued: 'queued', running: 'running', review: 'review', done: 'done', custom: 'custom' };
@@ -264,7 +265,14 @@ function fmtDur(sec) {
 
 function renderSessionCard(s) {
   const card = el('div', 'card sess' + (s.active ? ' s-running' : ''));
-  card.style.cursor = 'pointer';
+  card.style.cursor = 'grab';
+  card.draggable = true;
+  card.addEventListener('dragstart', (e) => {
+    S.dragSession = s;
+    e.dataTransfer.setData('text/plain', 'session:' + s.session_id);
+    card.classList.add('dragging');
+  });
+  card.addEventListener('dragend', () => card.classList.remove('dragging'));
   const top = el('div', 'sess-top');
   top.appendChild(agentBadge(s.agent));
   top.appendChild(el('span', 'sess-name', s.name || 'session'));
@@ -353,7 +361,24 @@ function tagChip(t) {
 async function onDrop(e, col, body) {
   e.preventDefault();
   document.querySelectorAll('.column').forEach(c => c.classList.remove('drag-over'));
-  const cardId = e.dataTransfer.getData('text/plain');
+  const data = e.dataTransfer.getData('text/plain');
+
+  // dragging a discovered session onto Running resumes it immediately
+  if (S.dragSession && data.startsWith('session:')) {
+    const s = S.dragSession; S.dragSession = null;
+    if (col.kind !== 'running') return;
+    try {
+      await api.post(`/api/boards/${S.boardId}/revive`, {
+        runner_id: s.runner_id, agent: s.agent, session_id: s.session_id,
+        cwd: s.cwd, title: `↻ ${s.name || s.agent}`.slice(0, 80),
+        prompt: 'Continue where you left off.', run: true,
+      });
+      toast('resuming ' + (s.name || s.agent));
+    } catch (err) { toast('revive failed: ' + err.message); }
+    return;
+  }
+
+  const cardId = data;
   if (!cardId) return;
   // insertion index based on drop Y position
   const cardsEls = [...body.querySelectorAll('.card')].filter(n => n.dataset.cardId !== cardId);

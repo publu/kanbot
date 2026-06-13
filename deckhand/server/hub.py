@@ -125,10 +125,8 @@ class Hub:
         async with self._lock:
             boards = self.db.list_boards()
             for board in boards:
-                queued = self.db.cards_in_column_kind(board["id"], "queued")
+                queued = self.db.cards_with_status(board["id"], "queued")
                 for card in queued:
-                    if card["status"] in ("running", "assigned"):
-                        continue
                     runner = self._find_runner(card["agent"], card.get("pin_runner") or "")
                     if not runner:
                         continue
