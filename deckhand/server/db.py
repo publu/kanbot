@@ -108,7 +108,6 @@ CREATE INDEX IF NOT EXISTS idx_events_session ON session_events(session_id);
 """
 
 DEFAULT_COLUMNS = [
-    ("Sessions", "info"),
     ("Backlog", "backlog"),
     ("Queued", "queued"),
     ("Running", "running"),
@@ -144,17 +143,23 @@ class DB:
                           ("pin_runner", "TEXT DEFAULT ''")):
             if name not in cols:
                 self.conn.execute(f"ALTER TABLE cards ADD COLUMN {name} {ddl}")
-        # Ensure every board has a leftmost "Sessions" (info) column.
+        # Drop the deprecated standalone "Sessions"/info column — discovered
+        # sessions now live inline in Backlog/Running/Done by recency.
         for board in self.q("SELECT id FROM boards"):
-            row = self.one("SELECT id FROM columns WHERE board_id=? AND kind='info'",
-                           (board["id"],))
-            if not row:
-                self.conn.execute("UPDATE columns SET position = position + 1 WHERE board_id=?",
-                                  (board["id"],))
-                self.conn.execute(
-                    "INSERT INTO columns (id, board_id, name, kind, position) VALUES (?,?,?,?,?)",
-                    (gen_id(), board["id"], "Sessions", "info", 0),
-                )
+            info_cols = self.q("SELECT id FROM columns WHERE board_id=? AND kind='info'",
+                               (board["id"],))
+            if not info_cols:
+                continue
+            bk = self.one("SELECT id FROM columns WHERE board_id=? AND kind='backlog'",
+                          (board["id"],))
+            for col in info_cols:
+                if bk:
+                    self.conn.execute("UPDATE cards SET column_id=? WHERE column_id=?",
+                                      (bk["id"], col["id"]))
+                self.conn.execute("DELETE FROM columns WHERE id=?", (col["id"],))
+            for i, cc in enumerate(self.q(
+                    "SELECT id FROM columns WHERE board_id=? ORDER BY position", (board["id"],))):
+                self.conn.execute("UPDATE columns SET position=? WHERE id=?", (i, cc["id"]))
 
     # -- low level ---------------------------------------------------------
     def q(self, sql: str, args: tuple = ()) -> List[Dict[str, Any]]:

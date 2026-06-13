@@ -31,6 +31,14 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
     app.state.db = db
     app.state.hub = hub
 
+    @app.middleware("http")
+    async def no_cache(request, call_next):
+        resp = await call_next(request)
+        path = request.url.path
+        if path == "/" or path.endswith((".js", ".css", ".html")):
+            resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return resp
+
     def board_state(board_id: str) -> dict:
         board = db.get_board(board_id)
         if not board:

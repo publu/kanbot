@@ -186,21 +186,28 @@ function renderColumns() {
   board.innerHTML = '';
   if (!S.board) return;
 
-  // External agent sessions are injected inline: ones working *now* land in the
-  // Running column; idle/older ones fill the leftmost Sessions (info) column.
-  const activeSessions = S.agentSessions.filter(s => s.active);
-  const idleSessions = S.agentSessions.filter(s => !s.active);
-  const INFO_CAP = 40;
+  // Discovered agent sessions are injected inline by recency: working now ->
+  // Running, finished in the last 30 min -> Done, anything older -> Backlog
+  // (stale sessions ARE the backlog). No dedicated column.
+  const RECENT_DONE_S = 30 * 60;
+  const nowS = Date.now() / 1000;
+  const byBucket = { backlog: [], running: [], done: [] };
+  for (const s of S.agentSessions) {
+    if (s.active) byBucket.running.push(s);
+    else if ((nowS - (s.mtime || 0)) <= RECENT_DONE_S) byBucket.done.push(s);
+    else byBucket.backlog.push(s);
+  }
+  const CAP = { backlog: 25, done: 15, running: 50 };
 
   for (const col of S.columns) {
-    const column = el('div', 'column' + (col.kind === 'info' ? ' info' : ''));
+    const column = el('div', 'column');
     column.dataset.colId = col.id;
     column.dataset.kind = col.kind;
 
     const cards = S.cards.filter(c => c.column_id === col.id).sort((a, b) => a.position - b.position);
-    let injected = [];
-    if (col.kind === 'running') injected = activeSessions;
-    else if (col.kind === 'info') injected = idleSessions;
+    const injected = byBucket[col.kind] || [];
+    const cap = CAP[col.kind] || 0;
+    const shownSessions = injected.slice(0, cap);
 
     const head = el('div', 'col-head');
     head.appendChild(el('span', 'kind-dot kind-' + (COLOR_BY_KIND[col.kind] || 'custom')));
@@ -209,27 +216,25 @@ function renderColumns() {
     column.appendChild(head);
 
     const body = el('div', 'col-body');
-    if (cards.length + injected.length === 0 && col.kind !== 'info') body.classList.add('empty-hint');
-
-    // active sessions show at the top of Running; real cards below
-    if (col.kind === 'running') for (const s of injected) body.appendChild(renderSessionCard(s));
-    for (const c of cards) body.appendChild(renderCard(c));
-
-    if (col.kind === 'info') {
-      const shown = injected.slice(0, INFO_CAP);
-      for (const s of shown) body.appendChild(renderSessionCard(s));
-      if (!injected.length) body.appendChild(el('div', 'add-card', 'no discovered sessions yet'));
-      else if (injected.length > INFO_CAP) {
-        const more = el('div', 'add-card', `+${injected.length - INFO_CAP} more — open ⟳ sessions`);
-        more.onclick = openSessionsModal;
-        body.appendChild(more);
-      }
-    }
+    if (cards.length + injected.length === 0) body.classList.add('empty-hint');
 
     if (col.kind === 'backlog') {
       const add = el('div', 'add-card', '+ add task');
       add.onclick = () => openComposer(col.id);
       body.appendChild(add);
+    }
+    // working sessions sit on top of Running; elsewhere real cards come first
+    if (col.kind === 'running') {
+      for (const s of shownSessions) body.appendChild(renderSessionCard(s));
+      for (const c of cards) body.appendChild(renderCard(c));
+    } else {
+      for (const c of cards) body.appendChild(renderCard(c));
+      for (const s of shownSessions) body.appendChild(renderSessionCard(s));
+    }
+    if (injected.length > cap && cap > 0) {
+      const more = el('div', 'add-card', `+${injected.length - cap} more — ⟳ sessions`);
+      more.onclick = openSessionsModal;
+      body.appendChild(more);
     }
 
     // drag & drop
@@ -243,25 +248,27 @@ function renderColumns() {
 }
 
 function renderSessionCard(s) {
-  const card = el('div', 'live-card' + (s.active ? '' : ' idle'));
-  const top = el('div', 'lc-top');
+  const card = el('div', 'card sess' + (s.active ? ' s-running' : ''));
+  card.style.cursor = 'pointer';
+  const top = el('div', 'sess-top');
   top.appendChild(agentBadge(s.agent));
+  top.appendChild(el('span', 'sess-name', s.name || 'session'));
   if (s.active) {
-    const working = el('span', 'working');
-    working.appendChild(el('span', 'spinner'));
-    working.appendChild(el('span', null, 'WORKING'));
-    top.appendChild(working);
+    const w = el('span', 'sess-work');
+    w.appendChild(el('span', 'spinner'));
+    w.appendChild(el('span', null, 'working'));
+    top.appendChild(w);
   } else {
-    top.appendChild(el('span', 'lc-age', timeAgo(s.mtime)));
+    top.appendChild(el('span', 'sess-age', timeAgo(s.mtime)));
   }
   card.appendChild(top);
-  card.appendChild(el('div', 'ctitle', s.title));
-  card.appendChild(el('div', 'lc-cwd', `${shortCwd(s.cwd)} · ${s.turns} turns`));
-  const actions = el('div', 'lc-actions');
-  const cont = el('button', 'btn primary small', s.active ? '⟳ continue here' : '⟳ revive');
-  cont.onclick = (e) => { e.stopPropagation(); promptRevive(s); };
-  actions.appendChild(cont);
-  card.appendChild(actions);
+  if (s.title) card.appendChild(el('div', 'sess-preview', s.title));
+  const foot = el('div', 'sess-foot');
+  foot.appendChild(el('span', 'sess-turns', `${s.turns} turns`));
+  const rev = el('button', 'sess-revive', s.active ? '⟳ continue' : '⟳ revive');
+  rev.onclick = (e) => { e.stopPropagation(); promptRevive(s); };
+  foot.appendChild(rev);
+  card.appendChild(foot);
   card.onclick = () => promptRevive(s);
   return card;
 }
@@ -748,9 +755,10 @@ function sessRow(s) {
   const info = el('div', 'sinfo');
   const title = el('div', 'stitle');
   title.appendChild(agentBadge(s.agent));
-  title.appendChild(document.createTextNode(' ' + s.title));
+  title.appendChild(document.createTextNode(' ' + (s.name || 'session')));
   info.appendChild(title);
-  info.appendChild(el('div', 'ssub', `${s.runner_name} · ${s.cwd || '?'} · ${s.turns} turns · ${timeAgo(s.mtime)}`));
+  const sub = (s.title ? s.title + ' · ' : '') + `${s.turns} turns · ${timeAgo(s.mtime)} · ${shortCwd(s.cwd)}`;
+  info.appendChild(el('div', 'ssub', sub));
   row.appendChild(info);
   const btn = el('button', 'btn small', s.active ? '⟳ continue' : '⟳ revive');
   btn.onclick = () => promptRevive(s);
@@ -760,9 +768,9 @@ function sessRow(s) {
 
 function promptRevive(s) {
   const m = $('#modal'); m.innerHTML = '';
-  m.appendChild(el('h3', null, (s.active ? 'Continue ' : 'Revive ') + s.agent + ' session'));
-  m.appendChild(el('div', 'label', s.title));
-  const sub = el('div', 'ssub', `${s.runner_name} · ${s.cwd || '?'} · ${s.session_id.slice(0,8)}`);
+  m.appendChild(el('h3', null, (s.active ? 'Continue ' : 'Revive ') + (s.name || s.agent)));
+  if (s.title) m.appendChild(el('div', 'label', s.title));
+  const sub = el('div', 'ssub', `${s.agent} · ${s.cwd || '?'} · ${s.session_id.slice(0,8)}`);
   sub.style.cssText = 'font-family:var(--mono);font-size:10px;color:var(--text-faint);';
   m.appendChild(sub);
   const prompt = textareaField('What should the agent do next?',
@@ -777,7 +785,7 @@ function promptRevive(s) {
     try {
       await api.post(`/api/boards/${S.boardId}/revive`, {
         runner_id: s.runner_id, agent: s.agent, session_id: s.session_id,
-        cwd: s.cwd, title: `↻ ${s.title}`.slice(0, 80),
+        cwd: s.cwd, title: `↻ ${s.name || s.agent}`.slice(0, 80),
         prompt: prompt.input.value, run,
       });
       S.sessionsModalOpen = false; closeModal();

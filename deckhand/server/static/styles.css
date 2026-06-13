@@ -334,23 +334,21 @@ input, textarea, select { font-family: var(--ui); }
   animation: pulse 1.3s infinite;
 }
 
-/* info column (discovered agent sessions) + live session cards */
-.column.info { border-color: rgba(106,166,255,.25); background: linear-gradient(180deg, #0f141d, #0c0f16); }
-.column.info .col-head .title { color: var(--blue); }
-.live-card {
-  background: var(--surface-2); border: 1px solid rgba(79,209,224,.25);
-  border-left: 3px solid var(--cyan); border-radius: var(--radius-sm); padding: 11px 12px;
-  cursor: pointer; transition: .14s;
-}
-.live-card:hover { background: var(--surface-3); transform: translateY(-1px); }
-.live-card.idle { border-color: var(--line); border-left-color: var(--text-faint); }
-.live-card.idle:hover { border-left-color: var(--amber); }
-.live-card .lc-age { font-family: var(--mono); font-size: 9.5px; color: var(--text-faint); margin-left: auto; }
-.live-card .lc-top { display: flex; align-items: center; gap: 7px; margin-bottom: 7px; }
-.live-card .working { display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 9.5px; color: var(--cyan); letter-spacing: .08em; }
-.live-card .ctitle { font-size: 13px; font-weight: 500; line-height: 1.35; margin-bottom: 6px; }
-.live-card .lc-cwd { font-family: var(--mono); font-size: 10px; color: var(--text-faint); margin-bottom: 9px; word-break: break-all; }
-.live-card .lc-actions { display: flex; gap: 6px; }
+/* discovered agent session cards (compact, live inside Backlog/Running/Done) */
+.card.sess { border-left-color: var(--text-faint); }
+.card.sess.s-running { border-left-color: var(--cyan); }
+.sess-top { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; }
+.sess-name { font-family: var(--mono); font-size: 12px; font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sess-age { margin-left: auto; font-family: var(--mono); font-size: 9.5px; color: var(--text-faint); flex: 0 0 auto; }
+.sess-work { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: var(--cyan); flex: 0 0 auto; }
+.sess-preview { font-size: 12px; color: var(--text-dim); line-height: 1.4; margin-bottom: 8px;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.sess-foot { display: flex; align-items: center; gap: 8px; }
+.sess-turns { font-family: var(--mono); font-size: 10px; color: var(--text-faint); }
+.sess-revive { margin-left: auto; font-family: var(--ui); font-size: 11px; padding: 3px 10px;
+  border-radius: 6px; background: var(--surface-3); border: 1px solid var(--line); color: var(--text-dim); transition: .12s; }
+.sess-revive:hover { border-color: var(--amber); color: var(--amber); }
+.card.sess.s-running .sess-revive { background: linear-gradient(135deg, var(--amber), var(--amber-dim)); color: #1a1205; border-color: transparent; font-weight: 600; }
 
 /* resume badge on cards */
 .resume-badge { font-family: var(--mono); font-size: 9.5px; color: var(--cyan); border: 1px solid rgba(79,209,224,.3); padding: 1px 6px; border-radius: 5px; }

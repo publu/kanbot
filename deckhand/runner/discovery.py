@@ -25,11 +25,46 @@ MAX_SESSIONS_PER_AGENT = 60
 MAX_LINES_SCAN = 250
 
 
-def _truncate(s: Optional[str], n: int = 140) -> str:
+def _truncate(s: Optional[str], n: int = 120) -> str:
     if not s:
         return ""
     s = " ".join(s.split())
     return s[: n - 1] + "…" if len(s) > n else s
+
+
+# First-user-message text that is actually system noise, not a real prompt.
+_NOISE = (
+    "a session-scoped stop hook",
+    "caveat:",
+    "<command",
+    "<system-reminder",
+    "<local-command",
+    "[request interrupted",
+    "this session is being continued",
+    "please continue",
+    "⏺",
+)
+
+
+def _is_noise(text: Optional[str]) -> bool:
+    if not text:
+        return True
+    t = text.strip().lower()
+    if not t or t.startswith("<"):
+        return True
+    if any(t.startswith(p) for p in _NOISE):
+        return True
+    if "session-scoped stop hook" in t or "system-reminder" in t:
+        return True
+    return False
+
+
+def _name_from_cwd(cwd: str, fallback: str) -> str:
+    if cwd:
+        base = os.path.basename(cwd.rstrip("/"))
+        if base:
+            return base
+    return fallback
 
 
 def _claude_home() -> Path:
@@ -50,12 +85,12 @@ def _extract_text(content: Any) -> Optional[str]:
 
 def _scan_claude_file(path: Path) -> Optional[Dict[str, Any]]:
     cwd = None
-    first_user = None
+    preview = None
     n_user = 0
     try:
         with path.open("r", errors="replace") as fh:
             for i, line in enumerate(fh):
-                if i > MAX_LINES_SCAN and first_user and cwd:
+                if i > MAX_LINES_SCAN and preview and cwd:
                     break
                 line = line.strip()
                 if not line:
@@ -66,20 +101,20 @@ def _scan_claude_file(path: Path) -> Optional[Dict[str, Any]]:
                     continue
                 if not cwd and d.get("cwd"):
                     cwd = d["cwd"]
-                if d.get("type") == "user":
+                if d.get("type") == "user" and not d.get("isMeta"):
                     n_user += 1
-                    if first_user is None:
-                        msg = d.get("message", {}) or {}
-                        txt = _extract_text(msg.get("content"))
-                        if txt and not txt.startswith("<"):
-                            first_user = txt
+                    if preview is None:
+                        txt = _extract_text((d.get("message") or {}).get("content"))
+                        if not _is_noise(txt):
+                            preview = txt
     except OSError:
         return None
     return {
         "agent": "claude",
         "session_id": path.stem,
         "cwd": cwd or "",
-        "title": _truncate(first_user) or f"claude session {path.stem[:8]}",
+        "name": _name_from_cwd(cwd or "", f"claude·{path.stem[:6]}"),
+        "title": _truncate(preview),
         "turns": n_user,
     }
 
@@ -123,12 +158,12 @@ def _scan_codex_file(path: Path) -> Optional[Dict[str, Any]]:
         return None
     sid = m.group(1)
     cwd = None
-    first_user = None
+    preview = None
     n_user = 0
     try:
         with path.open("r", errors="replace") as fh:
             for i, line in enumerate(fh):
-                if i > MAX_LINES_SCAN and first_user and cwd:
+                if i > MAX_LINES_SCAN and preview and cwd:
                     break
                 line = line.strip()
                 if not line:
@@ -138,23 +173,26 @@ def _scan_codex_file(path: Path) -> Optional[Dict[str, Any]]:
                 except json.JSONDecodeError:
                     continue
                 payload = d.get("payload", d)
-                if not cwd and isinstance(payload, dict) and payload.get("cwd"):
+                if not isinstance(payload, dict):
+                    continue
+                if not cwd and payload.get("cwd"):
                     cwd = payload["cwd"]
                 # user turns appear as response_item/event_msg with role user
-                role = payload.get("role") if isinstance(payload, dict) else None
-                if role == "user" or (isinstance(payload, dict) and payload.get("type") == "user_message"):
+                role = payload.get("role")
+                if role == "user" or payload.get("type") == "user_message":
                     n_user += 1
-                    if first_user is None:
+                    if preview is None:
                         txt = _extract_text(payload.get("content") or payload.get("message"))
-                        if txt and not txt.startswith("<"):
-                            first_user = txt
+                        if not _is_noise(txt):
+                            preview = txt
     except OSError:
         return None
     return {
         "agent": "codex",
         "session_id": sid,
         "cwd": cwd or "",
-        "title": _truncate(first_user) or f"codex session {sid[:8]}",
+        "name": _name_from_cwd(cwd or "", f"codex·{sid[:6]}"),
+        "title": _truncate(preview),
         "turns": n_user,
     }
 
