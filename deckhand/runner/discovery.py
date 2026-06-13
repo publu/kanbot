@@ -144,8 +144,8 @@ def _scan_claude_file(path: Path) -> Optional[Dict[str, Any]]:
         "cwd": cwd or "",
         "name": _name_from_cwd(cwd or "", f"claude·{path.stem[:6]}"),
         "title": _truncate(preview),
-        "last_user": _truncate(last_user, 200),
-        "last_text": _truncate(last_text, 240),
+        "last_user": _truncate(last_user, 400),
+        "last_text": _truncate(last_text, 700),
         "turns": n_user,
     }
 
@@ -243,8 +243,8 @@ def _scan_codex_file(path: Path) -> Optional[Dict[str, Any]]:
         "cwd": cwd or "",
         "name": _name_from_cwd(cwd or "", f"codex·{sid[:6]}"),
         "title": _truncate(preview),
-        "last_user": _truncate(last_user, 200),
-        "last_text": _truncate(last_text, 240),
+        "last_user": _truncate(last_user, 400),
+        "last_text": _truncate(last_text, 700),
         "turns": n_user,
     }
 

@@ -781,24 +781,38 @@ function promptRevive(s) {
   const m = $('#modal'); m.innerHTML = '';
   m.appendChild(el('h3', null, (s.active ? 'Continue ' : 'Revive ') + (s.name || s.agent)));
   const sub = el('div', 'ssub', `${s.agent} · ${s.cwd || '?'} · ${s.session_id.slice(0,8)} · ${s.turns} turns · ${timeAgo(s.mtime)}`);
-  sub.style.cssText = 'font-family:var(--mono);font-size:10px;color:var(--text-faint);margin-bottom:4px;';
+  sub.style.cssText = 'font-family:var(--mono);font-size:11px;color:var(--text-faint);margin-bottom:2px;';
   m.appendChild(sub);
 
-  // "where it left off" preview
-  const previewBox = el('div', 'revive-preview');
-  const addLine = (tag, text) => {
-    if (!text) return;
-    const line = el('div', 'rp-line');
-    line.appendChild(el('span', 'rp-tag', tag));
-    line.appendChild(el('div', 'rp-text', text));
-    previewBox.appendChild(line);
+  // terminal "where it left off" preview
+  const term = el('div', 'terminal-card');
+  const bar = el('div', 'term-bar');
+  const dots = el('div', 'term-dots');
+  dots.appendChild(el('i')); dots.appendChild(el('i')); dots.appendChild(el('i'));
+  bar.appendChild(dots);
+  bar.appendChild(el('span', 'term-title', `${s.agent} — ${s.name} · ${s.turns} turns`));
+  term.appendChild(bar);
+  const body = el('div', 'term-body');
+  const userLine = (txt) => {
+    const ln = el('span', 'term-line term-user');
+    ln.appendChild(el('span', 'term-prompt', '❯'));
+    ln.appendChild(document.createTextNode(txt));
+    body.appendChild(ln);
   };
-  addLine('last asked', s.last_user);
-  addLine('last reply', s.last_text);
-  if (!s.last_user && !s.last_text) addLine('started', s.title);
-  if (previewBox.children.length) m.appendChild(previewBox);
+  const commentLine = (txt) => body.appendChild(el('span', 'term-line term-comment', txt));
+  const outLine = (txt) => body.appendChild(el('span', 'term-line term-out', txt));
+  if (s.last_user) { commentLine('# last asked'); userLine(s.last_user); }
+  if (s.last_text) { commentLine('# last reply'); outLine(s.last_text); }
+  if (!s.last_user && !s.last_text) {
+    commentLine('# session started with');
+    if (s.title) userLine(s.title); else outLine('(no readable transcript)');
+  }
+  term.appendChild(body);
+  m.appendChild(term);
+
   const prompt = textareaField('What should the agent do next?',
     'e.g. Now write tests for the change you just made.');
+  prompt.input.style.minHeight = '110px';
   m.appendChild(prompt.wrap);
   const actions = el('div', 'modal-actions');
   const back = el('button', 'btn ghost', 'Back');
@@ -821,6 +835,7 @@ function promptRevive(s) {
   actions.appendChild(back); actions.appendChild(addBtn); actions.appendChild(runBtn);
   m.appendChild(actions);
   openModal();
+  m.classList.add('wide');
   setTimeout(() => prompt.input.focus(), 50);
 }
 
@@ -851,7 +866,7 @@ function agentSelectField(value) {
 }
 
 // ---- modal helpers ------------------------------------------------------
-function openModal() { $('#modalScrim').classList.add('open'); }
+function openModal() { $('#modal').classList.remove('wide'); $('#modalScrim').classList.add('open'); }
 function closeModal() { $('#modalScrim').classList.remove('open'); S.sessionsModalOpen = false; }
 
 // ---- global UI ----------------------------------------------------------
