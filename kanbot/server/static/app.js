@@ -46,7 +46,7 @@ const S = {
   boards: [],
   boardId: null,
   board: null, columns: [], cards: [], tags: [],
-  agents: [], agentByName: {}, insightProviders: [],
+  agents: [], agentByName: {}, insightProviders: [], profiles: [],
   runners: [],
   openCardId: null,
   terminals: {},        // session_id -> terminal DOM node (while drawer open)
@@ -134,6 +134,7 @@ function enterDemo(showModal = true) {
   S.agents = DEMO.agents;
   S.agentByName = Object.fromEntries(DEMO.agents.map(a => [a.name, a]));
   S.insightProviders = [];
+  S.profiles = [{ name: 'lean', label: 'Lean — write the least code', description: 'Reuse-first, YAGNI, minimal-diff working style.' }];
   S.runners = DEMO.runners; renderRunners();
   S.boards = [DEMO.board]; S.boardId = DEMO.board.id; S.board = DEMO.board;
   S.columns = DEMO.columns; S.cards = DEMO.cards; S.tags = [];
@@ -266,7 +267,7 @@ async function boot() {
 
 async function liveSetup() {
   const ag = await api.get('/api/agents');
-  S.agents = ag.agents; S.insightProviders = ag.insights;
+  S.agents = ag.agents; S.insightProviders = ag.insights; S.profiles = ag.profiles || [];
   S.agentByName = Object.fromEntries(ag.agents.map(a => [a.name, a]));
   await refreshRunners();
   await loadBoards();
@@ -634,7 +635,8 @@ function openComposer(columnId) {
   m.appendChild(el('h3', null, 'New task'));
 
   const title = inputField('Title', 'e.g. Add unit tests for parser');
-  const prompt = textareaField('Prompt for the agent', 'Describe the work. This is sent verbatim to the chosen CLI agent.');
+  const prompt = textareaField('Prompt for the agent', 'Describe the work. Paste or drop an image to attach it.');
+  enableImagePaste(prompt.input);
   const agentSel = agentSelectField(S.board?.default_agent || 'auto');
   const cwd = inputField('Working directory', S.board?.repo_path || '/path/to/repo');
   cwd.input.value = S.board?.repo_path || '';
@@ -729,6 +731,7 @@ function renderDrawerBody(card) {
   const prompt = textareaField('Prompt', 'Instructions sent to the agent');
   prompt.input.value = card.prompt || '';
   prompt.input.onblur = () => patchCard(card.id, { prompt: prompt.input.value });
+  enableImagePaste(prompt.input, () => patchCard(card.id, { prompt: prompt.input.value }));
   body.appendChild(prompt.wrap);
 
   // agent + cwd
@@ -1291,6 +1294,36 @@ function textareaField(label, ph) {
   wrap.appendChild(input);
   return { wrap, input };
 }
+
+// Paste or drag an image into a prompt textarea -> upload -> inject a file
+// reference the agent can read, and show a thumbnail.
+function enableImagePaste(input, onChange) {
+  const strip = el('div', 'img-strip');
+  input.after(strip);
+  const handle = async (file) => {
+    if (!file || !(file.type || '').startsWith('image/')) return;
+    if (S.demo) { toast('Image drop works on your local KanBot — connect first'); return; }
+    const dataUrl = await new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(file); });
+    try {
+      const out = await api.post('/api/uploads', { name: file.name || 'pasted.png', data: dataUrl });
+      if (!out || !out.path) { toast('upload failed'); return; }
+      input.value += (input.value && !input.value.endsWith('\n') ? '\n' : '') + 'Attached image (read this file): ' + out.path;
+      if (onChange) onChange();
+      const thumb = el('img', 'img-thumb'); thumb.src = (S.apiBase || '') + out.url; thumb.title = out.path;
+      strip.appendChild(thumb);
+    } catch (e) { toast('upload failed: ' + e.message); }
+  };
+  input.addEventListener('paste', (e) => {
+    for (const it of (e.clipboardData && e.clipboardData.items) || [])
+      if (it.type && it.type.startsWith('image/')) { const f = it.getAsFile(); if (f) { e.preventDefault(); handle(f); } }
+  });
+  input.addEventListener('dragover', (e) => { if (e.dataTransfer && [...(e.dataTransfer.items || [])].some(i => i.type && i.type.startsWith('image/'))) { e.preventDefault(); input.classList.add('drag-img'); } });
+  input.addEventListener('dragleave', () => input.classList.remove('drag-img'));
+  input.addEventListener('drop', (e) => {
+    const files = [...((e.dataTransfer && e.dataTransfer.files) || [])].filter(f => (f.type || '').startsWith('image/'));
+    if (files.length) { e.preventDefault(); input.classList.remove('drag-img'); files.forEach(handle); }
+  });
+}
 function availableAgentNames() {
   // union of capabilities advertised by online runners
   const set = new Set();
@@ -1315,6 +1348,20 @@ function agentSelectField(value) {
     const o = el('option', null, a.label); o.value = a.name; select.appendChild(o);
   }
   select.value = value || 'auto';
+  wrap.appendChild(select);
+  return { wrap, select };
+}
+
+function profileSelectField(value) {
+  const wrap = el('div', 'field');
+  wrap.appendChild(el('div', 'label', 'Prompt mode'));
+  const select = el('select', 'select');
+  const none = el('option', null, 'none'); none.value = ''; select.appendChild(none);
+  for (const p of (S.profiles || [])) {
+    const o = el('option', null, p.label); o.value = p.name; o.title = p.description || '';
+    select.appendChild(o);
+  }
+  select.value = value || '';
   wrap.appendChild(select);
   return { wrap, select };
 }

@@ -19,6 +19,7 @@ class CardCreate(BaseModel):
     column_id: Optional[str] = None
     loop_max: int = 1
     loop_until: str = ""
+    profile: str = ""
 
 
 class CardPatch(BaseModel):
@@ -30,6 +31,7 @@ class CardPatch(BaseModel):
     auto_advance: Optional[bool] = None
     loop_max: Optional[int] = None
     loop_until: Optional[str] = None
+    profile: Optional[str] = None
 
 
 class CardMove(BaseModel):
@@ -46,6 +48,11 @@ class TagCreate(BaseModel):
 
 class TagAttach(BaseModel):
     tag_id: str
+
+
+class UploadRequest(BaseModel):
+    name: str = "image.png"
+    data: str  # a data URL, e.g. "data:image/png;base64,...."
 
 
 class ReviveRequest(BaseModel):

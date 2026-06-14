@@ -1,8 +1,10 @@
 """Deckhand FastAPI application: REST API, realtime WebSockets, and static UI."""
 from __future__ import annotations
 
+import base64
 import json
 import os
+import time as _time
 from pathlib import Path
 from typing import Optional
 
@@ -13,22 +15,25 @@ from fastapi.staticfiles import StaticFiles
 
 from .. import __version__
 from ..agents import catalog
+from ..profiles import list_profiles
 from .db import DB, now
 from .hub import Hub, RunnerConn
 from .insights import PROVIDER_META, compute
 from .schemas import (BoardCreate, CardCreate, CardMove, CardPatch, ReviveRequest,
-                      TagAttach, TagCreate)
+                      TagAttach, TagCreate, UploadRequest)
 
 STATIC_DIR = Path(__file__).parent / "static"
 SERVER_TOKEN = os.environ.get("KANBOT_TOKEN") or os.environ.get("DECKHAND_TOKEN", "")
 
 
 def create_app(db_path: Optional[str] = None) -> FastAPI:
-    from ..config import db_path as default_db_path
+    from ..config import config_dir, db_path as default_db_path
 
     db = DB(Path(db_path) if db_path else default_db_path())
+    uploads_dir = config_dir() / "uploads"
+    uploads_dir.mkdir(parents=True, exist_ok=True)
     hub = Hub(db)
-    app = FastAPI(title="Deckhand", version=__version__)
+    app = FastAPI(title="KanBot", version=__version__)
     app.state.db = db
     app.state.hub = hub
 
@@ -83,7 +88,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
 
     @app.get("/api/agents")
     async def agents():
-        return {"agents": catalog(), "insights": PROVIDER_META}
+        return {"agents": catalog(), "insights": PROVIDER_META, "profiles": list_profiles()}
 
     @app.get("/api/runners")
     async def runners():
@@ -150,7 +155,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         cwd = body.cwd or board.get("repo_path", "")
         card = db.create_card(board_id, column_id, body.title, body.prompt,
                               body.agent, cwd, loop_max=body.loop_max,
-                              loop_until=body.loop_until)
+                              loop_until=body.loop_until, profile=body.profile)
         await hub.broadcast({"type": "card.created", "card": card})
         await enqueue_if_needed(card, "idle")
         return card
@@ -318,6 +323,30 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         finally:
             if conn:
                 await hub.deregister_runner(conn.runner_id)
+
+    # -- image uploads (paste/drag on the board) ---------------------------
+    @app.post("/api/uploads")
+    async def upload(body: UploadRequest):
+        """Save a pasted/dropped image and return a local path the agent can read."""
+        data = body.data or ""
+        mime, b64 = "image/png", data
+        if data.startswith("data:"):
+            head, _, b64 = data.partition(",")
+            mime = head[5:].split(";", 1)[0] or mime
+        try:
+            raw = base64.b64decode(b64)
+        except Exception:
+            raise HTTPException(400, "invalid image data")
+        if len(raw) > 25 * 1024 * 1024:
+            raise HTTPException(413, "image too large (max 25MB)")
+        ext = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif",
+               "image/webp": "webp"}.get(mime, "png")
+        fname = f"{int(_time.time())}-{os.urandom(3).hex()}.{ext}"
+        path = uploads_dir / fname
+        path.write_bytes(raw)
+        return {"path": str(path), "url": f"/uploads/{fname}", "name": body.name}
+
+    app.mount("/uploads", StaticFiles(directory=str(uploads_dir)), name="uploads")
 
     # -- static UI ---------------------------------------------------------
     if STATIC_DIR.exists():

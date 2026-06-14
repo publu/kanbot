@@ -259,6 +259,12 @@ input, textarea, select { font-family: var(--ui); }
 
 /* tag editor */
 .tag-list { display: flex; flex-wrap: wrap; gap: 6px; }
+/* image paste/drop */
+.textarea.drag-img { border-color: var(--brand); box-shadow: 0 0 0 1px var(--brand) inset; }
+.img-strip { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.img-thumb { width: 72px; height: 72px; object-fit: cover; border-radius: var(--radius-sm);
+  border: 1px solid var(--line); background: var(--bg); }
+
 .tag-input {
   width: 100%; margin: 8px 0; background: var(--bg); border: 1px solid var(--line);
   color: var(--text); border-radius: var(--radius-sm); padding: 8px 11px; font-size: 12.5px;
