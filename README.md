@@ -2,6 +2,8 @@
 
 **A visual control room for your coding-agent TUIs — and a Kanban board where every card is a task run by them.**
 
+**Live demo:** https://getkanbot.vercel.app · **Install:** `pipx install kanbot && kanbot up`
+
 You run a lot of terminal coding agents (Claude Code, Codex, …). KanBot gives you
 one screen to *see what every session is doing*, pick any of them back up, and
 drop new tasks that agents run for you — with live logs streamed straight to the

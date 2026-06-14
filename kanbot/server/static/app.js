@@ -792,20 +792,40 @@ function renderTagsField(card) {
   }
   wrap.appendChild(list);
 
-  // available tags to add
+  // one-step add: type a name, press Enter -> create (if new) + attach
+  const input = el('input', 'tag-input');
+  input.placeholder = '＋ type a tag, press Enter';
+  input.onkeydown = async (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    const name = input.value.trim();
+    if (!name) return;
+    input.value = '';
+    try {
+      let tag = S.tags.find(t => t.name.toLowerCase() === name.toLowerCase());
+      if (!tag) {
+        const h = [...name].reduce((a, c) => a * 31 + c.charCodeAt(0), 7);
+        const color = PALETTE[Math.abs(h) % PALETTE.length];
+        tag = await api.post(`/api/boards/${S.boardId}/tags`, { name, color });
+        if (tag && tag.id) S.tags.push(tag);
+      }
+      if (tag && tag.id) await api.post(`/api/cards/${card.id}/tags`, { tag_id: tag.id });
+    } catch (err) { toast('add tag failed: ' + err.message); }
+  };
+  wrap.appendChild(input);
+
+  // quick-add existing board tags + full editor (color/insight)
   const avail = S.tags.filter(t => !cardTagIds.has(t.id));
   const addRow = el('div', 'tag-add');
-  if (avail.length) {
-    for (const t of avail) {
-      const chip = el('span', 'tag-pickable');
-      chip.style.color = t.color;
-      if (t.insight) chip.appendChild(el('span', null, '◆'));
-      chip.appendChild(el('span', null, '+ ' + t.name));
-      chip.onclick = async () => { await api.post(`/api/cards/${card.id}/tags`, { tag_id: t.id }); };
-      addRow.appendChild(chip);
-    }
+  for (const t of avail) {
+    const chip = el('span', 'tag-pickable');
+    chip.style.color = t.color;
+    if (t.insight) chip.appendChild(el('span', null, '◆'));
+    chip.appendChild(el('span', null, '+ ' + t.name));
+    chip.onclick = async () => { await api.post(`/api/cards/${card.id}/tags`, { tag_id: t.id }); };
+    addRow.appendChild(chip);
   }
-  const newTag = el('span', 'tag-pickable', '+ new tag');
+  const newTag = el('span', 'tag-pickable', '⚙ tag w/ color & insight');
   newTag.style.color = 'var(--text-faint)';
   newTag.onclick = () => openTagModal(card.id);
   addRow.appendChild(newTag);
