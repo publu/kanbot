@@ -78,14 +78,7 @@ const DEMO = {
     { id: 'c-rev', kind: 'review', name: 'Review', position: 2 },
     { id: 'c-done', kind: 'done', name: 'Done', position: 3 },
   ],
-  cards: [
-    { id: 't1', board_id: 'demo', column_id: 'c-back', title: 'Add rate limiting to the API',
-      prompt: 'Add a token-bucket rate limiter to all /api routes.', agent: 'claude',
-      cwd: '~/code/api-gateway', status: 'idle', position: 0, tags: [], resume_of: '', pin_runner: '' },
-    { id: 't2', board_id: 'demo', column_id: 'c-rev', title: 'Refactor auth middleware',
-      prompt: 'Split auth.py into smaller modules.', agent: 'codex', cwd: '~/code/api-gateway',
-      status: 'review', position: 0, tags: [], resume_of: '', pin_runner: '' },
-  ],
+  cards: [],  // demo shows only discovered sessions — KanBot is about tracking your TUIs
   sessions: [
     { agent: 'claude', session_id: 'demo-1', runner_id: 'r', runner_name: 'mac-studio', name: 'api-gateway',
       recap: 'Wired the rate limiter into the middleware stack and added 12 tests — all green. Want me to add per-key overrides next?',
