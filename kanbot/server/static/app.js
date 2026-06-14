@@ -1248,12 +1248,29 @@ function textareaField(label, ph) {
   wrap.appendChild(input);
   return { wrap, input };
 }
+function availableAgentNames() {
+  // union of capabilities advertised by online runners
+  const set = new Set();
+  for (const r of S.runners || []) {
+    if (r.status === 'offline') continue;
+    for (const c of (r.capabilities || [])) set.add(c);
+  }
+  return set;
+}
+
 function agentSelectField(value) {
   const wrap = el('div', 'field');
   wrap.appendChild(el('div', 'label', 'Agent'));
   const select = el('select', 'select');
   const auto = el('option', null, 'auto (any available)'); auto.value = 'auto'; select.appendChild(auto);
-  for (const a of S.agents) { const o = el('option', null, a.label); o.value = a.name; select.appendChild(o); }
+  const avail = availableAgentNames();
+  const showAll = avail.size === 0;  // no runner connected yet -> don't hide everything
+  for (const a of S.agents) {
+    // only list agents an online runner actually has (always keep the card's
+    // current value so an existing selection still shows correctly)
+    if (!showAll && !avail.has(a.name) && a.name !== value) continue;
+    const o = el('option', null, a.label); o.value = a.name; select.appendChild(o);
+  }
   select.value = value || 'auto';
   wrap.appendChild(select);
   return { wrap, select };
