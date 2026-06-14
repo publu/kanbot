@@ -12,20 +12,20 @@ const el = (tag, cls, txt) => {
 
 // ---- API ----------------------------------------------------------------
 const api = {
-  async get(path) { if (S.demo) return demoGet(path); const r = await fetch(path); if (!r.ok) throw new Error(await r.text()); return r.json(); },
+  async get(path) { if (S.demo) return demoGet(path); const r = await fetch(S.apiBase + path); if (!r.ok) throw new Error(await r.text()); return r.json(); },
   async post(path, body) {
     if (S.demo) return demoMutate();
-    const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    const r = await fetch(S.apiBase + path, { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: body ? JSON.stringify(body) : null });
     if (!r.ok) throw new Error(await r.text()); return r.json();
   },
   async patch(path, body) {
     if (S.demo) return demoMutate();
-    const r = await fetch(path, { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    const r = await fetch(S.apiBase + path, { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body) });
     if (!r.ok) throw new Error(await r.text()); return r.json();
   },
-  async del(path) { if (S.demo) return demoMutate(); const r = await fetch(path, { method: 'DELETE' }); if (!r.ok) throw new Error(await r.text()); return r.json(); },
+  async del(path) { if (S.demo) return demoMutate(); const r = await fetch(S.apiBase + path, { method: 'DELETE' }); if (!r.ok) throw new Error(await r.text()); return r.json(); },
 };
 
 function demoMutate() {
@@ -55,6 +55,7 @@ const S = {
   sessionsModalOpen: false,
   dragSession: null,    // session object currently being dragged
   demo: false,          // true when running without a backend (Vercel)
+  apiBase: '',          // '' = same origin; or an absolute local server URL
 };
 
 const COLOR_BY_KIND = { info: 'info', backlog: 'backlog', queued: 'queued', running: 'running', review: 'review', done: 'done', custom: 'custom' };
@@ -144,15 +145,77 @@ function enterDemo() {
   updateLiveBadge();
   renderColumns();
   wireGlobalUI();
+  showOnboarding();
+}
+
+function showOnboarding() {
+  const m = $('#modal'); m.innerHTML = '';
+  m.appendChild(el('h3', null, 'Welcome to KanBot 👋'));
+  const intro = el('div', null,
+    "This is a live demo with sample data — no local KanBot detected on this machine.");
+  intro.style.cssText = 'font-size:13.5px;line-height:1.5;color:var(--text-dim);';
+  m.appendChild(intro);
+
+  const what = el('div', null,
+    "KanBot runs on your machine and shows what your coding-agent TUIs (Claude Code, Codex, …) are doing in real time — and lets you resume any of them from one board.");
+  what.style.cssText = 'font-size:13px;line-height:1.55;color:var(--text-dim);';
+  m.appendChild(what);
+
+  m.appendChild(el('div', 'label', 'See your real sessions here in 3 steps'));
+  const steps = el('div', 'onb-steps');
+  [['1', 'pip install kanbot'],
+   ['2', 'kanbot up   — starts a local server + runner'],
+   ['3', "hit “Connect to local” below (or just reload)"]].forEach(([n, t]) => {
+    const row = el('div', 'onb-step');
+    row.appendChild(el('span', 'onb-num', n));
+    row.appendChild(el('code', null, t));
+    steps.appendChild(row);
+  });
+  m.appendChild(steps);
+
+  const note = el('div', 'label',
+    'This page auto-connects to a local KanBot at http://127.0.0.1:8787 — or open that URL directly.');
+  m.appendChild(note);
+
+  const actions = el('div', 'modal-actions');
+  const explore = el('button', 'btn ghost', 'Explore the demo');
+  explore.onclick = closeModal;
+  const connect = el('button', 'btn primary', 'Connect to local');
+  connect.onclick = async () => {
+    try {
+      const r = await fetch(LOCAL_KANBOT + '/api/health', { cache: 'no-store' });
+      if (r.ok) { location.reload(); return; }
+    } catch (e) {}
+    toast('No local KanBot found — run `kanbot up` first, then retry');
+  };
+  actions.appendChild(explore); actions.appendChild(connect);
+  m.appendChild(actions);
+  openModal();
 }
 
 // ---- boot ---------------------------------------------------------------
+const LOCAL_KANBOT = 'http://127.0.0.1:8787';
+
 async function boot() {
+  // Try this page's own origin first; if there's no backend here (e.g. the
+  // hosted page), try a local KanBot running on this machine.
+  const origin = location.origin.replace(/\/$/, '');
+  const candidates = [origin];
+  if (!/(127\.0\.0\.1|localhost):8787/.test(origin)) candidates.push(LOCAL_KANBOT);
+
   let live = false;
-  try {
-    const r = await fetch('/api/health');
-    if (r.ok) { const h = await r.json(); $('#version').textContent = 'v' + h.version; live = true; }
-  } catch (e) { /* no backend */ }
+  for (const base of candidates) {
+    try {
+      const r = await fetch(base + '/api/health', { cache: 'no-store' });
+      if (r.ok) {
+        const h = await r.json();
+        S.apiBase = (base === origin) ? '' : base;
+        $('#version').textContent = (S.apiBase ? 'local · v' : 'v') + h.version;
+        live = true;
+        break;
+      }
+    } catch (e) { /* try next */ }
+  }
   if (!live) return enterDemo();
 
   const ag = await api.get('/api/agents');
@@ -205,8 +268,10 @@ async function refreshRunners() {
 
 // ---- websocket ----------------------------------------------------------
 function connectWS() {
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const ws = new WebSocket(`${proto}://${location.host}/ws/web`);
+  const base = S.apiBase || location.origin;
+  const url = base.replace(/^http/, 'ws') + '/ws/web';
+  let ws;
+  try { ws = new WebSocket(url); } catch (e) { return; }
   ws.onmessage = (ev) => { try { handleEvent(JSON.parse(ev.data)); } catch (e) {} };
   ws.onclose = () => setTimeout(connectWS, 1500);
 }

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -30,6 +31,14 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
     app = FastAPI(title="Deckhand", version=__version__)
     app.state.db = db
     app.state.hub = hub
+
+    # Allow a hosted UI (e.g. the Vercel page) to talk to this local server.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     @app.middleware("http")
     async def no_cache(request, call_next):
