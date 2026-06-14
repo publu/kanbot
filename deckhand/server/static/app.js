@@ -127,7 +127,7 @@ const DEMO = {
   ],
 };
 
-function enterDemo() {
+function enterDemo(showModal = true) {
   S.demo = true;
   document.body.classList.add('demo');
   $('#version').textContent = 'demo';
@@ -145,7 +145,41 @@ function enterDemo() {
   updateLiveBadge();
   renderColumns();
   wireGlobalUI();
-  showOnboarding();
+  if (showModal) showOnboarding();
+}
+
+function showConnectModal() {
+  const m = $('#modal'); m.innerHTML = '';
+  m.appendChild(el('h3', null, 'Connect to your local KanBot'));
+
+  const warn = el('div', 'lna-warn');
+  warn.innerHTML =
+    '⚠ This website needs <b>Local Network access</b> so it can read the agent ' +
+    'sessions on your computer. It connects to KanBot running locally at ' +
+    '<code>http://127.0.0.1:8787</code> — your browser will ask permission next. ' +
+    '<b>Nothing leaves your machine</b>; the page talks only to your own computer.';
+  m.appendChild(warn);
+
+  const note = el('div', null,
+    "If you haven't installed it yet: run  pip install kanbot  then  kanbot up  — and you can always explore the demo instead.");
+  note.style.cssText = 'font-size:12.5px;line-height:1.5;color:var(--text-dim);';
+  m.appendChild(note);
+
+  const actions = el('div', 'modal-actions');
+  const demo = el('button', 'btn ghost', 'Explore the demo');
+  demo.onclick = closeModal;
+  const connect = el('button', 'btn primary', 'Allow & connect');
+  connect.onclick = async () => {
+    connect.textContent = 'Connecting…'; connect.disabled = true;
+    const ok = await attemptLocal();
+    if (!ok) {
+      connect.textContent = 'Allow & connect'; connect.disabled = false;
+      toast('No local KanBot reachable — run `kanbot up`, then retry');
+    }
+  };
+  actions.appendChild(demo); actions.appendChild(connect);
+  m.appendChild(actions);
+  openModal();
 }
 
 function showOnboarding() {
@@ -197,36 +231,57 @@ function showOnboarding() {
 const LOCAL_KANBOT = 'http://127.0.0.1:8787';
 
 async function boot() {
-  // Try this page's own origin first; if there's no backend here (e.g. the
-  // hosted page), try a local KanBot running on this machine.
   const origin = location.origin.replace(/\/$/, '');
-  const candidates = [origin];
-  if (!/(127\.0\.0\.1|localhost):8787/.test(origin)) candidates.push(LOCAL_KANBOT);
+  const onLocalOrigin = /(127\.0\.0\.1|localhost):8787/.test(origin);
 
-  let live = false;
-  for (const base of candidates) {
-    try {
-      const r = await fetch(base + '/api/health', { cache: 'no-store' });
-      if (r.ok) {
-        const h = await r.json();
-        S.apiBase = (base === origin) ? '' : base;
-        $('#version').textContent = (S.apiBase ? 'local · v' : 'v') + h.version;
-        live = true;
-        break;
-      }
-    } catch (e) { /* try next */ }
+  // 1) Backend on this very origin (you opened the local board directly).
+  try {
+    const r = await fetch(origin + '/api/health', { cache: 'no-store' });
+    if (r.ok) {
+      const h = await r.json();
+      S.apiBase = ''; $('#version').textContent = 'v' + h.version;
+      return liveSetup();
+    }
+  } catch (e) { /* no same-origin backend */ }
+
+  if (onLocalOrigin) { return enterDemo(); }  // local origin but server down
+
+  // 2) Hosted page. Show the demo behind, but DON'T touch the local network
+  //    until the user agrees — that fetch is what triggers the browser's
+  //    "Local Network Access" prompt, so we warn first.
+  enterDemo(false);
+  if (localStorage.getItem('kanbot_connect_local') === '1') {
+    if (await attemptLocal()) return;          // previously allowed: connect quietly
+    localStorage.removeItem('kanbot_connect_local');
   }
-  if (!live) return enterDemo();
+  showConnectModal();
+}
 
+async function liveSetup() {
   const ag = await api.get('/api/agents');
   S.agents = ag.agents; S.insightProviders = ag.insights;
   S.agentByName = Object.fromEntries(ag.agents.map(a => [a.name, a]));
-
   await refreshRunners();
   await loadBoards();
   await loadAgentSessions();
   connectWS();
   wireGlobalUI();
+}
+
+async function attemptLocal() {
+  try {
+    const r = await fetch(LOCAL_KANBOT + '/api/health', { cache: 'no-store' });
+    if (!r.ok) return false;
+    const h = await r.json();
+    localStorage.setItem('kanbot_connect_local', '1');
+    S.demo = false; S.apiBase = LOCAL_KANBOT;
+    document.body.classList.remove('demo');
+    const pill = $('.demo-pill'); if (pill) pill.remove();
+    $('#version').textContent = 'local · v' + h.version;
+    closeModal();
+    await liveSetup();
+    return true;
+  } catch (e) { return false; }
 }
 
 async function loadAgentSessions() {
