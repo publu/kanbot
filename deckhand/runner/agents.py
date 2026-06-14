@@ -112,6 +112,7 @@ async def run_agent(agent: ResolvedAgent, prompt: str, cwd: str, on_log: LogCb,
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv, cwd=workdir, env=env,
+            stdin=asyncio.subprocess.DEVNULL,  # headless: never block on interactive stdin
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
     except FileNotFoundError:

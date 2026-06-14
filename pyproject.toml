@@ -28,6 +28,6 @@ Homepage = "https://github.com/yourname/deckhand"
 
 [tool.hatch.build.targets.wheel]
 packages = ["deckhand"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"deckhand/server/static" = "deckhand/server/static"
+# Static UI ships automatically as it lives inside the deckhand package; no
+# force-include needed (and adding one double-adds the files and breaks the build).
+artifacts = ["deckhand/server/static/**"]
