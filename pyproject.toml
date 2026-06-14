@@ -25,7 +25,7 @@ kanbot = "kanbot.cli:main"
 [project.urls]
 Homepage = "https://github.com/publu/kanbot"
 Repository = "https://github.com/publu/kanbot"
-Demo = "https://kanbot-ps-projects-0c7bba7e.vercel.app"
+Demo = "https://getkanbot.vercel.app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["kanbot"]
