@@ -3,7 +3,7 @@
   "framework": null,
   "buildCommand": null,
   "installCommand": null,
-  "outputDirectory": "deckhand/server/static",
+  "outputDirectory": "kanbot/server/static",
   "cleanUrls": true,
   "headers": [
     {
