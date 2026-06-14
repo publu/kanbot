@@ -4,12 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "kanbot"
-version = "0.1.0"
+version = "0.1.1"
 description = "A Kanban board where every card is a task run by your local CLI coding agents (Claude, Codex, Gemini, GLM/ZAI, or any CLI you define)."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
-authors = [{ name = "Deckhand" }]
+authors = [{ name = "KanBot" }]
 keywords = ["kanban", "agents", "claude", "codex", "automation", "cli"]
 dependencies = [
     "fastapi>=0.110",

@@ -102,7 +102,17 @@ async def run_agent(agent: ResolvedAgent, prompt: str, cwd: str, on_log: LogCb,
     argv = build_argv(agent, prompt, resume_of)
     if resume_of:
         await on_log("system", f"resuming {agent.name} session {resume_of}")
-    workdir = cwd if cwd and os.path.isdir(cwd) else os.getcwd()
+    if cwd:
+        if not os.path.isdir(cwd):
+            try:
+                os.makedirs(cwd, exist_ok=True)
+                await on_log("system", f"created working directory {cwd}")
+            except OSError as e:
+                await on_log("stderr", f"could not create cwd {cwd}: {e}")
+                return 1
+        workdir = cwd
+    else:
+        workdir = os.getcwd()
     env = os.environ.copy()
     env.update(agent.env)
 
