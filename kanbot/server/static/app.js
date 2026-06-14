@@ -540,6 +540,7 @@ function renderCard(c) {
   meta.appendChild(agentBadge(c.agent));
   if (c.resume_of) meta.appendChild(el('span', 'resume-badge', '⟳ resumed'));
   if (c.loop_max > 1) meta.appendChild(el('span', 'resume-badge', `⟳ loop ×${c.loop_max}`));
+  if (c.profile) meta.appendChild(el('span', 'resume-badge', `◇ ${c.profile}`));
   card.appendChild(meta);
 
   if (c.tags && c.tags.length) {
@@ -628,6 +629,32 @@ async function onDrop(e, col, body) {
   } catch (err) { toast('move failed: ' + err.message); }
 }
 
+// collapsible loop section — hidden by default (most tasks just run once)
+function loopSection(initialMax, initialUntil, onChange) {
+  const max = Math.max(1, parseInt(initialMax) || 1);
+  const until = initialUntil || '';
+  const wrap = el('div', 'field');
+  const toggle = el('button', 'loop-toggle');
+  const lbody = el('div', 'loop-body');
+  lbody.style.display = (max > 1 || until) ? 'block' : 'none';
+  const label = () => { toggle.textContent = (lbody.style.display === 'none' ? '▸' : '▾') + ' ⟳ run in a loop'; };
+  toggle.onclick = () => { lbody.style.display = lbody.style.display === 'none' ? 'block' : 'none'; label(); };
+  label();
+  const row = el('div', 'row');
+  const loopMax = inputField('Loop iterations', '1');
+  loopMax.input.type = 'number'; loopMax.input.min = '1'; loopMax.input.value = String(max);
+  const loopUntil = inputField('Loop until (shell exits 0 = stop)', 'e.g. ! grep -q "[ ]" todo.md');
+  loopUntil.input.value = until;
+  if (onChange) {
+    const fire = () => onChange(parseInt(loopMax.input.value) || 1, loopUntil.input.value);
+    loopMax.input.onblur = fire; loopUntil.input.onblur = fire;
+  }
+  row.appendChild(loopMax.wrap); row.appendChild(loopUntil.wrap);
+  lbody.appendChild(row);
+  wrap.appendChild(toggle); wrap.appendChild(lbody);
+  return { wrap, maxInput: loopMax.input, untilInput: loopUntil.input };
+}
+
 // ---- composer (quick add) ----------------------------------------------
 function openComposer(columnId) {
   const m = $('#modal');
@@ -638,6 +665,7 @@ function openComposer(columnId) {
   const prompt = textareaField('Prompt for the agent', 'Describe the work. Paste or drop an image to attach it.');
   enableImagePaste(prompt.input);
   const agentSel = agentSelectField(S.board?.default_agent || 'auto');
+  const profileSel = profileSelectField('');
   const cwd = inputField('Working directory', S.board?.repo_path || '/path/to/repo');
   cwd.input.value = S.board?.repo_path || '';
 
@@ -645,16 +673,12 @@ function openComposer(columnId) {
   m.appendChild(prompt.wrap);
   const row = el('div', 'row');
   row.appendChild(agentSel.wrap);
+  row.appendChild(profileSel.wrap);
   m.appendChild(row);
   m.appendChild(cwd.wrap);
 
-  // Ralph loop (optional): run fresh-context iterations until a shell predicate passes
-  const loopMax = inputField('Loop iterations (1 = run once)', '1');
-  loopMax.input.type = 'number'; loopMax.input.min = '1'; loopMax.input.value = '1';
-  const loopUntil = inputField('Loop until (shell exits 0 = stop)', 'e.g. ! grep -q "[ ]" todo.md');
-  const loopRow = el('div', 'row');
-  loopRow.appendChild(loopMax.wrap); loopRow.appendChild(loopUntil.wrap);
-  m.appendChild(loopRow);
+  const loop = loopSection(1, '', null);
+  m.appendChild(loop.wrap);
 
   const actions = el('div', 'modal-actions');
   const cancel = el('button', 'btn ghost', 'Cancel');
@@ -669,8 +693,9 @@ function openComposer(columnId) {
       agent: agentSel.select.value,
       cwd: cwd.input.value,
       column_id: columnId,
-      loop_max: parseInt(loopMax.input.value) || 1,
-      loop_until: loopUntil.input.value,
+      loop_max: parseInt(loop.maxInput.value) || 1,
+      loop_until: loop.untilInput.value,
+      profile: profileSel.select.value,
     });
     closeModal();
     if (queue) { try { await api.post(`/api/cards/${card.id}/run`); } catch (e) { toast(e.message); } }
@@ -741,20 +766,15 @@ function renderDrawerBody(card) {
   const cwd = inputField('Working directory', '/path/to/repo');
   cwd.input.value = card.cwd || '';
   cwd.input.onblur = () => patchCard(card.id, { cwd: cwd.input.value });
-  row.appendChild(agentSel.wrap); row.appendChild(cwd.wrap);
+  const profileSel = profileSelectField(card.profile || '');
+  profileSel.select.onchange = () => patchCard(card.id, { profile: profileSel.select.value });
+  row.appendChild(agentSel.wrap); row.appendChild(profileSel.wrap); row.appendChild(cwd.wrap);
   body.appendChild(row);
 
-  // Ralph loop controls
-  const loopRow = el('div', 'row');
-  const loopMax = inputField('Loop iterations', '1');
-  loopMax.input.type = 'number'; loopMax.input.min = '1';
-  loopMax.input.value = String(card.loop_max || 1);
-  loopMax.input.onblur = () => patchCard(card.id, { loop_max: parseInt(loopMax.input.value) || 1 });
-  const loopUntil = inputField('Loop until (shell exits 0 = stop)', 'e.g. ! grep -q "[ ]" todo.md');
-  loopUntil.input.value = card.loop_until || '';
-  loopUntil.input.onblur = () => patchCard(card.id, { loop_until: loopUntil.input.value });
-  loopRow.appendChild(loopMax.wrap); loopRow.appendChild(loopUntil.wrap);
-  body.appendChild(loopRow);
+  // loop (collapsed unless the card already loops)
+  const loop = loopSection(card.loop_max, card.loop_until,
+    (max, until) => patchCard(card.id, { loop_max: max, loop_until: until }));
+  body.appendChild(loop.wrap);
 
   // auto-advance toggle
   const tg = el('label', 'toggle');

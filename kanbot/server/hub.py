@@ -14,6 +14,7 @@ import asyncio
 import json
 from typing import Any, Dict, List, Optional, Set
 
+from ..profiles import compose_prompt
 from .db import DB
 
 
@@ -169,7 +170,9 @@ class Hub:
             "session_id": sid,
             "card_id": card["id"],
             "agent": agent,
-            "prompt": card.get("prompt", ""),
+            # prompt mode (e.g. 'lean') is folded into the prompt here, so it's
+            # re-applied on every fresh-context loop iteration automatically.
+            "prompt": compose_prompt(card.get("profile", ""), card.get("prompt", "")),
             "cwd": card.get("cwd", ""),
             "resume_of": card.get("resume_of", "") or "",
             "loop_max": int(card.get("loop_max", 1) or 1),

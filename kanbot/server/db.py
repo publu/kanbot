@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS cards (
     pin_runner  TEXT DEFAULT '',   -- if set, only this runner may execute the card
     loop_max    INTEGER DEFAULT 1, -- Ralph loop: max fresh-context iterations (1 = run once)
     loop_until  TEXT DEFAULT '',   -- shell predicate; exit 0 in cwd => stop the loop early
+    profile     TEXT DEFAULT '',   -- prompt mode prepended to the prompt (e.g. 'lean')
     created_at  REAL NOT NULL,
     updated_at  REAL NOT NULL,
     FOREIGN KEY (board_id) REFERENCES boards(id) ON DELETE CASCADE
@@ -135,7 +136,29 @@ class DB:
         self.conn.execute("PRAGMA journal_mode = WAL")
         self.conn.executescript(SCHEMA)
         self._migrate()
+        self._reconcile_orphans()
         self.conn.commit()
+
+    def _reconcile_orphans(self) -> None:
+        """On startup no in-flight agent task survives, so any session still
+        marked pending/assigned/running is a zombie. Fail it and return its card
+        to the backlog so the board doesn't show a permanent 'running…'."""
+        ts = now()
+        self.conn.execute(
+            "UPDATE sessions SET status='failed', ended_at=? "
+            "WHERE status IN ('pending','assigned','running')", (ts,))
+        stuck = self.q("SELECT id, board_id FROM cards WHERE status IN ('running','assigned')")
+        backlog: Dict[str, Optional[str]] = {}
+        for card in stuck:
+            bid = card["board_id"]
+            if bid not in backlog:
+                col = self.one("SELECT id FROM columns WHERE board_id=? AND kind='backlog'", (bid,))
+                backlog[bid] = col["id"] if col else None
+            if backlog[bid]:
+                self.conn.execute("UPDATE cards SET status='idle', column_id=?, updated_at=? WHERE id=?",
+                                  (backlog[bid], ts, card["id"]))
+            else:
+                self.conn.execute("UPDATE cards SET status='idle', updated_at=? WHERE id=?", (ts, card["id"]))
 
     def _migrate(self) -> None:
         """Additive migrations for DBs created by an earlier version."""
@@ -143,7 +166,8 @@ class DB:
         for name, ddl in (("resume_of", "TEXT DEFAULT ''"),
                           ("pin_runner", "TEXT DEFAULT ''"),
                           ("loop_max", "INTEGER DEFAULT 1"),
-                          ("loop_until", "TEXT DEFAULT ''")):
+                          ("loop_until", "TEXT DEFAULT ''"),
+                          ("profile", "TEXT DEFAULT ''")):
             if name not in cols:
                 self.conn.execute(f"ALTER TABLE cards ADD COLUMN {name} {ddl}")
         # Drop deprecated columns from older boards, relocating any stray cards:
@@ -220,16 +244,18 @@ class DB:
     # -- cards -------------------------------------------------------------
     def create_card(self, board_id: str, column_id: str, title: str, prompt: str = "",
                      agent: str = "auto", cwd: str = "", resume_of: str = "",
-                     pin_runner: str = "", loop_max: int = 1, loop_until: str = "") -> Dict[str, Any]:
+                     pin_runner: str = "", loop_max: int = 1, loop_until: str = "",
+                     profile: str = "") -> Dict[str, Any]:
         cid = gen_id()
         pos = self._next_position(column_id)
         ts = now()
         self.exec(
             """INSERT INTO cards (id, board_id, column_id, title, prompt, agent, cwd,
-               status, position, resume_of, pin_runner, loop_max, loop_until, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               status, position, resume_of, pin_runner, loop_max, loop_until, profile,
+               created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (cid, board_id, column_id, title, prompt, agent, cwd, "idle", pos,
-             resume_of, pin_runner, max(1, int(loop_max or 1)), loop_until, ts, ts),
+             resume_of, pin_runner, max(1, int(loop_max or 1)), loop_until, profile, ts, ts),
         )
         return self.get_card(cid)
 
