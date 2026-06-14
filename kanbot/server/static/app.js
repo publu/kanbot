@@ -174,10 +174,9 @@ function showConnectModal() {
 
   m.appendChild(el('div', 'label', "Don't have KanBot yet? Copy & run this:"));
   m.appendChild(cmdRow('pipx install kanbot && kanbot up'));
-  const alt = el('div', null,
-    'No pipx? →  brew install pipx   ·   or zero-install:  uvx kanbot up');
-  alt.style.cssText = 'font-family:var(--mono);font-size:11px;color:var(--text-faint);line-height:1.5;';
-  m.appendChild(alt);
+  m.appendChild(el('div', 'label', 'no pipx? install it · or zero-install:'));
+  m.appendChild(cmdRow('brew install pipx'));
+  m.appendChild(cmdRow('uvx kanbot up'));
 
   const actions = el('div', 'modal-actions');
   const demo = el('button', 'btn ghost', 'Explore the demo');
