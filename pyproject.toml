@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "kanbot"
-version = "0.2.1"
+version = "0.2.2"
 description = "A Kanban board where every card is a task run by your local CLI coding agents (Claude, Codex, Gemini, GLM/ZAI, or any CLI you define)."
 readme = "README.md"
 requires-python = ">=3.9"

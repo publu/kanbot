@@ -56,6 +56,7 @@ const S = {
   dragSession: null,    // session object currently being dragged
   demo: false,          // true when running without a backend (Vercel)
   apiBase: '',          // '' = same origin; or an absolute local server URL
+  imageTarget: null,    // the prompt textarea a dropped image should attach to
 };
 
 const COLOR_BY_KIND = { info: 'info', backlog: 'backlog', queued: 'queued', running: 'running', review: 'review', done: 'done', custom: 'custom' };
@@ -1233,6 +1234,50 @@ function sessRow(s) {
   return row;
 }
 
+// ---- minimal markdown -> HTML (for the terminal transcript preview) -----
+function mdEscape(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+function mdInline(s) {
+  // s is already HTML-escaped
+  s = s.replace(/`([^`]+)`/g, '<code class="md-code">$1</code>');
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/(^|[^*\w])\*([^*\n]+)\*(?!\w)/g, '$1<em>$2</em>');
+  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  return s;
+}
+function renderMarkdown(md) {
+  const lines = mdEscape(md).split('\n');
+  let html = '', i = 0, inCode = false, codeBuf = [], list = null;
+  const closeList = () => { if (list) { html += `</${list}>`; list = null; } };
+  while (i < lines.length) {
+    const line = lines[i];
+    if (/^\s*```/.test(line)) {
+      if (!inCode) { inCode = true; codeBuf = []; }
+      else { inCode = false; closeList(); html += '<pre class="md-pre">' + codeBuf.join('\n') + '</pre>'; }
+      i++; continue;
+    }
+    if (inCode) { codeBuf.push(line); i++; continue; }
+    if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])) {
+      closeList();
+      const cells = (l) => l.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+      const head = cells(line); i += 2; const rows = [];
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) { rows.push(cells(lines[i])); i++; }
+      html += '<table class="md-table"><thead><tr>' + head.map(h => `<th>${mdInline(h)}</th>`).join('') +
+        '</tr></thead><tbody>' + rows.map(r => '<tr>' + r.map(c => `<td>${mdInline(c)}</td>`).join('') + '</tr>').join('') + '</tbody></table>';
+      continue;
+    }
+    const h = line.match(/^(#{1,6})\s+(.*)$/);
+    if (h) { closeList(); html += `<div class="md-h md-h${h[1].length}">${mdInline(h[2])}</div>`; i++; continue; }
+    const ul = line.match(/^\s*[-*]\s+(.*)$/), ol = line.match(/^\s*\d+\.\s+(.*)$/);
+    if (ul || ol) { const t = ul ? 'ul' : 'ol'; if (list !== t) { closeList(); list = t; html += `<${t} class="md-list">`; } html += `<li>${mdInline((ul || ol)[1])}</li>`; i++; continue; }
+    if (line.trim() === '') { closeList(); html += '<div class="md-sp"></div>'; i++; continue; }
+    closeList(); html += `<div class="md-p">${mdInline(line)}</div>`; i++;
+  }
+  closeList(); if (inCode) html += '<pre class="md-pre">' + codeBuf.join('\n') + '</pre>';
+  return html;
+}
+
 function promptRevive(s) {
   const m = $('#modal'); m.innerHTML = '';
   m.appendChild(el('h3', null, (s.active ? 'Continue ' : 'Revive ') + (s.name || s.agent)));
@@ -1256,7 +1301,11 @@ function promptRevive(s) {
     body.appendChild(ln);
   };
   const commentLine = (txt) => body.appendChild(el('span', 'term-line term-comment', txt));
-  const outLine = (txt) => body.appendChild(el('span', 'term-line term-out', txt));
+  const outLine = (txt) => {
+    const d = el('div', 'term-line term-out md');
+    d.innerHTML = renderMarkdown(txt);
+    body.appendChild(d);
+  };
   const tail = s.tail || [];
   if (tail.length) {
     commentLine(`# recent transcript — ${s.turns} turns · brewed ${fmtDur(s.duration)}`);
@@ -1320,6 +1369,8 @@ function textareaField(label, ph) {
 
 // Paste or drag an image into a prompt textarea -> upload -> inject a file
 // reference the agent can read, and show a thumbnail.
+function hasFiles(dt) { return dt && dt.types && [...dt.types].includes('Files'); }
+
 function enableImagePaste(input, onChange) {
   const strip = el('div', 'img-strip');
   input.after(strip);
@@ -1334,17 +1385,40 @@ function enableImagePaste(input, onChange) {
       if (onChange) onChange();
       const thumb = el('img', 'img-thumb'); thumb.src = (S.apiBase || '') + out.url; thumb.title = out.path;
       strip.appendChild(thumb);
+      toast('image attached');
     } catch (e) { toast('upload failed: ' + e.message); }
   };
+  // expose so a drop anywhere on the page can route to the active prompt
+  input._imgHandle = handle;
+  const markActive = () => { S.imageTarget = input; };
+  input.addEventListener('focus', markActive);
+  markActive();
   input.addEventListener('paste', (e) => {
     for (const it of (e.clipboardData && e.clipboardData.items) || [])
       if (it.type && it.type.startsWith('image/')) { const f = it.getAsFile(); if (f) { e.preventDefault(); handle(f); } }
   });
-  input.addEventListener('dragover', (e) => { if (e.dataTransfer && [...(e.dataTransfer.items || [])].some(i => i.type && i.type.startsWith('image/'))) { e.preventDefault(); input.classList.add('drag-img'); } });
+  input.addEventListener('dragover', (e) => { if (hasFiles(e.dataTransfer)) { e.preventDefault(); input.classList.add('drag-img'); } });
   input.addEventListener('dragleave', () => input.classList.remove('drag-img'));
   input.addEventListener('drop', (e) => {
-    const files = [...((e.dataTransfer && e.dataTransfer.files) || [])].filter(f => (f.type || '').startsWith('image/'));
-    if (files.length) { e.preventDefault(); input.classList.remove('drag-img'); files.forEach(handle); }
+    if (!hasFiles(e.dataTransfer)) return;
+    e.preventDefault(); input.classList.remove('drag-img');
+    [...e.dataTransfer.files].filter(f => (f.type || '').startsWith('image/')).forEach(handle);
+  });
+}
+
+// Catch image drops anywhere on the page so the browser never navigates away;
+// route them to the prompt box that's currently open.
+function installGlobalImageDrop() {
+  if (window.__kbDrop) return; window.__kbDrop = true;
+  window.addEventListener('dragover', (e) => { if (hasFiles(e.dataTransfer)) e.preventDefault(); });
+  window.addEventListener('drop', (e) => {
+    if (!hasFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    const imgs = [...e.dataTransfer.files].filter(f => (f.type || '').startsWith('image/'));
+    if (!imgs.length) return;
+    const t = S.imageTarget;
+    if (t && t.isConnected && t._imgHandle) imgs.forEach(t._imgHandle);
+    else toast('Open a task (or + add task) first, then drop the image onto its prompt');
   });
 }
 function availableAgentNames() {
@@ -1395,6 +1469,7 @@ function closeModal() { $('#modalScrim').classList.remove('open'); S.sessionsMod
 
 // ---- global UI ----------------------------------------------------------
 function wireGlobalUI() {
+  installGlobalImageDrop();
   $('#sessionsBtn').onclick = openSessionsModal;
   $('#manageTagsBtn').onclick = openManageTags;
   $('#apiBtn').onclick = openApiModal;

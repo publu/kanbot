@@ -439,6 +439,25 @@ input, textarea, select { font-family: var(--ui); }
 .term-user { color: var(--green); }
 .term-prompt { color: var(--brand); user-select: none; margin-right: 8px; font-weight: 700; }
 .term-out { color: #d6dbe4; }
+
+/* markdown rendered inside the terminal transcript preview */
+.term-body .md { white-space: normal; }
+.term-body .md-p { margin: 3px 0; }
+.term-body .md-sp { height: 7px; }
+.term-body .md-h { font-weight: 700; color: #fff; margin: 9px 0 4px; }
+.term-body .md-h1 { font-size: 15px; } .term-body .md-h2 { font-size: 14px; } .term-body .md-h3 { font-size: 13px; }
+.term-body .md strong { color: #fff; font-weight: 700; }
+.term-body .md em { font-style: italic; color: #e7e9ee; }
+.term-body .md a { color: var(--brand); }
+.term-body .md-code, .term-body .md code { background: rgba(255,255,255,.08); color: #9fd0ff;
+  padding: 1px 5px; border-radius: 4px; font-size: .95em; }
+.term-body .md-pre { background: #0c0f15; border: 1px solid var(--line); border-radius: 6px;
+  padding: 9px 11px; margin: 6px 0; overflow-x: auto; white-space: pre; color: #cdd3dd; }
+.term-body .md-list { margin: 4px 0 4px 18px; padding: 0; }
+.term-body .md-list li { margin: 2px 0; }
+.term-body .md-table { border-collapse: collapse; margin: 7px 0; font-size: 12px; }
+.term-body .md-table th, .term-body .md-table td { border: 1px solid var(--line); padding: 4px 9px; text-align: left; vertical-align: top; }
+.term-body .md-table th { color: #fff; background: rgba(255,255,255,.04); }
 .sess-foot { display: flex; align-items: center; gap: 8px; }
 .sess-turns { font-family: var(--mono); font-size: 10px; color: var(--text-faint); }
 .sess-revive { margin-left: auto; font-family: var(--ui); font-size: 11px; padding: 3px 10px;
