@@ -20,14 +20,13 @@ dependencies = [
 ]
 
 [project.scripts]
-kanbot = "deckhand.cli:main"
-deckhand = "deckhand.cli:main"
+kanbot = "kanbot.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/yourname/deckhand"
 
 [tool.hatch.build.targets.wheel]
-packages = ["deckhand"]
-# Static UI ships automatically as it lives inside the deckhand package; no
+packages = ["kanbot"]
+# Static UI ships automatically as it lives inside the kanbot package; no
 # force-include needed (and adding one double-adds the files and breaks the build).
-artifacts = ["deckhand/server/static/**"]
+artifacts = ["kanbot/server/static/**"]

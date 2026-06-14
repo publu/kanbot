@@ -1,4 +1,4 @@
-"""User/runner configuration stored in ~/.deckhand/config.json."""
+"""User/runner configuration stored in ~/.kanbot/config.json."""
 from __future__ import annotations
 
 import json
@@ -11,11 +11,11 @@ from typing import Any, Dict, Optional
 
 
 def config_dir() -> Path:
-    base = os.environ.get("DECKHAND_HOME")
+    base = os.environ.get("KANBOT_HOME") or os.environ.get("DECKHAND_HOME")
     if base:
         path = Path(base).expanduser()
     else:
-        path = Path.home() / ".deckhand"
+        path = Path.home() / ".kanbot"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -25,10 +25,10 @@ def config_path() -> Path:
 
 
 def db_path() -> Path:
-    env = os.environ.get("DECKHAND_DB")
+    env = os.environ.get("KANBOT_DB") or os.environ.get("DECKHAND_DB")
     if env:
         return Path(env).expanduser()
-    return config_dir() / "deckhand.db"
+    return config_dir() / "kanbot.db"
 
 
 @dataclass

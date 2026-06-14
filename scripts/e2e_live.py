@@ -3,12 +3,12 @@
 import asyncio, os, tempfile, threading, time
 import httpx, uvicorn
 
-os.environ["DECKHAND_DB"] = tempfile.mktemp(suffix=".db")
-os.environ["DECKHAND_HOME"] = tempfile.mkdtemp()
+os.environ["KANBOT_DB"] = tempfile.mktemp(suffix=".db")
+os.environ["KANBOT_HOME"] = tempfile.mkdtemp()
 
-from deckhand.server.app import create_app
-from deckhand.runner.worker import Runner
-from deckhand.config import Config
+from kanbot.server.app import create_app
+from kanbot.runner.worker import Runner
+from kanbot.config import Config
 
 PORT = 8804
 BASE = f"http://127.0.0.1:{PORT}"

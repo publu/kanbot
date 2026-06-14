@@ -381,7 +381,7 @@ function renderRunners() {
     const pill = el('div', 'runner-pill empty');
     pill.appendChild(el('span', 'dot'));
     pill.appendChild(el('span', null, 'no runners'));
-    pill.title = 'Run `deckhand runner` (or `deckhand up`) to attach a worker.';
+    pill.title = 'Run `kanbot up` to attach a worker.';
     wrap.appendChild(pill);
     return;
   }
@@ -999,7 +999,7 @@ BASE URL
   http://127.0.0.1:8787   (the server origin; change host/port as needed)
   Start it with: pip install kanbot && kanbot up
 AUTH
-  None by default. If the server sets env DECKHAND_TOKEN, runners must pass it as
+  None by default. If the server sets env KANBOT_TOKEN, runners must pass it as
   the ws query param ?token=...; REST is open on localhost.
 CONTENT TYPE
   JSON for all request/response bodies.

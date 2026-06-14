@@ -65,7 +65,7 @@ kanbot runner --server http://HOST:8787 --name gpu-box
 
 Claude Code and Codex are tracked out of the box. Any agent that logs
 newline-delimited JSON transcripts can be added with **no code change** — point
-KanBot at its store in `~/.kanbot/config.json` (a.k.a. `~/.deckhand/config.json`):
+KanBot at its store in `~/.kanbot/config.json` (a.k.a. `~/.kanbot/config.json`):
 
 ```json
 {
@@ -96,13 +96,13 @@ KanBot at its store in `~/.kanbot/config.json` (a.k.a. `~/.deckhand/config.json`
 | `codex` | `codex exec --full-auto "<prompt>"` | `codex exec resume <id> "<prompt>"` |
 | `gemini` | `gemini -y -p "<prompt>"` | — |
 | `glm` | Claude Code w/ `ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic` | ✓ |
-| `opencode`, `aider`, `cursor-agent`, `hermes`, `shell` | see `deckhand/agents.py` | — |
+| `opencode`, `aider`, `cursor-agent`, `hermes`, `shell` | see `kanbot/agents.py` | — |
 
 Override or add any agent's command in `~/.kanbot/config.json` →
 `agent_overrides`. A card set to `auto` runs on whatever the matched runner has.
 
 > Note: built-in run commands use auto-approve flags so tasks run unattended.
-> Review `deckhand/agents.py` and dial them back if you want a human in the loop.
+> Review `kanbot/agents.py` and dial them back if you want a human in the loop.
 
 ## Tags & insights
 
@@ -121,8 +121,8 @@ kanbot config     server URL, token, runner name, enable/disable agents
 kanbot open       open the board
 ```
 
-Config: `~/.deckhand/config.json` · data: `~/.deckhand/deckhand.db`.
-Set `DECKHAND_TOKEN` on the server to require a matching `--token` from runners.
+Config: `~/.kanbot/config.json` · data: `~/.kanbot/kanbot.db`.
+Set `KANBOT_TOKEN` on the server to require a matching `--token` from runners.
 
 ## License
 

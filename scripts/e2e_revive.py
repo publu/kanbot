@@ -2,12 +2,12 @@
 import asyncio, os, tempfile, threading, time
 import httpx, uvicorn
 
-os.environ["DECKHAND_DB"] = tempfile.mktemp(suffix=".db")
-os.environ["DECKHAND_HOME"] = tempfile.mkdtemp()
+os.environ["KANBOT_DB"] = tempfile.mktemp(suffix=".db")
+os.environ["KANBOT_HOME"] = tempfile.mkdtemp()
 
-from deckhand.server.app import create_app
-from deckhand.runner.worker import Runner
-from deckhand.config import Config
+from kanbot.server.app import create_app
+from kanbot.runner.worker import Runner
+from kanbot.config import Config
 
 PORT = 8801
 BASE = f"http://127.0.0.1:{PORT}"
@@ -65,7 +65,7 @@ def main():
     assert card["status"] == "idle"  # run=False -> stays in backlog
 
     # verify build_argv produces a real resume command for claude/codex
-    from deckhand.runner.agents import detect_agents, build_argv
+    from kanbot.runner.agents import detect_agents, build_argv
     agents = detect_agents(cfg)
     for name in ("claude", "codex"):
         if name in agents:

@@ -20,7 +20,7 @@ from .schemas import (BoardCreate, CardCreate, CardMove, CardPatch, ReviveReques
                       TagAttach, TagCreate)
 
 STATIC_DIR = Path(__file__).parent / "static"
-SERVER_TOKEN = os.environ.get("DECKHAND_TOKEN", "")
+SERVER_TOKEN = os.environ.get("KANBOT_TOKEN") or os.environ.get("DECKHAND_TOKEN", "")
 
 
 def create_app(db_path: Optional[str] = None) -> FastAPI:
