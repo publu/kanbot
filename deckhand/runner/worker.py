@@ -91,7 +91,8 @@ class Runner:
         names = list(self.agents.keys())
         while True:
             try:
-                sessions = await asyncio.to_thread(discover_all, names)
+                sessions = await asyncio.to_thread(
+                    discover_all, names, self.cfg.discovery_sources)
                 await self.send({"type": "agent.sessions",
                                  "runner_id": self.cfg.runner_id, "sessions": sessions})
             except Exception as e:

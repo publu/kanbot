@@ -14,6 +14,7 @@ import json
 import os
 import re
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -185,82 +186,34 @@ def _extract_text(content: Any) -> Optional[str]:
     return None
 
 
-def _scan_claude_file(path: Path) -> Optional[Dict[str, Any]]:
-    cwd = None
-    preview = None
-    started_at = None
-    n_user = 0
-    try:
-        with path.open("r", errors="replace") as fh:
-            for i, line in enumerate(fh):
-                if i > MAX_LINES_SCAN and preview and cwd and started_at:
-                    break
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    d = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if started_at is None and d.get("timestamp"):
-                    started_at = _parse_ts(d["timestamp"])
-                if not cwd and d.get("cwd"):
-                    cwd = d["cwd"]
-                if d.get("type") == "user" and not d.get("isMeta"):
-                    n_user += 1
-                    if preview is None:
-                        txt = _extract_text((d.get("message") or {}).get("content"))
-                        if not _is_noise(txt):
-                            preview = txt
-    except OSError:
-        return None
-    msgs = _tail_msgs(path, _claude_line_msg)
-    return _build("claude", path.stem, cwd, preview, msgs, n_user, started_at,
-                  _name_from_cwd(cwd or "", f"claude·{path.stem[:6]}"))
-
-
-def discover_claude() -> List[Dict[str, Any]]:
-    root = _claude_home() / "projects"
-    if not root.is_dir():
-        return []
-    files: List[os.DirEntry] = []
-    try:
-        for proj in os.scandir(root):
-            if not proj.is_dir():
-                continue
-            for entry in os.scandir(proj.path):
-                if entry.name.endswith(".jsonl"):
-                    files.append(entry)
-    except OSError:
-        return []
-    files.sort(key=lambda e: e.stat().st_mtime, reverse=True)
-    out: List[Dict[str, Any]] = []
-    nowt = time.time()
-    for entry in files[:MAX_SESSIONS_PER_AGENT]:
-        mtime = entry.stat().st_mtime
-        if nowt - mtime > RECENT_WINDOW_S:
-            break
-        info = _scan_claude_file(Path(entry.path))
-        if not info:
-            continue
-        info["mtime"] = mtime
-        info["active"] = (nowt - mtime) <= ACTIVE_WINDOW_S
-        info["duration"] = max(0, mtime - (info.get("started_at") or mtime))
-        out.append(info)
-    return out
-
-
 _CODEX_UUID = re.compile(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})")
 
 
-def _scan_codex_file(path: Path) -> Optional[Dict[str, Any]]:
+@dataclass
+class Provider:
+    """A place where some agent TUI stores its session transcripts.
+
+    Built-ins cover Claude Code and Codex; users add more (Hermes, OpenCode,
+    Gemini, or any home-grown agent) via `discovery_sources` in the config —
+    no code change needed, as long as the agent logs newline-delimited JSON.
+    """
+    name: str            # agent id shown on cards, e.g. "claude"
+    label: str           # display label, e.g. "Claude Code"
+    root: Path           # base dir to scan
+    pattern: str         # glob for session files
+    recursive: bool      # walk subdirectories
+    fmt: str             # "claude" (flat records) or "codex" (payload-nested)
+
+
+def _sid_for(path: Path) -> str:
     m = _CODEX_UUID.search(path.name)
-    if not m:
-        return None
-    sid = m.group(1)
-    cwd = None
-    preview = None
-    started_at = None
+    return m.group(1) if m else path.stem
+
+
+def _scan(path: Path, sid: str, agent: str, fmt: str) -> Optional[Dict[str, Any]]:
+    """Parse one transcript: head for cwd/start/first-prompt, tail for recap."""
+    line_fn = _codex_line_msg if fmt == "codex" else _claude_line_msg
+    cwd = preview = started_at = None
     n_user = 0
     try:
         with path.open("r", errors="replace") as fh:
@@ -276,40 +229,37 @@ def _scan_codex_file(path: Path) -> Optional[Dict[str, Any]]:
                     continue
                 if started_at is None and d.get("timestamp"):
                     started_at = _parse_ts(d["timestamp"])
-                payload = d.get("payload", d)
-                if not isinstance(payload, dict):
-                    continue
-                if not cwd and payload.get("cwd"):
+                payload = d.get("payload", d) if fmt == "codex" else d
+                if not cwd and isinstance(payload, dict) and payload.get("cwd"):
                     cwd = payload["cwd"]
-                role = payload.get("role")
-                if role == "user" or payload.get("type") == "user_message":
+                m = line_fn(d)
+                if m and m[0] == "user":
                     n_user += 1
                     if preview is None:
-                        txt = _extract_text(payload.get("content") or payload.get("message"))
-                        if not _is_noise(txt):
-                            preview = txt
+                        preview = m[1]
     except OSError:
         return None
-    msgs = _tail_msgs(path, _codex_line_msg)
-    return _build("codex", sid, cwd, preview, msgs, n_user, started_at,
-                  _name_from_cwd(cwd or "", f"codex·{sid[:6]}"))
+    msgs = _tail_msgs(path, line_fn)
+    return _build(agent, sid, cwd, preview, msgs, n_user, started_at,
+                  _name_from_cwd(cwd or "", f"{agent}·{sid[:6]}"))
 
 
-def discover_codex() -> List[Dict[str, Any]]:
-    root = Path.home() / ".codex" / "sessions"
-    if not root.is_dir():
+def _discover_provider(p: Provider) -> List[Dict[str, Any]]:
+    if not p.root.is_dir():
         return []
-    files: List[Path] = []
-    for p in root.rglob("rollout-*.jsonl"):
-        files.append(p)
-    files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    try:
+        it = p.root.rglob(p.pattern) if p.recursive else p.root.glob(p.pattern)
+        files = [f for f in it if f.is_file()]
+    except OSError:
+        return []
+    files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
     out: List[Dict[str, Any]] = []
     nowt = time.time()
-    for p in files[:MAX_SESSIONS_PER_AGENT]:
-        mtime = p.stat().st_mtime
+    for f in files[:MAX_SESSIONS_PER_AGENT]:
+        mtime = f.stat().st_mtime
         if nowt - mtime > RECENT_WINDOW_S:
             break
-        info = _scan_codex_file(p)
+        info = _scan(f, _sid_for(f), p.name, p.fmt)
         if not info:
             continue
         info["mtime"] = mtime
@@ -319,12 +269,59 @@ def discover_codex() -> List[Dict[str, Any]]:
     return out
 
 
-def discover_all(available_agents: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+def builtin_providers() -> List[Provider]:
+    return [
+        Provider("claude", "Claude Code", _claude_home() / "projects",
+                 "*/*.jsonl", False, "claude"),
+        Provider("codex", "Codex", Path.home() / ".codex" / "sessions",
+                 "rollout-*.jsonl", True, "codex"),
+    ]
+
+
+def _providers_from_config(custom_sources: Optional[List[dict]]) -> List[Provider]:
+    providers: List[Provider] = []
+    for src in (custom_sources or []):
+        if not isinstance(src, dict) or "root" not in src:
+            continue
+        providers.append(Provider(
+            name=src.get("name", "custom"),
+            label=src.get("label", src.get("name", "custom")),
+            root=Path(os.path.expanduser(src["root"])),
+            pattern=src.get("pattern", "*.jsonl"),
+            recursive=bool(src.get("recursive", True)),
+            fmt=src.get("fmt", "claude"),
+        ))
+    return providers
+
+
+def active_providers(custom_sources: Optional[List[dict]] = None) -> List[Dict[str, str]]:
+    """Which trackers actually have a session store present (for `kanbot agents`)."""
+    out = []
+    for p in builtin_providers() + _providers_from_config(custom_sources):
+        if p.root.is_dir():
+            out.append({"name": p.name, "label": p.label, "root": str(p.root)})
+    return out
+
+
+def discover_all(available_agents: Optional[List[str]] = None,
+                 custom_sources: Optional[List[dict]] = None) -> List[Dict[str, Any]]:
+    """Discover sessions from every known store. `available_agents` is ignored
+    for tracking — we surface whatever transcripts exist, regardless of which
+    agents this runner can execute."""
     sessions: List[Dict[str, Any]] = []
-    avail = set(available_agents or ["claude", "codex"])
-    if "claude" in avail or "glm" in avail:
-        sessions.extend(discover_claude())
-    if "codex" in avail:
-        sessions.extend(discover_codex())
+    for p in builtin_providers() + _providers_from_config(custom_sources):
+        try:
+            sessions.extend(_discover_provider(p))
+        except Exception:
+            continue
     sessions.sort(key=lambda s: s["mtime"], reverse=True)
     return sessions
+
+
+# Back-compat thin wrappers.
+def discover_claude() -> List[Dict[str, Any]]:
+    return _discover_provider(builtin_providers()[0])
+
+
+def discover_codex() -> List[Dict[str, Any]]:
+    return _discover_provider(builtin_providers()[1])

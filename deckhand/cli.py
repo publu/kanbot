@@ -140,6 +140,23 @@ def cmd_agents(args) -> int:
             mark = "✓" if spec.name in found else "·"
             print(f" {mark} {spec.name:14} {spec.description}")
     print(f"\nadvertised capabilities: {', '.join(found) or '(none)'}")
+
+    # Session trackers: which TUIs KanBot can see / revive.
+    from .runner.discovery import active_providers, builtin_providers
+    trackers = active_providers(cfg.discovery_sources)
+    active_names = {t["name"] for t in trackers}
+    print("\nsession trackers (TUIs KanBot watches):")
+    for p in builtin_providers():
+        mark = "✓" if p.name in active_names else "·"
+        state = "tracking" if p.name in active_names else "no sessions found"
+        print(f"  {mark} {p.label:14} {p.root}  [{state}]")
+    for t in trackers:
+        if t["name"] not in ("claude", "codex"):
+            print(f"  ✓ {t['label']:14} {t['root']}  [custom]")
+    print("\nTrack another agent: add to discovery_sources in "
+          f"{config_path()}, e.g.\n"
+          '  {"name": "hermes", "label": "Hermes", "root": "~/.hermes/sessions",\n'
+          '   "pattern": "*.jsonl", "recursive": true, "fmt": "claude"}')
     return 0
 
 

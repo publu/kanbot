@@ -444,11 +444,19 @@ function renderCard(c) {
   return card;
 }
 
+function agentColor(name) {
+  const a = S.agentByName[name];
+  if (a) return a.color;
+  // stable color for any unknown / custom tracker (e.g. hermes, your own agent)
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360;
+  return `hsl(${h}, 65%, 62%)`;
+}
 function agentBadge(name) {
   const a = S.agentByName[name];
   const badge = el('span', 'agent-badge');
   const dot = el('span', 'adot');
-  dot.style.background = a ? a.color : '#888';
+  dot.style.background = name === 'auto' ? '#888' : agentColor(name);
   badge.appendChild(dot);
   badge.appendChild(el('span', null, name === 'auto' ? 'auto' : (a ? a.label : name)));
   return badge;

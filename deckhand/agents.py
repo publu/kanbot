@@ -78,6 +78,14 @@ BUILTIN_AGENTS: List[AgentSpec] = [
         color="#f59e0b",
     ),
     AgentSpec(
+        name="hermes",
+        label="Hermes",
+        bin="hermes",
+        argv=["hermes", "-p", "{prompt}"],
+        description="Hermes coding agent (best-effort; override argv in config if it differs).",
+        color="#e879f9",
+    ),
+    AgentSpec(
         name="aider",
         label="Aider",
         bin="aider",

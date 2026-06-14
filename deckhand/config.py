@@ -44,6 +44,10 @@ class Config:
     # Agents the user has explicitly disabled.
     disabled_agents: list = field(default_factory=list)
     max_concurrency: int = 2
+    # Extra session stores to track, e.g. Hermes or any agent that logs JSONL:
+    #   [{"name": "hermes", "label": "Hermes", "root": "~/.hermes/sessions",
+    #     "pattern": "*.jsonl", "recursive": true, "fmt": "claude"}]
+    discovery_sources: list = field(default_factory=list)
 
     @classmethod
     def load(cls) -> "Config":
