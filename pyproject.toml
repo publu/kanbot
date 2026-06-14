@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "deckhand"
+name = "kanbot"
 version = "0.1.0"
 description = "A Kanban board where every card is a task run by your local CLI coding agents (Claude, Codex, Gemini, GLM/ZAI, or any CLI you define)."
 readme = "README.md"
@@ -20,6 +20,7 @@ dependencies = [
 ]
 
 [project.scripts]
+kanbot = "deckhand.cli:main"
 deckhand = "deckhand.cli:main"
 
 [project.urls]

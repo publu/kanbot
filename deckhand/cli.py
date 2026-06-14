@@ -1,11 +1,11 @@
-"""Deckhand command-line interface.
+"""KanBot command-line interface.
 
-  deckhand up            # start server + a local runner together (best first run)
-  deckhand server        # just the web server / API / board
-  deckhand runner        # just the background runner (connects to a server)
-  deckhand agents        # show which CLI coding agents are detected here
-  deckhand config        # view / set server URL, token, runner name
-  deckhand open          # open the board in your browser
+  kanbot up            # start server + a local runner together (best first run)
+  kanbot server        # just the web server / API / board
+  kanbot runner        # just the background runner (connects to a server)
+  kanbot agents        # show which CLI coding agents are detected here
+  kanbot config        # view / set server URL, token, runner name
+  kanbot open          # open the board in your browser
 """
 from __future__ import annotations
 
@@ -34,9 +34,9 @@ def cmd_server(args) -> int:
 
     app = create_app(db_path=args.db)
     url = f"http://{args.host}:{args.port}"
-    print(f"Deckhand server v{__version__}  →  {url}")
+    print(f"KanBot server v{__version__}  →  {url}")
     print(f"  db:    {args.db or db_path()}")
-    print(f"  open:  {url}  (then run `deckhand runner` on any machine)")
+    print(f"  open:  {url}  (then run `kanbot runner` on any machine)")
     uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
     return 0
 
@@ -89,7 +89,7 @@ def cmd_up(args) -> int:
         except Exception:
             time.sleep(0.1)
 
-    print(f"Deckhand is up  →  {base}")
+    print(f"KanBot is up  →  {base}")
     if not args.no_open:
         try:
             webbrowser.open(base)
@@ -183,9 +183,9 @@ def cmd_open(args) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="deckhand", description=__doc__,
+    p = argparse.ArgumentParser(prog="kanbot", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--version", action="version", version=f"deckhand {__version__}")
+    p.add_argument("--version", action="version", version=f"kanbot {__version__}")
     sub = p.add_subparsers(dest="cmd")
 
     sp = sub.add_parser("up", help="start server + local runner (recommended first run)")

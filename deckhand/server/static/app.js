@@ -1,5 +1,6 @@
-// Deckhand front-end — a Kanban control room for CLI agents.
+// KanBot front-end — a Kanban control room for CLI agents.
 // Vanilla ES module, no build step. Talks to the FastAPI server over REST + WS.
+// Falls back to a self-contained demo when there's no backend (e.g. on Vercel).
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const el = (tag, cls, txt) => {
@@ -11,19 +12,34 @@ const el = (tag, cls, txt) => {
 
 // ---- API ----------------------------------------------------------------
 const api = {
-  async get(path) { const r = await fetch(path); if (!r.ok) throw new Error(await r.text()); return r.json(); },
+  async get(path) { if (S.demo) return demoGet(path); const r = await fetch(path); if (!r.ok) throw new Error(await r.text()); return r.json(); },
   async post(path, body) {
+    if (S.demo) return demoMutate();
     const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: body ? JSON.stringify(body) : null });
     if (!r.ok) throw new Error(await r.text()); return r.json();
   },
   async patch(path, body) {
+    if (S.demo) return demoMutate();
     const r = await fetch(path, { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body) });
     if (!r.ok) throw new Error(await r.text()); return r.json();
   },
-  async del(path) { const r = await fetch(path, { method: 'DELETE' }); if (!r.ok) throw new Error(await r.text()); return r.json(); },
+  async del(path) { if (S.demo) return demoMutate(); const r = await fetch(path, { method: 'DELETE' }); if (!r.ok) throw new Error(await r.text()); return r.json(); },
 };
+
+function demoMutate() {
+  toast('Demo mode — install KanBot locally to run agents for real');
+  return {};
+}
+function demoGet(path) {
+  if (path.startsWith('/api/agent-sessions')) return { sessions: DEMO.sessions };
+  if (path.startsWith('/api/runners')) return { runners: DEMO.runners };
+  if (path.includes('/insights')) return { insights: [] };
+  if (path.startsWith('/api/sessions')) return { sessions: [], events: [] };
+  if (path.startsWith('/api/boards')) return { board: DEMO.board, columns: DEMO.columns, cards: DEMO.cards, tags: [] };
+  return {};
+}
 
 // ---- state --------------------------------------------------------------
 const S = {
@@ -38,16 +54,113 @@ const S = {
   agentSessions: [],    // discovered claude/codex sessions across runners
   sessionsModalOpen: false,
   dragSession: null,    // session object currently being dragged
+  demo: false,          // true when running without a backend (Vercel)
 };
 
 const COLOR_BY_KIND = { info: 'info', backlog: 'backlog', queued: 'queued', running: 'running', review: 'review', done: 'done', custom: 'custom' };
 
+// ---- demo data (used only when there is no backend) ---------------------
+const NOW = Math.floor(Date.now() / 1000);
+const DEMO = {
+  agents: [
+    { name: 'claude', label: 'Claude Code', color: '#d97757' },
+    { name: 'codex', label: 'Codex', color: '#10a37f' },
+    { name: 'gemini', label: 'Gemini CLI', color: '#4285f4' },
+    { name: 'glm', label: 'GLM / Z.ai', color: '#2563eb' },
+    { name: 'shell', label: 'Shell command', color: '#64748b' },
+  ],
+  runners: [{ name: 'mac-studio', host: 'mac-studio.local', status: 'online', active: 1,
+    max_concurrency: 3, capabilities: ['claude', 'codex', 'glm', 'shell'] }],
+  board: { id: 'demo', name: 'KanBot', repo_path: '' },
+  columns: [
+    { id: 'c-back', kind: 'backlog', name: 'Backlog', position: 0 },
+    { id: 'c-run', kind: 'running', name: 'Running', position: 1 },
+    { id: 'c-rev', kind: 'review', name: 'Review', position: 2 },
+    { id: 'c-done', kind: 'done', name: 'Done', position: 3 },
+  ],
+  cards: [
+    { id: 't1', board_id: 'demo', column_id: 'c-back', title: 'Add rate limiting to the API',
+      prompt: 'Add a token-bucket rate limiter to all /api routes.', agent: 'claude',
+      cwd: '~/code/api-gateway', status: 'idle', position: 0, tags: [], resume_of: '', pin_runner: '' },
+    { id: 't2', board_id: 'demo', column_id: 'c-rev', title: 'Refactor auth middleware',
+      prompt: 'Split auth.py into smaller modules.', agent: 'codex', cwd: '~/code/api-gateway',
+      status: 'review', position: 0, tags: [], resume_of: '', pin_runner: '' },
+  ],
+  sessions: [
+    { agent: 'claude', session_id: 'demo-1', runner_id: 'r', runner_name: 'mac-studio', name: 'api-gateway',
+      recap: 'Wired the rate limiter into the middleware stack and added 12 tests — all green. Want me to add per-key overrides next?',
+      recap_role: 'assistant', turns: 34, duration: 5400, mtime: NOW - 10, active: true,
+      tail: [
+        { role: 'user', text: 'add a token bucket rate limiter to the api routes' },
+        { role: 'assistant', text: 'Added a token-bucket limiter (60 req/min default) as ASGI middleware, with Redis-backed counters and a 429 + Retry-After response.' },
+        { role: 'user', text: 'nice, now make sure it has tests' },
+        { role: 'assistant', text: 'Wired the rate limiter into the middleware stack and added 12 tests — all green. Want me to add per-key overrides next?' },
+      ] },
+    { agent: 'codex', session_id: 'demo-2', runner_id: 'r', runner_name: 'mac-studio', name: 'web-dashboard',
+      recap: 'Migrated the charts to Recharts and committed (8f1c2a). The dashboard build is ~30% smaller now.',
+      recap_role: 'assistant', turns: 21, duration: 2700, mtime: NOW - 240, active: false,
+      tail: [
+        { role: 'user', text: 'swap the chart library to something lighter' },
+        { role: 'assistant', text: 'Migrated the charts to Recharts and committed (8f1c2a). The dashboard build is ~30% smaller now.' },
+      ] },
+    { agent: 'claude', session_id: 'demo-3', runner_id: 'r', runner_name: 'mac-studio', name: 'ml-pipeline',
+      recap: 'Done — the training job now checkpoints every 500 steps and resumes cleanly after a crash.',
+      recap_role: 'assistant', turns: 47, duration: 9100, mtime: NOW - 1500, active: false,
+      tail: [
+        { role: 'user', text: 'make the training resumable' },
+        { role: 'assistant', text: 'Done — the training job now checkpoints every 500 steps and resumes cleanly after a crash.' },
+      ] },
+    { agent: 'glm', session_id: 'demo-4', runner_id: 'r', runner_name: 'mac-studio', name: 'landing-site',
+      recap: 'ok ship it', recap_role: 'user', turns: 12, duration: 1800, mtime: NOW - 7200, active: false,
+      tail: [
+        { role: 'assistant', text: 'Rebuilt the hero section with a cleaner type scale and a subtle gradient. Preview is live.' },
+        { role: 'user', text: 'ok ship it' },
+      ] },
+    { agent: 'codex', session_id: 'demo-5', runner_id: 'r', runner_name: 'mac-studio', name: 'infra-scripts',
+      recap: 'Terraform plan is clean; 3 resources to add, 0 to destroy. Apply when ready.',
+      recap_role: 'assistant', turns: 9, duration: 900, mtime: NOW - 26000, active: false,
+      tail: [
+        { role: 'user', text: 'spin up the staging environment' },
+        { role: 'assistant', text: 'Terraform plan is clean; 3 resources to add, 0 to destroy. Apply when ready.' },
+      ] },
+    { agent: 'claude', session_id: 'demo-6', runner_id: 'r', runner_name: 'mac-studio', name: 'docs',
+      recap: 'Rewrote the getting-started guide and fixed 7 broken links.', recap_role: 'assistant',
+      turns: 16, duration: 3600, mtime: NOW - 90000, active: false,
+      tail: [
+        { role: 'user', text: 'clean up the docs' },
+        { role: 'assistant', text: 'Rewrote the getting-started guide and fixed 7 broken links.' },
+      ] },
+  ],
+};
+
+function enterDemo() {
+  S.demo = true;
+  document.body.classList.add('demo');
+  $('#version').textContent = 'demo';
+  S.agents = DEMO.agents;
+  S.agentByName = Object.fromEntries(DEMO.agents.map(a => [a.name, a]));
+  S.insightProviders = [];
+  S.runners = DEMO.runners; renderRunners();
+  S.boards = [DEMO.board]; S.boardId = DEMO.board.id; S.board = DEMO.board;
+  S.columns = DEMO.columns; S.cards = DEMO.cards; S.tags = [];
+  S.agentSessions = DEMO.sessions;
+  // demo banner
+  const pill = el('div', 'demo-pill');
+  pill.innerHTML = 'DEMO · <b>pip install kanbot</b> then <b>kanbot up</b> to run locally';
+  $('#runners').before(pill);
+  updateLiveBadge();
+  renderColumns();
+  wireGlobalUI();
+}
+
 // ---- boot ---------------------------------------------------------------
 async function boot() {
+  let live = false;
   try {
-    const health = await api.get('/api/health');
-    $('#version').textContent = 'v' + health.version;
-  } catch (e) { /* ignore */ }
+    const r = await fetch('/api/health');
+    if (r.ok) { const h = await r.json(); $('#version').textContent = 'v' + h.version; live = true; }
+  } catch (e) { /* no backend */ }
+  if (!live) return enterDemo();
 
   const ag = await api.get('/api/agents');
   S.agents = ag.agents; S.insightProviders = ag.insights;
@@ -281,7 +394,7 @@ function renderSessionCard(s) {
   const preview = sessionPreview(s);
   if (preview) {
     const pv = el('div', 'sess-preview');
-    if (s.last_text || s.last_user) pv.appendChild(el('span', 'sess-pv-tag', s.last_text ? '↩ ' : '› '));
+    pv.appendChild(el('span', 'sess-pv-tag', s.recap_role === 'user' ? '› ' : '↩ '));
     pv.appendChild(document.createTextNode(preview));
     card.appendChild(pv);
   }
@@ -675,7 +788,7 @@ function openNewBoardModal() {
   setTimeout(() => name.input.focus(), 50);
 }
 
-const PALETTE = ['#ff9d3d', '#4fd1e0', '#b491f5', '#5fd28a', '#ff6b6b', '#6aa6ff', '#f5c451', '#9aa3b2'];
+const PALETTE = ['#4f8cff', '#4fd1e0', '#b491f5', '#5fd28a', '#ff6b6b', '#6aa6ff', '#f5c451', '#9aa3b2'];
 
 function openTagModal(attachToCardId) {
   const m = $('#modal'); m.innerHTML = '';

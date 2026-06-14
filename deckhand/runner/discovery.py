@@ -98,13 +98,18 @@ def _build(agent: str, sid: str, cwd: Optional[str], preview: Optional[str],
     tail = [{"role": r, "text": _truncate(t, 1400)} for (r, t) in msgs[-12:]]
     last_user = next((m["text"] for m in reversed(tail) if m["role"] == "user"), None)
     last_text = next((m["text"] for m in reversed(tail) if m["role"] == "assistant"), None)
+    # recap = the chronologically last message (whichever role), so it tracks
+    # the session's current state — not always the last assistant turn.
+    recap = tail[-1]["text"] if tail else _truncate(preview)
+    recap_role = tail[-1]["role"] if tail else "user"
     return {
         "agent": agent,
         "session_id": sid,
         "cwd": cwd or "",
         "name": name,
         "title": _truncate(preview),          # first prompt (for reference)
-        "recap": last_text or last_user or "",  # latest activity — NOT the first msg
+        "recap": recap,
+        "recap_role": recap_role,
         "last_user": last_user,
         "last_text": last_text,
         "tail": tail,                           # recent conversation for the modal
