@@ -33,10 +33,22 @@ Two things in one board:
 
 ## Quickstart
 
+Easiest (isolated, sidesteps Homebrew's PEP 668 `externally-managed` error):
+
 ```bash
-pip install -e .      # from this repo (PyPI: kanbot, coming soon)
-kanbot up             # server + local runner, opens the board at :8787
+pipx install kanbot && kanbot up     # or zero-install:  uvx kanbot up
 ```
+
+From source (until it's on PyPI):
+
+```bash
+python3 -m venv .venv && . .venv/bin/activate
+pip install -e .
+kanbot up                             # server + local runner, board at :8787
+```
+
+> Don't use bare `pip install` on macOS Homebrew Python — it errors with
+> `externally-managed-environment` (PEP 668). `pipx`/`uv` handle the env for you.
 
 The board immediately fills with your recent Claude/Codex sessions. Click any one
 to see its recent transcript in a terminal view and **resume** it; or hit

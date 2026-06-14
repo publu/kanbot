@@ -140,7 +140,7 @@ function enterDemo(showModal = true) {
   S.agentSessions = DEMO.sessions;
   // demo banner
   const pill = el('div', 'demo-pill');
-  pill.innerHTML = 'DEMO · <b>pip install kanbot</b> then <b>kanbot up</b> to run locally';
+  pill.innerHTML = 'DEMO · <b>pipx install kanbot</b> · <b>kanbot up</b> to run locally';
   $('#runners').before(pill);
   updateLiveBadge();
   renderColumns();
@@ -197,7 +197,7 @@ function showOnboarding() {
 
   m.appendChild(el('div', 'label', 'See your real sessions here in 3 steps'));
   const steps = el('div', 'onb-steps');
-  [['1', 'pip install kanbot'],
+  [['1', 'pipx install kanbot     (or: uvx kanbot up)'],
    ['2', 'kanbot up   — starts a local server + runner'],
    ['3', "hit “Connect to local” below (or just reload)"]].forEach(([n, t]) => {
     const row = el('div', 'onb-step');
