@@ -92,6 +92,57 @@ def _parse_ts(s: Any) -> Optional[float]:
         return None
 
 
+def _claude_line_msg(d: dict):
+    t = d.get("type")
+    if t == "user" and not d.get("isMeta"):
+        txt = _extract_text((d.get("message") or {}).get("content"))
+        if not _is_noise(txt):
+            return ("user", txt)
+    elif t == "assistant":
+        txt = _extract_text((d.get("message") or {}).get("content"))
+        if txt and txt.strip():
+            return ("assistant", txt)
+    return None
+
+
+def _codex_line_msg(d: dict):
+    payload = d.get("payload", d)
+    if not isinstance(payload, dict):
+        return None
+    role = payload.get("role")
+    content = payload.get("content") or payload.get("message")
+    if role == "user" or payload.get("type") == "user_message":
+        txt = _extract_text(content)
+        if not _is_noise(txt):
+            return ("user", txt)
+    if role == "assistant" or payload.get("type") in ("agent_message", "assistant_message"):
+        txt = _extract_text(content)
+        if txt and txt.strip():
+            return ("assistant", txt)
+    return None
+
+
+def _tail_msgs(path: Path, line_fn, want: int = 5) -> List:
+    """Collect recent text-bearing messages, scanning further back if the
+    immediate tail is all tool calls (so the recap is never just the 1st msg)."""
+    size = path.stat().st_size
+    msgs: List = []
+    for window in (150_000, 800_000):
+        lines = _read_tail(path, window)
+        msgs = []
+        for line in lines:
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            m = line_fn(d)
+            if m:
+                msgs.append(m)
+        if len(msgs) >= want or window >= size:
+            break
+    return msgs
+
+
 def _build(agent: str, sid: str, cwd: Optional[str], preview: Optional[str],
            msgs: List, n_user: int, started_at: Optional[float], name: str) -> Dict[str, Any]:
     """Assemble a session record from a parsed head preview + message tail."""
@@ -163,21 +214,7 @@ def _scan_claude_file(path: Path) -> Optional[Dict[str, Any]]:
                             preview = txt
     except OSError:
         return None
-    msgs = []
-    for line in _read_tail(path):
-        try:
-            d = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        t = d.get("type")
-        if t == "user" and not d.get("isMeta"):
-            txt = _extract_text((d.get("message") or {}).get("content"))
-            if not _is_noise(txt):
-                msgs.append(("user", txt))
-        elif t == "assistant":
-            txt = _extract_text((d.get("message") or {}).get("content"))
-            if txt and txt.strip():
-                msgs.append(("assistant", txt))
+    msgs = _tail_msgs(path, _claude_line_msg)
     return _build("claude", path.stem, cwd, preview, msgs, n_user, started_at,
                   _name_from_cwd(cwd or "", f"claude·{path.stem[:6]}"))
 
@@ -253,25 +290,7 @@ def _scan_codex_file(path: Path) -> Optional[Dict[str, Any]]:
                             preview = txt
     except OSError:
         return None
-    msgs = []
-    for line in _read_tail(path):
-        try:
-            d = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        payload = d.get("payload", d)
-        if not isinstance(payload, dict):
-            continue
-        role = payload.get("role")
-        content = payload.get("content") or payload.get("message")
-        if role == "user" or payload.get("type") == "user_message":
-            txt = _extract_text(content)
-            if not _is_noise(txt):
-                msgs.append(("user", txt))
-        elif role == "assistant" or payload.get("type") in ("agent_message", "assistant_message"):
-            txt = _extract_text(content)
-            if txt and txt.strip():
-                msgs.append(("assistant", txt))
+    msgs = _tail_msgs(path, _codex_line_msg)
     return _build("codex", sid, cwd, preview, msgs, n_user, started_at,
                   _name_from_cwd(cwd or "", f"codex·{sid[:6]}"))
 
