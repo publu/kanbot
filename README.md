@@ -1,101 +1,115 @@
-# Deckhand
+# KanBot
 
-**A Kanban board where every card is a task run by your local CLI coding agents.**
+**A visual control room for your coding-agent TUIs — and a Kanban board where every card is a task run by them.**
 
-Trello, but the cards *do the work*. Drop a task on the board, pick an agent
-(Claude Code, Codex, Gemini, GLM/Z.ai, Aider, OpenCode, Cursor — or any CLI you
-define), and a background runner on your machine executes it and streams the logs
-straight back to the card. Cards carry tags that pull live insight from other
-spots (git status, changed files, test output).
+You run a lot of terminal coding agents (Claude Code, Codex, …). KanBot gives you
+one screen to *see what every session is doing*, pick any of them back up, and
+drop new tasks that agents run for you — with live logs streamed straight to the
+card.
+
+Two things in one board:
+
+1. **Track your TUIs.** A background runner watches each agent's local session
+   store and surfaces every session as a card: the project, the latest message,
+   how many turns, how long it's been brewing, and whether it's **working right
+   now**. Sessions flow by recency — working → **Running**, just-finished →
+   **Done**, older → **Backlog**.
+2. **Run new tasks.** Drop a card, pick an agent, and the runner executes it and
+   streams stdout/stderr to the card. Or drag any tracked session into **Running**
+   to resume it (`claude --resume`, `codex exec resume`).
 
 ```
-┌─────────┐   ┌─────────┐   ┌─────────┐   ┌─────────┐   ┌─────────┐
-│ Backlog │ → │ Queued  │ → │ Running │ → │ Review  │ → │  Done   │
-└─────────┘   └─────────┘   └────┬────┘   └─────────┘   └─────────┘
-                                 │ runner picks it up, runs `claude -p …`,
-                                 │ streams stdout/stderr to the card live
-                                 ▼
-                        ╔════════════════════╗
-                        ║  deckhand runner    ║  (pip-installed, background)
-                        ║  detects: claude,   ║
-                        ║  codex, gemini, …   ║
-                        ╚════════════════════╝
+ Backlog            Running            Review      Done
+ (stale sessions    (sessions          (your       (recently
+  + new tasks)       working now        finished    finished
+                     + running tasks)   tasks)       sessions)
+        │  drag → Running, or "Run", queues for a runner
+        ▼
+   ╔══════════════════════════════╗
+   ║  kanbot runner (background)   ║  detects claude · codex · gemini · glm · shell
+   ║  watches ~/.claude, ~/.codex  ║  executes & resumes, streams logs back
+   ╚══════════════════════════════╝
 ```
 
 ## Quickstart
 
 ```bash
-pip install -e .          # from this repo (or: pip install deckhand)
-deckhand up               # starts the server + a local runner, opens the board
+pip install -e .      # from this repo (PyPI: kanbot, coming soon)
+kanbot up             # server + local runner, opens the board at :8787
 ```
 
-Then in the browser: hit **+ add task**, write a prompt, choose an agent, and
-**Queue now**. Watch it run.
+The board immediately fills with your recent Claude/Codex sessions. Click any one
+to see its recent transcript in a terminal view and **resume** it; or hit
+**+ add task** to give an agent fresh work.
 
-Prefer the pieces separate (e.g. runner on a different machine):
+Run the pieces separately (e.g. runner on another machine):
 
 ```bash
-deckhand server                                   # on the host
-deckhand runner --server http://HOST:8787 --name gpu-box   # on each worker
+kanbot server                                   # the board / API
+kanbot runner --server http://HOST:8787 --name gpu-box
 ```
 
-## How it works
+## Tracking other agents (Hermes, OpenCode, your own…)
 
-- **Server** (`deckhand server`) — FastAPI + SQLite. Serves the board UI, a REST
-  API, and two WebSocket channels: one for the live board, one for runners.
-- **Runner** (`deckhand runner`) — connects over WebSocket, detects which agent
-  CLIs are on your `PATH`, advertises them as capabilities, and executes assigned
-  tasks, streaming output back line-by-line.
-- **Board** — five default columns (Backlog → Queued → Running → Review → Done).
-  Dropping a card into **Queued** dispatches it to an available runner. The card
-  auto-advances to **Running**, then **Review** (on success) or shows **failed**.
+Claude Code and Codex are tracked out of the box. Any agent that logs
+newline-delimited JSON transcripts can be added with **no code change** — point
+KanBot at its store in `~/.kanbot/config.json` (a.k.a. `~/.deckhand/config.json`):
 
-## Agents
-
-`deckhand agents` shows what's detected locally. Built-in catalog:
-
-| agent | invocation |
-|-------|------------|
-| `claude` | `claude -p "<prompt>" --dangerously-skip-permissions` |
-| `codex` | `codex exec --full-auto "<prompt>"` |
-| `gemini` | `gemini -y -p "<prompt>"` |
-| `glm` | Claude Code pointed at `ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic` |
-| `opencode` | `opencode run "<prompt>"` |
-| `aider` | `aider --yes --message "<prompt>"` |
-| `cursor-agent` | `cursor-agent -p "<prompt>"` |
-| `shell` | `bash -lc "<prompt>"` (always available) |
-
-**"…or whatever else is available in the CLI"** — override or add any agent:
-
-```bash
-deckhand config            # show current config
-# edit ~/.deckhand/config.json -> "agent_overrides": { "claude": "claude -p {prompt} --model opus" }
+```json
+{
+  "discovery_sources": [
+    {
+      "name": "hermes",
+      "label": "Hermes",
+      "root": "~/.hermes/sessions",
+      "pattern": "*.jsonl",
+      "recursive": true,
+      "fmt": "claude"
+    }
+  ]
+}
 ```
 
-A card set to `auto` runs on whatever the matched runner has (preferring a real
-coding agent over the raw `shell` fallback).
+- `fmt`: `"claude"` for flat records (`{type, message, cwd, timestamp}`) or
+  `"codex"` for payload-nested records (`{payload: {role, content, cwd}}`).
+- `kanbot agents` shows which trackers are active and where they read from.
+
+## Run agents
+
+`kanbot agents` lists the CLIs detected on this machine. Built-in catalog:
+
+| agent | run | resume |
+|-------|-----|--------|
+| `claude` | `claude -p "<prompt>"` | `claude --resume <id> -p "<prompt>"` |
+| `codex` | `codex exec --full-auto "<prompt>"` | `codex exec resume <id> "<prompt>"` |
+| `gemini` | `gemini -y -p "<prompt>"` | — |
+| `glm` | Claude Code w/ `ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic` | ✓ |
+| `opencode`, `aider`, `cursor-agent`, `hermes`, `shell` | see `deckhand/agents.py` | — |
+
+Override or add any agent's command in `~/.kanbot/config.json` →
+`agent_overrides`. A card set to `auto` runs on whatever the matched runner has.
+
+> Note: built-in run commands use auto-approve flags so tasks run unattended.
+> Review `deckhand/agents.py` and dial them back if you want a human in the loop.
 
 ## Tags & insights
 
-Tags are colored labels. A tag can also be an **insight provider** (marked ◆)
-that pulls live context onto any card wearing it:
+Tags are colored labels; a tag can also be an **insight provider** (◆) that pulls
+live context onto any card: **git** (branch/diff), **files** (recent changes), or
+a **custom command** (e.g. `pytest -q`).
 
-- **Git status & diff** — branch, changed files, diffstat for the card's repo.
-- **Recent files** — most recently modified files in the working directory.
-- **Custom command** — runs a read-only command (e.g. `pytest -q`) and shows the tail.
-
-## CLI reference
+## CLI
 
 ```
-deckhand up         start server + local runner (best first run)
-deckhand server     web server / API only
-deckhand runner     background runner only  (--server, --name, --concurrency)
-deckhand agents     show detected CLI agents
-deckhand config     view/set server URL, token, runner name, enable/disable agents
-deckhand open       open the board in a browser
+kanbot up         server + local runner (best first run)
+kanbot server     board / API only
+kanbot runner     background runner only  (--server, --name, --concurrency)
+kanbot agents     detected agents + active session trackers
+kanbot config     server URL, token, runner name, enable/disable agents
+kanbot open       open the board
 ```
 
-Config lives in `~/.deckhand/config.json`; data in `~/.deckhand/deckhand.db`.
+Config: `~/.deckhand/config.json` · data: `~/.deckhand/deckhand.db`.
 Set `DECKHAND_TOKEN` on the server to require a matching `--token` from runners.
 
 ## License
