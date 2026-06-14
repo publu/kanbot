@@ -65,7 +65,7 @@ kanbot runner --server http://HOST:8787 --name gpu-box
 
 Claude Code and Codex are tracked out of the box. Any agent that logs
 newline-delimited JSON transcripts can be added with **no code change** — point
-KanBot at its store in `~/.kanbot/config.json` (a.k.a. `~/.kanbot/config.json`):
+KanBot at its store in `~/.kanbot/config.json`:
 
 ```json
 {
@@ -93,7 +93,7 @@ KanBot at its store in `~/.kanbot/config.json` (a.k.a. `~/.kanbot/config.json`):
 | agent | run | resume |
 |-------|-----|--------|
 | `claude` | `claude -p "<prompt>"` | `claude --resume <id> -p "<prompt>"` |
-| `codex` | `codex exec --full-auto "<prompt>"` | `codex exec resume <id> "<prompt>"` |
+| `codex` | `codex exec --sandbox workspace-write "<prompt>"` | `codex exec resume <id> "<prompt>"` |
 | `gemini` | `gemini -y -p "<prompt>"` | — |
 | `glm` | Claude Code w/ `ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic` | ✓ |
 | `opencode`, `aider`, `cursor-agent`, `hermes`, `shell` | see `kanbot/agents.py` | — |
