@@ -17,6 +17,8 @@ class CardCreate(BaseModel):
     agent: str = "auto"
     cwd: str = ""
     column_id: Optional[str] = None
+    loop_max: int = 1
+    loop_until: str = ""
 
 
 class CardPatch(BaseModel):
@@ -26,6 +28,8 @@ class CardPatch(BaseModel):
     cwd: Optional[str] = None
     status: Optional[str] = None
     auto_advance: Optional[bool] = None
+    loop_max: Optional[int] = None
+    loop_until: Optional[str] = None
 
 
 class CardMove(BaseModel):

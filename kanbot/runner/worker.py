@@ -1,10 +1,11 @@
-"""The background runner: connects to the Deckhand server over WebSocket,
+"""The background runner: connects to the KanBot server over WebSocket,
 advertises which CLI agents are installed locally, and executes assigned tasks.
 """
 from __future__ import annotations
 
 import asyncio
 import json
+import os
 import platform
 from typing import Dict, Optional
 
@@ -13,6 +14,9 @@ import websockets
 from ..config import Config
 from .agents import Execution, ResolvedAgent, detect_agents, run_agent
 from .discovery import discover_all
+
+# Safety cap so a Ralph loop can't run away on its own.
+MAX_LOOP_ITERATIONS = 100
 
 
 class Runner:
@@ -125,6 +129,8 @@ class Runner:
         prompt = msg.get("prompt", "")
         cwd = msg.get("cwd", "")
         resume_of = msg.get("resume_of", "")
+        loop_max = min(MAX_LOOP_ITERATIONS, max(1, int(msg.get("loop_max", 1) or 1)))
+        loop_until = msg.get("loop_until", "") or ""
         agent = self.agents.get(agent_name)
         await self.send({"type": "session.start", "session_id": sid})
         self.log(f"running session {sid} with '{agent_name}'")
@@ -143,7 +149,25 @@ class Runner:
             self.executions[sid] = ex
 
         try:
-            rc = await run_agent(agent, prompt, cwd, on_log, register, resume_of=resume_of)
+            # Ralph loop: run the agent with fresh context up to loop_max times,
+            # stopping early when loop_until (a shell predicate) exits 0 in cwd.
+            rc = 0
+            for i in range(1, loop_max + 1):
+                if loop_max > 1:
+                    await on_log("system", f"━━━━━ iteration {i}/{loop_max} ━━━━━")
+                rc = await run_agent(agent, prompt, cwd, on_log, register,
+                                     resume_of=resume_of if i == 1 else "")
+                if loop_max == 1:
+                    break
+                if loop_until:
+                    done = await self._loop_done(loop_until, cwd, on_log)
+                    if done:
+                        await on_log("system", f"✓ stop condition met after iteration {i}")
+                        break
+                    if i < loop_max:
+                        await on_log("system", "stop condition not met — looping with fresh context")
+                if i >= loop_max:
+                    await on_log("system", f"reached max iterations ({loop_max})")
             status = "success" if rc == 0 else "failed"
             await self.send({"type": "session.end", "session_id": sid,
                              "status": status, "exit_code": rc})
@@ -159,6 +183,23 @@ class Runner:
         finally:
             self.executions.pop(sid, None)
             self.tasks.pop(sid, None)
+
+    async def _loop_done(self, predicate: str, cwd: str, on_log) -> bool:
+        """Run the loop-stop predicate (a shell command) in cwd. Exit 0 = stop."""
+        workdir = cwd if cwd and os.path.isdir(cwd) else os.getcwd()
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "bash", "-lc", predicate, cwd=workdir,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+            )
+            out, _ = await proc.communicate()
+            if out:
+                await on_log("system", f"[stop-check] {out.decode('utf-8','replace').strip()[:200]}")
+            return proc.returncode == 0
+        except OSError as e:
+            await on_log("stderr", f"stop-check failed: {e}")
+            return False
 
     async def _cancel(self, sid: str) -> None:
         ex = self.executions.get(sid)

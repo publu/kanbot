@@ -43,6 +43,8 @@ CREATE TABLE IF NOT EXISTS cards (
     auto_advance INTEGER DEFAULT 1,
     resume_of   TEXT DEFAULT '',   -- external agent session id this card resumes
     pin_runner  TEXT DEFAULT '',   -- if set, only this runner may execute the card
+    loop_max    INTEGER DEFAULT 1, -- Ralph loop: max fresh-context iterations (1 = run once)
+    loop_until  TEXT DEFAULT '',   -- shell predicate; exit 0 in cwd => stop the loop early
     created_at  REAL NOT NULL,
     updated_at  REAL NOT NULL,
     FOREIGN KEY (board_id) REFERENCES boards(id) ON DELETE CASCADE
@@ -139,7 +141,9 @@ class DB:
         """Additive migrations for DBs created by an earlier version."""
         cols = {r["name"] for r in self.q("PRAGMA table_info(cards)")}
         for name, ddl in (("resume_of", "TEXT DEFAULT ''"),
-                          ("pin_runner", "TEXT DEFAULT ''")):
+                          ("pin_runner", "TEXT DEFAULT ''"),
+                          ("loop_max", "INTEGER DEFAULT 1"),
+                          ("loop_until", "TEXT DEFAULT ''")):
             if name not in cols:
                 self.conn.execute(f"ALTER TABLE cards ADD COLUMN {name} {ddl}")
         # Drop deprecated columns from older boards, relocating any stray cards:
@@ -216,16 +220,16 @@ class DB:
     # -- cards -------------------------------------------------------------
     def create_card(self, board_id: str, column_id: str, title: str, prompt: str = "",
                      agent: str = "auto", cwd: str = "", resume_of: str = "",
-                     pin_runner: str = "") -> Dict[str, Any]:
+                     pin_runner: str = "", loop_max: int = 1, loop_until: str = "") -> Dict[str, Any]:
         cid = gen_id()
         pos = self._next_position(column_id)
         ts = now()
         self.exec(
             """INSERT INTO cards (id, board_id, column_id, title, prompt, agent, cwd,
-               status, position, resume_of, pin_runner, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               status, position, resume_of, pin_runner, loop_max, loop_until, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (cid, board_id, column_id, title, prompt, agent, cwd, "idle", pos,
-             resume_of, pin_runner, ts, ts),
+             resume_of, pin_runner, max(1, int(loop_max or 1)), loop_until, ts, ts),
         )
         return self.get_card(cid)
 

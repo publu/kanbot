@@ -538,6 +538,7 @@ function renderCard(c) {
   const meta = el('div', 'cmeta');
   meta.appendChild(agentBadge(c.agent));
   if (c.resume_of) meta.appendChild(el('span', 'resume-badge', '⟳ resumed'));
+  if (c.loop_max > 1) meta.appendChild(el('span', 'resume-badge', `⟳ loop ×${c.loop_max}`));
   card.appendChild(meta);
 
   if (c.tags && c.tags.length) {
@@ -645,6 +646,14 @@ function openComposer(columnId) {
   m.appendChild(row);
   m.appendChild(cwd.wrap);
 
+  // Ralph loop (optional): run fresh-context iterations until a shell predicate passes
+  const loopMax = inputField('Loop iterations (1 = run once)', '1');
+  loopMax.input.type = 'number'; loopMax.input.min = '1'; loopMax.input.value = '1';
+  const loopUntil = inputField('Loop until (shell exits 0 = stop)', 'e.g. ! grep -q "[ ]" todo.md');
+  const loopRow = el('div', 'row');
+  loopRow.appendChild(loopMax.wrap); loopRow.appendChild(loopUntil.wrap);
+  m.appendChild(loopRow);
+
   const actions = el('div', 'modal-actions');
   const cancel = el('button', 'btn ghost', 'Cancel');
   cancel.onclick = closeModal;
@@ -658,6 +667,8 @@ function openComposer(columnId) {
       agent: agentSel.select.value,
       cwd: cwd.input.value,
       column_id: columnId,
+      loop_max: parseInt(loopMax.input.value) || 1,
+      loop_until: loopUntil.input.value,
     });
     closeModal();
     if (queue) { try { await api.post(`/api/cards/${card.id}/run`); } catch (e) { toast(e.message); } }
@@ -729,6 +740,18 @@ function renderDrawerBody(card) {
   cwd.input.onblur = () => patchCard(card.id, { cwd: cwd.input.value });
   row.appendChild(agentSel.wrap); row.appendChild(cwd.wrap);
   body.appendChild(row);
+
+  // Ralph loop controls
+  const loopRow = el('div', 'row');
+  const loopMax = inputField('Loop iterations', '1');
+  loopMax.input.type = 'number'; loopMax.input.min = '1';
+  loopMax.input.value = String(card.loop_max || 1);
+  loopMax.input.onblur = () => patchCard(card.id, { loop_max: parseInt(loopMax.input.value) || 1 });
+  const loopUntil = inputField('Loop until (shell exits 0 = stop)', 'e.g. ! grep -q "[ ]" todo.md');
+  loopUntil.input.value = card.loop_until || '';
+  loopUntil.input.onblur = () => patchCard(card.id, { loop_until: loopUntil.input.value });
+  loopRow.appendChild(loopMax.wrap); loopRow.appendChild(loopUntil.wrap);
+  body.appendChild(loopRow);
 
   // auto-advance toggle
   const tg = el('label', 'toggle');
