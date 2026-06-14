@@ -875,6 +875,123 @@ function openManageTags() {
   m.appendChild(actions); openModal();
 }
 
+// ---- API reference (so anyone can build their own UI) -------------------
+const API_SPEC = `KanBot HTTP + WebSocket API
+===========================
+KanBot is a local server that turns your coding-agent TUIs (Claude Code, Codex,
+and any agent that logs JSONL) into a visual Kanban board. This document is the
+complete API — paste it into an LLM (or read it) to build your own UI/client.
+
+BASE URL
+  http://127.0.0.1:8787   (the server origin; change host/port as needed)
+  Start it with: pip install kanbot && kanbot up
+AUTH
+  None by default. If the server sets env DECKHAND_TOKEN, runners must pass it as
+  the ws query param ?token=...; REST is open on localhost.
+CONTENT TYPE
+  JSON for all request/response bodies.
+
+CORE MODEL
+  Board     { id, name, repo_path, created_at }
+  Column    { id, board_id, name, kind, position }
+            kind in: backlog | running | review | done   (queue is a status, not a column)
+  Card      { id, board_id, column_id, title, prompt, agent, cwd, status,
+              position, auto_advance, resume_of, pin_runner, tags[], created_at, updated_at }
+            status in: idle | queued | running | review | done | failed | cancelled
+            agent: "auto" or an agent name (claude, codex, gemini, glm, shell, ...)
+            resume_of: an external session id this card resumes (optional)
+            pin_runner: restrict execution to one runner id (optional)
+  Tag       { id, board_id, name, color, insight, config }
+            insight in: "" (plain label) | git | files | command
+  Session   { id, card_id, board_id, runner_id, runner_name, agent, status,
+              prompt, cwd, exit_code, started_at, ended_at, created_at }
+            status in: pending | assigned | running | success | failed | cancelled
+  Event     { id, session_id, ts, stream, text }   stream in: stdout|stderr|system
+  Runner    { id, name, host, capabilities[], status, active, max_concurrency, last_seen }
+            status in: online | busy | offline
+  AgentSession (a discovered TUI session, the heart of KanBot)
+            { agent, session_id, name, cwd, recap, recap_role, last_user, last_text,
+              tail:[{role,text}], turns, started_at, mtime, duration, active,
+              runner_id, runner_name }
+            active=true means its transcript was written in the last ~45s (working now).
+
+REST ENDPOINTS
+  GET    /api/health                         -> { ok, version, runners }
+  GET    /api/agents                         -> { agents:[{name,label,bin,description,color}], insights:[...] }
+  GET    /api/runners                        -> { runners:[Runner] }
+  GET    /api/agent-sessions                 -> { sessions:[AgentSession] }   (all discovered TUIs)
+
+  GET    /api/boards                         -> { boards:[Board] }
+  POST   /api/boards            {name, repo_path?}      -> { board, columns, cards, tags }
+  GET    /api/boards/{id}                     -> { board, columns, cards, tags }
+  DELETE /api/boards/{id}                     -> { ok }
+
+  POST   /api/boards/{id}/cards {title, prompt?, agent?, cwd?, column_id?} -> Card
+  PATCH  /api/cards/{id}        {title?,prompt?,agent?,cwd?,status?,auto_advance?} -> Card
+  POST   /api/cards/{id}/move   {column_id, position}  -> Card   (drop into 'running' kind = queue it)
+  POST   /api/cards/{id}/run                  -> Card   (queue this card for a runner now)
+  DELETE /api/cards/{id}                      -> { ok }
+  GET    /api/cards/{id}/insights             -> { insights:[{ok,title,summary,lines,detail,tag}] }
+
+  POST   /api/boards/{id}/tags  {name,color?,insight?,config?}  -> Tag
+  DELETE /api/tags/{id}                       -> { ok }
+  POST   /api/cards/{id}/tags   {tag_id}      -> Card
+  DELETE /api/cards/{id}/tags/{tag_id}        -> Card
+
+  GET    /api/sessions?board_id=&card_id=     -> { sessions:[Session] }
+  GET    /api/sessions/{id}?after=<event_id>  -> { session, events:[Event] }
+  POST   /api/sessions/{id}/cancel            -> { ok }
+
+  POST   /api/boards/{id}/revive
+         {runner_id, agent, session_id, cwd?, title?, prompt?, run?}  -> Card
+         Adopts a discovered AgentSession as a card that RESUMES it
+         (claude --resume / codex exec resume). run=true dispatches immediately.
+
+WEBSOCKET (live updates): ws://127.0.0.1:8787/ws/web
+  Read-only stream of JSON events. Connect and re-render on each:
+    { type:"hello", version }
+    { type:"card.created"|"card.updated", card:Card }
+    { type:"card.deleted", card_id }
+    { type:"session.created"|"session.updated", session:Session }
+    { type:"session.event", session_id, event:Event }     (live log line)
+    { type:"runner.updated", runner:Runner }
+    { type:"agent.sessions.updated" }                       (re-fetch /api/agent-sessions)
+    { type:"board.created"|"board.deleted", ... }
+    { type:"tag.created"|"tag.deleted", ... }
+
+LIFECYCLE
+  Discovered TUIs are bucketed by recency: working now -> Running column,
+  finished < 30 min -> Done, older -> Backlog. A card you run goes
+  idle -> queued -> running -> (success) review / (fail) failed. A scheduler
+  matches queued cards to idle runners by agent capability (and pin_runner).
+
+HOW TO BUILD A UI
+  1. GET /api/boards (or create one), render columns + cards.
+  2. GET /api/agent-sessions and bucket by .active and (now - .mtime).
+  3. Open /ws/web; apply events to your local state.
+  4. To run work: POST a card then POST /api/cards/{id}/run; stream its logs via
+     GET /api/sessions/{id} then ws session.event lines.
+  5. To resume a TUI: POST /api/boards/{id}/revive with the AgentSession fields.
+`;
+
+function openApiModal() {
+  const m = $('#modal'); m.innerHTML = '';
+  m.appendChild(el('h3', null, 'KanBot API — build your own UI'));
+  m.appendChild(el('div', 'label', 'Complete REST + WebSocket reference. Copy it into an LLM to scaffold a client.'));
+  const pre = el('pre', 'api-spec'); pre.textContent = API_SPEC;
+  m.appendChild(pre);
+  const actions = el('div', 'modal-actions');
+  const copy = el('button', 'btn', 'Copy spec');
+  copy.onclick = async () => {
+    try { await navigator.clipboard.writeText(API_SPEC); copy.textContent = 'Copied ✓'; setTimeout(() => copy.textContent = 'Copy spec', 1500); }
+    catch (e) { toast('copy failed — select & copy manually'); }
+  };
+  const close = el('button', 'btn primary', 'Done'); close.onclick = closeModal;
+  actions.appendChild(copy); actions.appendChild(close);
+  m.appendChild(actions);
+  openModal(); m.classList.add('wide');
+}
+
 // ---- sessions browser + revive -----------------------------------------
 function openSessionsModal() {
   S.sessionsModalOpen = true;
@@ -1030,6 +1147,7 @@ function closeModal() { $('#modalScrim').classList.remove('open'); S.sessionsMod
 function wireGlobalUI() {
   $('#sessionsBtn').onclick = openSessionsModal;
   $('#manageTagsBtn').onclick = openManageTags;
+  $('#apiBtn').onclick = openApiModal;
   $('#drawerClose').onclick = closeDrawer;
   $('#drawerScrim').onclick = closeDrawer;
   $('#modalScrim').onclick = (e) => { if (e.target.id === 'modalScrim') closeModal(); };

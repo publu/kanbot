@@ -337,6 +337,13 @@ input, textarea, select { font-family: var(--ui); }
 }
 .demo-pill b { color: var(--text); font-weight: 600; }
 
+/* API reference modal */
+.api-spec {
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.55; color: #cdd3dd;
+  background: #07080b; border: 1px solid var(--line); border-radius: var(--radius-sm);
+  padding: 14px 16px; max-height: 58vh; overflow: auto; white-space: pre;
+}
+
 /* live badge on the sessions button */
 .live-badge {
   background: var(--cyan); color: #062227; font-family: var(--mono); font-weight: 700;
