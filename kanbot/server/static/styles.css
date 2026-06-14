@@ -337,6 +337,17 @@ input, textarea, select { font-family: var(--ui); }
 }
 .demo-pill b { color: var(--text); font-weight: 600; }
 
+/* copy-pasteable command row */
+.cmd-row { display: flex; align-items: center; gap: 8px; background: #07080b;
+  border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 9px 10px 9px 12px; }
+.cmd-row .cmd-text { font-family: var(--mono); font-size: 13px; color: #d6dbe4; flex: 1;
+  white-space: nowrap; overflow-x: auto; }
+.cmd-row .cmd-text::before { content: '$ '; color: var(--text-faint); }
+.cmd-row .cmd-copy { font-family: var(--mono); font-size: 11px; color: var(--text-dim);
+  background: var(--surface-3); border: 1px solid var(--line); border-radius: 6px;
+  padding: 5px 11px; flex: 0 0 auto; transition: .12s; cursor: pointer; }
+.cmd-row .cmd-copy:hover { border-color: var(--brand); color: var(--brand); }
+
 /* local-network-access warning */
 .lna-warn {
   font-size: 13px; line-height: 1.55; color: var(--text);

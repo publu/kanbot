@@ -148,6 +148,18 @@ function enterDemo(showModal = true) {
   if (showModal) showOnboarding();
 }
 
+function cmdRow(cmd) {
+  const row = el('div', 'cmd-row');
+  row.appendChild(el('code', 'cmd-text', cmd));
+  const btn = el('button', 'cmd-copy', 'copy');
+  btn.onclick = async () => {
+    try { await navigator.clipboard.writeText(cmd); btn.textContent = 'copied ✓'; setTimeout(() => btn.textContent = 'copy', 1200); }
+    catch (e) { toast('copy failed — select & copy manually'); }
+  };
+  row.appendChild(btn);
+  return row;
+}
+
 function showConnectModal() {
   const m = $('#modal'); m.innerHTML = '';
   m.appendChild(el('h3', null, 'Connect to your local KanBot'));
@@ -160,10 +172,12 @@ function showConnectModal() {
     '<b>Nothing leaves your machine</b>; the page talks only to your own computer.';
   m.appendChild(warn);
 
-  const note = el('div', null,
-    "If you haven't installed it yet: run  pip install kanbot  then  kanbot up  — and you can always explore the demo instead.");
-  note.style.cssText = 'font-size:12.5px;line-height:1.5;color:var(--text-dim);';
-  m.appendChild(note);
+  m.appendChild(el('div', 'label', "Don't have KanBot yet? Copy & run this:"));
+  m.appendChild(cmdRow('pipx install kanbot && kanbot up'));
+  const alt = el('div', null,
+    'No pipx? →  brew install pipx   ·   or zero-install:  uvx kanbot up');
+  alt.style.cssText = 'font-family:var(--mono);font-size:11px;color:var(--text-faint);line-height:1.5;';
+  m.appendChild(alt);
 
   const actions = el('div', 'modal-actions');
   const demo = el('button', 'btn ghost', 'Explore the demo');
@@ -195,17 +209,11 @@ function showOnboarding() {
   what.style.cssText = 'font-size:13px;line-height:1.55;color:var(--text-dim);';
   m.appendChild(what);
 
-  m.appendChild(el('div', 'label', 'See your real sessions here in 3 steps'));
-  const steps = el('div', 'onb-steps');
-  [['1', 'pipx install kanbot     (or: uvx kanbot up)'],
-   ['2', 'kanbot up   — starts a local server + runner'],
-   ['3', "hit “Connect to local” below (or just reload)"]].forEach(([n, t]) => {
-    const row = el('div', 'onb-step');
-    row.appendChild(el('span', 'onb-num', n));
-    row.appendChild(el('code', null, t));
-    steps.appendChild(row);
-  });
-  m.appendChild(steps);
+  m.appendChild(el('div', 'label', 'Get your real sessions here — copy & run:'));
+  m.appendChild(cmdRow('pipx install kanbot && kanbot up'));
+  const tip = el('div', null, 'then reload this page — it auto-connects to your local KanBot.');
+  tip.style.cssText = 'font-size:12px;color:var(--text-dim);line-height:1.5;';
+  m.appendChild(tip);
 
   const note = el('div', 'label',
     'This page auto-connects to a local KanBot at http://127.0.0.1:8787 — or open that URL directly.');
