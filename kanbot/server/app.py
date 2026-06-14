@@ -299,6 +299,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                     conn.host = msg.get("host", "")
                     conn.capabilities = msg.get("capabilities", [])
                     conn.max_concurrency = int(msg.get("max_concurrency", 2))
+                    conn.auto_approve = bool(msg.get("auto_approve", True))
                     await hub.register_runner(conn)
                     await ws.send_text(json.dumps({"type": "welcome", "runner_id": rid}))
                 elif mtype == "ping":

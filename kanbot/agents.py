@@ -27,6 +27,10 @@ class AgentSpec:
     # argv template to resume/continue an existing agent session. Tokens may
     # contain {prompt} and {session_id}. Empty => resume not supported.
     resume_argv: List[str] = field(default_factory=list)
+    # Safe-mode argv: same command without auto-approve/yolo flags (so the agent
+    # can't act unattended). Empty => no safer variant; argv is used as-is.
+    safe_argv: List[str] = field(default_factory=list)
+    safe_resume_argv: List[str] = field(default_factory=list)
 
 
 # Non-interactive / headless invocations for each known coding CLI.
@@ -38,6 +42,8 @@ BUILTIN_AGENTS: List[AgentSpec] = [
         argv=["claude", "-p", "{prompt}", "--dangerously-skip-permissions"],
         resume_argv=["claude", "--resume", "{session_id}", "-p", "{prompt}",
                      "--dangerously-skip-permissions"],
+        safe_argv=["claude", "-p", "{prompt}"],
+        safe_resume_argv=["claude", "--resume", "{session_id}", "-p", "{prompt}"],
         description="Anthropic Claude Code in headless print mode.",
         color="#d97757",
     ),
@@ -49,6 +55,10 @@ BUILTIN_AGENTS: List[AgentSpec] = [
               "--skip-git-repo-check", "{prompt}"],
         resume_argv=["codex", "exec", "resume", "--skip-git-repo-check",
                      "{session_id}", "{prompt}"],
+        safe_argv=["codex", "exec", "--sandbox", "read-only",
+                   "--skip-git-repo-check", "{prompt}"],
+        safe_resume_argv=["codex", "exec", "resume", "--skip-git-repo-check",
+                          "{session_id}", "{prompt}"],
         description="OpenAI Codex CLI, non-interactive exec (workspace-write sandbox).",
         color="#10a37f",
     ),
@@ -57,6 +67,7 @@ BUILTIN_AGENTS: List[AgentSpec] = [
         label="Gemini CLI",
         bin="gemini",
         argv=["gemini", "-y", "-p", "{prompt}"],
+        safe_argv=["gemini", "-p", "{prompt}"],
         description="Google Gemini CLI in YOLO/auto mode.",
         color="#4285f4",
     ),
@@ -67,6 +78,8 @@ BUILTIN_AGENTS: List[AgentSpec] = [
         argv=["claude", "-p", "{prompt}", "--dangerously-skip-permissions"],
         resume_argv=["claude", "--resume", "{session_id}", "-p", "{prompt}",
                      "--dangerously-skip-permissions"],
+        safe_argv=["claude", "-p", "{prompt}"],
+        safe_resume_argv=["claude", "--resume", "{session_id}", "-p", "{prompt}"],
         description="Z.ai GLM coding plan via Claude Code (set ANTHROPIC_BASE_URL).",
         env={"ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic"},
         color="#2563eb",
@@ -92,6 +105,7 @@ BUILTIN_AGENTS: List[AgentSpec] = [
         label="Aider",
         bin="aider",
         argv=["aider", "--yes", "--no-auto-commits", "--message", "{prompt}"],
+        safe_argv=["aider", "--no-auto-commits", "--message", "{prompt}"],
         description="Aider pair-programmer, single message mode.",
         color="#22c55e",
     ),

@@ -101,6 +101,7 @@ CREATE TABLE IF NOT EXISTS runners (
     status        TEXT DEFAULT 'offline',  -- online|busy|offline
     active        INTEGER DEFAULT 0,
     max_concurrency INTEGER DEFAULT 2,
+    auto_approve  INTEGER DEFAULT 1,  -- 0 = safe mode (no auto-approve flags)
     last_seen     REAL,
     created_at    REAL NOT NULL
 );
@@ -170,6 +171,9 @@ class DB:
                           ("profile", "TEXT DEFAULT ''")):
             if name not in cols:
                 self.conn.execute(f"ALTER TABLE cards ADD COLUMN {name} {ddl}")
+        rcols = {r["name"] for r in self.q("PRAGMA table_info(runners)")}
+        if "auto_approve" not in rcols:
+            self.conn.execute("ALTER TABLE runners ADD COLUMN auto_approve INTEGER DEFAULT 1")
         # Drop deprecated columns from older boards, relocating any stray cards:
         #   info  -> backlog (sessions now live inline by recency)
         #   queued -> running (a card is queued via status, not a column)
@@ -410,19 +414,21 @@ class DB:
 
     # -- runners -----------------------------------------------------------
     def upsert_runner(self, runner_id: str, name: str, host: str,
-                      capabilities: List[str], max_concurrency: int = 2) -> Dict[str, Any]:
+                      capabilities: List[str], max_concurrency: int = 2,
+                      auto_approve: bool = True) -> Dict[str, Any]:
+        aa = 1 if auto_approve else 0
         existing = self.one("SELECT * FROM runners WHERE id=?", (runner_id,))
         if existing:
             self.exec(
                 """UPDATE runners SET name=?, host=?, capabilities=?, status='online',
-                   max_concurrency=?, last_seen=? WHERE id=?""",
-                (name, host, json.dumps(capabilities), max_concurrency, now(), runner_id),
+                   max_concurrency=?, auto_approve=?, last_seen=? WHERE id=?""",
+                (name, host, json.dumps(capabilities), max_concurrency, aa, now(), runner_id),
             )
         else:
             self.exec(
                 """INSERT INTO runners (id, name, host, capabilities, status, max_concurrency,
-                   last_seen, created_at) VALUES (?,?,?,?, 'online', ?,?,?)""",
-                (runner_id, name, host, json.dumps(capabilities), max_concurrency, now(), now()),
+                   auto_approve, last_seen, created_at) VALUES (?,?,?,?, 'online', ?,?,?,?)""",
+                (runner_id, name, host, json.dumps(capabilities), max_concurrency, aa, now(), now()),
             )
         return self.get_runner(runner_id)
 

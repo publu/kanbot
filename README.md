@@ -103,8 +103,12 @@ KanBot at its store in `~/.kanbot/config.json`:
 Override or add any agent's command in `~/.kanbot/config.json` →
 `agent_overrides`. A card set to `auto` runs on whatever the matched runner has.
 
-> Note: built-in run commands use auto-approve flags so tasks run unattended.
-> Review `kanbot/agents.py` and dial them back if you want a human in the loop.
+> **Safety:** by default agents run with auto-approve flags so tasks run
+> unattended (Claude `--dangerously-skip-permissions`, Codex `workspace-write`).
+> For **safe mode** — agents run without those flags (Codex read-only, Claude
+> without skip-permissions) — start with `kanbot up --safe` or set it persistently
+> with `kanbot config --safe` (`--unsafe` to revert). The runner shows a 🔒 safe
+> badge on the board when safe mode is on.
 
 ## Tags & insights
 

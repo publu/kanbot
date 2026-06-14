@@ -399,7 +399,10 @@ function renderRunners() {
     pill.appendChild(el('span', null, r.name));
     const caps = el('span', 'caps', (r.capabilities || []).join('·') || '—');
     pill.appendChild(caps);
-    pill.title = `${r.name} @ ${r.host} — ${r.active}/${r.max_concurrency} busy\nagents: ${(r.capabilities||[]).join(', ')}`;
+    const safe = r.auto_approve === 0 || r.auto_approve === false;
+    if (safe) { const lock = el('span', 'runner-safe', '🔒 safe'); pill.appendChild(lock); }
+    pill.title = `${r.name} @ ${r.host} — ${r.active}/${r.max_concurrency} busy\n`
+      + `mode: ${safe ? 'SAFE (no auto-approve)' : 'auto-approve'}\nagents: ${(r.capabilities||[]).join(', ')}`;
     wrap.appendChild(pill);
   }
 }

@@ -87,6 +87,7 @@ class Runner:
             "host": platform.node(),
             "capabilities": list(self.agents.keys()),
             "max_concurrency": self.cfg.max_concurrency,
+            "auto_approve": self.cfg.auto_approve,
         })
 
     async def _discover_loop(self) -> None:
@@ -156,7 +157,8 @@ class Runner:
                 if loop_max > 1:
                     await on_log("system", f"━━━━━ iteration {i}/{loop_max} ━━━━━")
                 rc = await run_agent(agent, prompt, cwd, on_log, register,
-                                     resume_of=resume_of if i == 1 else "")
+                                     resume_of=resume_of if i == 1 else "",
+                                     auto_approve=self.cfg.auto_approve)
                 if loop_max == 1:
                     break
                 if loop_until:

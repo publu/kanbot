@@ -44,6 +44,9 @@ class Config:
     # Agents the user has explicitly disabled.
     disabled_agents: list = field(default_factory=list)
     max_concurrency: int = 2
+    # When True (default) agents run with auto-approve flags (edit unattended).
+    # Safe mode (False) drops those flags so the agent can't act without asking.
+    auto_approve: bool = True
     # Extra session stores to track, e.g. Hermes or any agent that logs JSONL:
     #   [{"name": "hermes", "label": "Hermes", "root": "~/.hermes/sessions",
     #     "pattern": "*.jsonl", "recursive": true, "fmt": "claude"}]

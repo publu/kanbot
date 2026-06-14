@@ -53,6 +53,8 @@ def cmd_runner(args) -> int:
         cfg.runner_name = args.name
     if args.concurrency:
         cfg.max_concurrency = args.concurrency
+    if getattr(args, "safe", False):
+        cfg.auto_approve = False
     cfg.save()
 
     runner = Runner(cfg)
@@ -102,9 +104,12 @@ def cmd_up(args) -> int:
         cfg.runner_name = args.name
     if args.concurrency:
         cfg.max_concurrency = args.concurrency
+    if getattr(args, "safe", False):
+        cfg.auto_approve = False
     cfg.save()
     runner = Runner(cfg)
-    print(f"Local runner '{cfg.runner_name}' attaching with agents: "
+    mode = "auto-approve" if cfg.auto_approve else "SAFE (no auto-approve flags)"
+    print(f"Local runner '{cfg.runner_name}' [{mode}] attaching with agents: "
           f"{', '.join(runner.agents) or '(none — install claude/codex/etc.)'}")
     print("Press Ctrl-C to stop.\n")
     try:
@@ -179,6 +184,10 @@ def cmd_config(args) -> int:
     if args.enable:
         cfg.disabled_agents = [a for a in cfg.disabled_agents if a not in args.enable]
         changed = True
+    if args.safe:
+        cfg.auto_approve = False; changed = True
+    if args.unsafe:
+        cfg.auto_approve = True; changed = True
     if changed:
         cfg.save()
         print(f"saved {config_path()}")
@@ -188,6 +197,7 @@ def cmd_config(args) -> int:
     print(f"runner_id       : {cfg.runner_id}")
     print(f"max_concurrency : {cfg.max_concurrency}")
     print(f"disabled_agents : {', '.join(cfg.disabled_agents) or '(none)'}")
+    print(f"mode            : {'auto-approve (agents act unattended)' if cfg.auto_approve else 'SAFE (no auto-approve flags)'}")
     return 0
 
 
@@ -212,6 +222,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--name", default=None, help="runner name")
     sp.add_argument("--concurrency", type=int, default=None)
     sp.add_argument("--no-open", action="store_true", help="don't open the browser")
+    sp.add_argument("--safe", action="store_true", help="safe mode: drop agent auto-approve flags")
     sp.set_defaults(func=cmd_up)
 
     sp = sub.add_parser("server", help="run the web server / API only")
@@ -226,6 +237,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--token", default=None)
     sp.add_argument("--name", default=None)
     sp.add_argument("--concurrency", type=int, default=None)
+    sp.add_argument("--safe", action="store_true", help="safe mode: drop agent auto-approve flags")
     sp.set_defaults(func=cmd_runner)
 
     sp = sub.add_parser("agents", help="show detected CLI agents")
@@ -238,6 +250,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--concurrency", type=int, default=None)
     sp.add_argument("--disable", nargs="*", help="agent names to disable")
     sp.add_argument("--enable", nargs="*", help="agent names to re-enable")
+    sp.add_argument("--safe", action="store_true", help="enable safe mode (no auto-approve flags)")
+    sp.add_argument("--unsafe", action="store_true", help="disable safe mode (auto-approve, default)")
     sp.set_defaults(func=cmd_config)
 
     sp = sub.add_parser("open", help="open the board in a browser")

@@ -26,6 +26,7 @@ class RunnerConn:
         self.host: str = ""
         self.capabilities: List[str] = []
         self.max_concurrency: int = 2
+        self.auto_approve: bool = True
         self.active: Set[str] = set()  # session ids currently running
 
     @property
@@ -82,7 +83,8 @@ class Hub:
     async def register_runner(self, conn: RunnerConn) -> None:
         self.runners[conn.runner_id] = conn
         self.db.upsert_runner(
-            conn.runner_id, conn.name, conn.host, conn.capabilities, conn.max_concurrency
+            conn.runner_id, conn.name, conn.host, conn.capabilities, conn.max_concurrency,
+            auto_approve=conn.auto_approve,
         )
         await self.broadcast({"type": "runner.updated", "runner": self.db.get_runner(conn.runner_id)})
         await self.try_dispatch()
