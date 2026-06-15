@@ -208,15 +208,13 @@ class Hub:
         self.db.update_session(sid, status=status, exit_code=exit_code, ended_at=now())
         card = self.db.get_card(sess["card_id"])
         if card:
-            new_status = "review" if status == "success" else status
+            # Any finished run (success or failure) leaves Running and lands in
+            # Done, carrying its status so the card shows ✓ done / ✗ failed.
+            new_status = "done" if status == "success" else status
             self.db.update_card(card["id"], status=new_status)
-            if card.get("auto_advance", 1):
-                target_kind = "review" if status == "success" else None
-                if target_kind:
-                    col = self.db.column_by_kind(card["board_id"], target_kind)
-                    if col:
-                        self.db.move_card(card["id"], col["id"],
-                                          self.db._next_position(col["id"]))
+            col = self.db.column_by_kind(card["board_id"], "done")
+            if col:
+                self.db.move_card(card["id"], col["id"], self.db._next_position(col["id"]))
             await self._emit_card(card["id"])
         # Free the runner slot.
         runner = self.runners.get(sess["runner_id"])

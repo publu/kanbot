@@ -114,7 +114,6 @@ CREATE INDEX IF NOT EXISTS idx_events_session ON session_events(session_id);
 DEFAULT_COLUMNS = [
     ("Backlog", "backlog"),
     ("Running", "running"),
-    ("Review", "review"),
     ("Done", "done"),
 ]
 
@@ -177,7 +176,7 @@ class DB:
         # Drop deprecated columns from older boards, relocating any stray cards:
         #   info  -> backlog (sessions now live inline by recency)
         #   queued -> running (a card is queued via status, not a column)
-        deprecated = {"info": "backlog", "queued": "running"}
+        deprecated = {"info": "backlog", "queued": "running", "review": "done"}
         for board in self.q("SELECT id FROM boards"):
             bid = board["id"]
             changed = False

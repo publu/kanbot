@@ -72,7 +72,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         kind = col["kind"]
         # Dropping into Running means "run it" -> queue for dispatch (unless it's
         # already executing). Other columns just park the card.
-        mapping = {"backlog": "idle", "review": "review", "done": "done"}
+        mapping = {"backlog": "idle", "done": "done"}
         if kind == "running":
             if card["status"] not in ("running", "queued"):
                 db.update_card(card["id"], status="queued")

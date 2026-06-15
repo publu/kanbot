@@ -74,9 +74,9 @@ def main():
 
     card_after = next(x for x in c.get(f"/api/boards/{bid}").json()["cards"] if x["id"] == card["id"])
     print("card status after run:", card_after["status"])
-    assert card_after["status"] == "review", f"expected review, got {card_after['status']}"
+    assert card_after["status"] == "done", f"expected done, got {card_after['status']}"
 
-    print("\n✅ E2E PASSED: task queued, executed by runner, streamed logs, auto-advanced to Review.")
+    print("\n✅ E2E PASSED: task queued, executed by runner, streamed logs, landed in Done.")
 
 
 if __name__ == "__main__":

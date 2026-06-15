@@ -423,8 +423,15 @@ function renderColumns() {
   // (stale sessions ARE the backlog). No dedicated column.
   const RECENT_DONE_S = 30 * 60;
   const nowS = Date.now() / 1000;
+  // Dedupe: a session adopted as a card (resumed) is represented by that card,
+  // so hide its discovered twin. Also hide an active session whose cwd matches a
+  // currently-running task card (that's the card's own session writing to disk).
+  const adopted = new Set(S.cards.filter(c => c.resume_of).map(c => c.resume_of));
+  const runningCwds = new Set(S.cards.filter(c => c.status === 'running' && c.cwd).map(c => c.cwd));
   const byBucket = { backlog: [], running: [], done: [] };
   for (const s of S.agentSessions) {
+    if (adopted.has(s.session_id)) continue;
+    if (s.active && runningCwds.has(s.cwd)) continue;
     if (s.active) byBucket.running.push(s);
     else if ((nowS - (s.mtime || 0)) <= RECENT_DONE_S) byBucket.done.push(s);
     else byBucket.backlog.push(s);
@@ -780,14 +787,6 @@ function renderDrawerBody(card) {
     (max, until) => patchCard(card.id, { loop_max: max, loop_until: until }));
   body.appendChild(loop.wrap);
 
-  // auto-advance toggle
-  const tg = el('label', 'toggle');
-  const cb = el('input'); cb.type = 'checkbox'; cb.checked = !!card.auto_advance;
-  cb.onchange = () => patchCard(card.id, { auto_advance: cb.checked });
-  tg.appendChild(cb); tg.appendChild(el('span', 'track'));
-  tg.appendChild(el('span', null, 'Auto-advance to Review on success'));
-  body.appendChild(tg);
-
   // tags
   body.appendChild(renderTagsField(card));
 
@@ -1084,10 +1083,10 @@ CONTENT TYPE
 CORE MODEL
   Board     { id, name, repo_path, created_at }
   Column    { id, board_id, name, kind, position }
-            kind in: backlog | running | review | done   (queue is a status, not a column)
+            kind in: backlog | running | done   (queue is a status, not a column)
   Card      { id, board_id, column_id, title, prompt, agent, cwd, status,
               position, auto_advance, resume_of, pin_runner, tags[], created_at, updated_at }
-            status in: idle | queued | running | review | done | failed | cancelled
+            status in: idle | queued | running | done | failed | cancelled
             agent: "auto" or an agent name (claude, codex, gemini, glm, shell, ...)
             resume_of: an external session id this card resumes (optional)
             pin_runner: restrict execution to one runner id (optional)
