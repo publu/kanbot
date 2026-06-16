@@ -119,6 +119,33 @@ removable, and the card gets a 📎 badge.
 > with `kanbot config --safe` (`--unsafe` to revert). The runner shows a 🔒 safe
 > badge on the board when safe mode is on.
 
+## Workflows — long autonomous runs
+
+A single prompt is a sprint; a **workflow** is the marathon. A workflow is an
+ordered chain of agent **steps** that runs as one card — a session per step,
+auto-advancing on success — built to drive **1–5 hour** autonomous runs from
+Claude/Codex. Open **⛓ Workflows** (or press `w`).
+
+Each step has its own prompt, agent override, **Ralph loop** (`loop_max` /
+`loop_until`), and two switches: **carry context** (inject the previous step's
+output into this prompt) and **continue on fail**. Steps run with fresh context,
+so durable, file-based handoff (`PLAN.md`, `NOTES.md` in the repo) is the pattern —
+e.g. *Plan → Build until tests pass → Review → Report*.
+
+The point of 0.4.0 is making workflows **easy to get**, not just run:
+
+- **Templates** — a built-in starter library (*Ship a feature*, *Harden until
+  green*, *Deep refactor*); pick one and tweak.
+- **Extract** — turn a Claude/Codex session you already ran into a draft
+  workflow: open **⟳ sessions → ⛓ workflow**, each human turn becomes a step.
+- **Export / import** — every workflow exports to portable JSON you can share,
+  version, or paste into another board.
+- **Clone & edit** — duplicate and adjust in the builder.
+
+API: `GET /api/workflow-templates`, `…/workflows` (CRUD), `…/workflows/import`,
+`…/workflows/extract`, `…/workflows/{id}/export`, `…/workflows/{id}/run`. The full
+spec is under **`</> API`** in the app.
+
 ## Tags & insights
 
 Tags are colored labels; a tag can also be an **insight provider** (◆) that pulls

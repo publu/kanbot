@@ -47,6 +47,8 @@ CREATE TABLE IF NOT EXISTS cards (
     loop_until  TEXT DEFAULT '',   -- shell predicate; exit 0 in cwd => stop the loop early
     profile     TEXT DEFAULT '',   -- prompt mode prepended to the prompt (e.g. 'lean')
     command     TEXT DEFAULT '',   -- raw command override (argv template, {prompt}); empty = use agent default
+    workflow_id TEXT DEFAULT '',   -- if set, this card is a run of that workflow
+    step_index  INTEGER DEFAULT 0, -- workflow runs: 0-based index of the active step
     created_at  REAL NOT NULL,
     updated_at  REAL NOT NULL,
     FOREIGN KEY (board_id) REFERENCES boards(id) ON DELETE CASCADE
@@ -107,9 +109,42 @@ CREATE TABLE IF NOT EXISTS runners (
     created_at    REAL NOT NULL
 );
 
+-- A workflow is a saved, reusable chain of agent steps. Running one creates a
+-- single card that walks its steps in order (a session per step), which is how
+-- Deckhand drives long (1-5hr) autonomous runs from Claude/Codex.
+CREATE TABLE IF NOT EXISTS workflows (
+    id          TEXT PRIMARY KEY,
+    board_id    TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    cwd         TEXT DEFAULT '',        -- default working dir for runs
+    agent       TEXT DEFAULT 'auto',    -- default agent for steps that don't override
+    created_at  REAL NOT NULL,
+    updated_at  REAL NOT NULL,
+    FOREIGN KEY (board_id) REFERENCES boards(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS workflow_steps (
+    id              TEXT PRIMARY KEY,
+    workflow_id     TEXT NOT NULL,
+    position        INTEGER NOT NULL DEFAULT 0,
+    name            TEXT NOT NULL,
+    prompt          TEXT DEFAULT '',
+    agent           TEXT DEFAULT '',    -- '' = inherit the workflow's agent
+    profile         TEXT DEFAULT '',
+    command         TEXT DEFAULT '',
+    loop_max        INTEGER DEFAULT 1,  -- Ralph loop for this step
+    loop_until      TEXT DEFAULT '',
+    carry_context   INTEGER DEFAULT 1,  -- inject prior step's final output into this prompt
+    continue_on_fail INTEGER DEFAULT 0, -- advance to the next step even if this one fails
+    FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_cards_board ON cards(board_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_card ON sessions(card_id);
 CREATE INDEX IF NOT EXISTS idx_events_session ON session_events(session_id);
+CREATE INDEX IF NOT EXISTS idx_workflows_board ON workflows(board_id);
+CREATE INDEX IF NOT EXISTS idx_steps_workflow ON workflow_steps(workflow_id);
 """
 
 DEFAULT_COLUMNS = [
@@ -169,7 +204,9 @@ class DB:
                           ("loop_max", "INTEGER DEFAULT 1"),
                           ("loop_until", "TEXT DEFAULT ''"),
                           ("profile", "TEXT DEFAULT ''"),
-                          ("command", "TEXT DEFAULT ''")):
+                          ("command", "TEXT DEFAULT ''"),
+                          ("workflow_id", "TEXT DEFAULT ''"),
+                          ("step_index", "INTEGER DEFAULT 0")):
             if name not in cols:
                 self.conn.execute(f"ALTER TABLE cards ADD COLUMN {name} {ddl}")
         rcols = {r["name"] for r in self.q("PRAGMA table_info(runners)")}
@@ -250,18 +287,19 @@ class DB:
     def create_card(self, board_id: str, column_id: str, title: str, prompt: str = "",
                      agent: str = "auto", cwd: str = "", resume_of: str = "",
                      pin_runner: str = "", loop_max: int = 1, loop_until: str = "",
-                     profile: str = "", command: str = "") -> Dict[str, Any]:
+                     profile: str = "", command: str = "", workflow_id: str = "",
+                     step_index: int = 0) -> Dict[str, Any]:
         cid = gen_id()
         pos = self._next_position(column_id)
         ts = now()
         self.exec(
             """INSERT INTO cards (id, board_id, column_id, title, prompt, agent, cwd,
                status, position, resume_of, pin_runner, loop_max, loop_until, profile,
-               command, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               command, workflow_id, step_index, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (cid, board_id, column_id, title, prompt, agent, cwd, "idle", pos,
              resume_of, pin_runner, max(1, int(loop_max or 1)), loop_until, profile,
-             command, ts, ts),
+             command, workflow_id, step_index, ts, ts),
         )
         return self.get_card(cid)
 
@@ -314,6 +352,104 @@ class DB:
             "SELECT * FROM cards WHERE board_id=? AND status=? ORDER BY position",
             (board_id, status),
         )
+
+    # -- workflows ---------------------------------------------------------
+    # A workflow is just (workflow row + ordered step rows). It is fully
+    # self-describing, so the same dict shape doubles as an export/import
+    # template — that's what makes extracting and sharing workflows trivial.
+    STEP_FIELDS = ("name", "prompt", "agent", "profile", "command",
+                   "loop_max", "loop_until", "carry_context", "continue_on_fail")
+
+    @staticmethod
+    def _normalize_step(raw: Dict[str, Any], position: int) -> Dict[str, Any]:
+        return {
+            "name": str(raw.get("name") or f"Step {position + 1}"),
+            "prompt": str(raw.get("prompt") or ""),
+            "agent": str(raw.get("agent") or ""),
+            "profile": str(raw.get("profile") or ""),
+            "command": str(raw.get("command") or ""),
+            "loop_max": max(1, int(raw.get("loop_max") or 1)),
+            "loop_until": str(raw.get("loop_until") or ""),
+            "carry_context": 1 if raw.get("carry_context", True) else 0,
+            "continue_on_fail": 1 if raw.get("continue_on_fail", False) else 0,
+        }
+
+    def save_workflow(self, board_id: str, name: str, description: str = "",
+                      agent: str = "auto", cwd: str = "",
+                      steps: Optional[List[dict]] = None,
+                      workflow_id: Optional[str] = None) -> Dict[str, Any]:
+        """Create or replace a workflow and its steps in one shot. Used by the
+        builder (save), import (from a template), and extract (from a session)."""
+        ts = now()
+        wid = workflow_id or gen_id()
+        if self.get_workflow(wid):
+            self.exec(
+                "UPDATE workflows SET name=?, description=?, agent=?, cwd=?, updated_at=? WHERE id=?",
+                (name, description, agent or "auto", cwd, ts, wid),
+            )
+        else:
+            self.exec(
+                """INSERT INTO workflows (id, board_id, name, description, agent, cwd,
+                   created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)""",
+                (wid, board_id, name, description, agent or "auto", cwd, ts, ts),
+            )
+        self._replace_steps(wid, steps or [])
+        return self.get_workflow(wid)
+
+    def _replace_steps(self, workflow_id: str, steps: List[dict]) -> None:
+        self.conn.execute("DELETE FROM workflow_steps WHERE workflow_id=?", (workflow_id,))
+        for i, raw in enumerate(steps):
+            s = self._normalize_step(raw, i)
+            self.conn.execute(
+                """INSERT INTO workflow_steps (id, workflow_id, position, name, prompt,
+                   agent, profile, command, loop_max, loop_until, carry_context,
+                   continue_on_fail) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (gen_id(), workflow_id, i, s["name"], s["prompt"], s["agent"],
+                 s["profile"], s["command"], s["loop_max"], s["loop_until"],
+                 s["carry_context"], s["continue_on_fail"]),
+            )
+        self.conn.commit()
+
+    def workflow_steps(self, workflow_id: str) -> List[Dict[str, Any]]:
+        return self.q(
+            "SELECT * FROM workflow_steps WHERE workflow_id=? ORDER BY position",
+            (workflow_id,),
+        )
+
+    def get_workflow(self, workflow_id: str) -> Optional[Dict[str, Any]]:
+        wf = self.one("SELECT * FROM workflows WHERE id=?", (workflow_id,))
+        if wf:
+            wf["steps"] = self.workflow_steps(workflow_id)
+        return wf
+
+    def list_workflows(self, board_id: str) -> List[Dict[str, Any]]:
+        wfs = self.q("SELECT * FROM workflows WHERE board_id=? ORDER BY name", (board_id,))
+        for wf in wfs:
+            wf["steps"] = self.workflow_steps(wf["id"])
+        return wfs
+
+    def delete_workflow(self, workflow_id: str) -> None:
+        self.exec("DELETE FROM workflows WHERE id=?", (workflow_id,))
+
+    def workflow_template(self, workflow_id: str) -> Optional[Dict[str, Any]]:
+        """A portable, id-free dict of a workflow — copy/paste or share to clone
+        the workflow anywhere."""
+        wf = self.get_workflow(workflow_id)
+        if not wf:
+            return None
+        return {
+            "name": wf["name"], "description": wf["description"],
+            "agent": wf["agent"], "cwd": wf.get("cwd", ""),
+            "steps": [{k: s[k] for k in self.STEP_FIELDS} for s in wf["steps"]],
+        }
+
+    def clone_workflow(self, workflow_id: str, name: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        wf = self.get_workflow(workflow_id)
+        if not wf:
+            return None
+        tpl = self.workflow_template(workflow_id)
+        return self.save_workflow(wf["board_id"], name or f"{wf['name']} copy",
+                                  tpl["description"], tpl["agent"], tpl["cwd"], tpl["steps"])
 
     # -- tags --------------------------------------------------------------
     def create_tag(self, board_id: str, name: str, color: str = "#6b7280",

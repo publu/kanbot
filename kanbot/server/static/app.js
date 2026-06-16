@@ -25,6 +25,12 @@ const api = {
       body: JSON.stringify(body) });
     if (!r.ok) throw new Error(await r.text()); return r.json();
   },
+  async put(path, body) {
+    if (S.demo) return demoMutate();
+    const r = await fetch(S.apiBase + path, { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body) });
+    if (!r.ok) throw new Error(await r.text()); return r.json();
+  },
   async del(path) { if (S.demo) return demoMutate(); const r = await fetch(S.apiBase + path, { method: 'DELETE' }); if (!r.ok) throw new Error(await r.text()); return r.json(); },
 };
 
@@ -48,11 +54,13 @@ const S = {
   board: null, columns: [], cards: [], tags: [],
   agents: [], agentByName: {}, insightProviders: [], profiles: [],
   runners: [],
+  workflows: [], workflowTemplates: [], workflowById: {},
   openCardId: null,
   terminals: {},        // session_id -> terminal DOM node (while drawer open)
   sessionsCache: {},    // card_id -> [sessions]
   agentSessions: [],    // discovered claude/codex sessions across runners
   sessionsModalOpen: false,
+  workflowsModalOpen: false,
   dragSession: null,    // session object currently being dragged
   dragging: false,      // a card/session drag is in flight — pause re-renders
   demo: false,          // true when running without a backend (Vercel)
@@ -283,6 +291,7 @@ async function liveSetup() {
   S.agentByName = Object.fromEntries(ag.agents.map(a => [a.name, a]));
   await refreshRunners();
   await loadBoards();
+  await loadWorkflows();
   await loadAgentSessions();
   connectWS();
   wireGlobalUI();
@@ -346,11 +355,29 @@ async function selectBoard(boardId) {
   const state = await api.get('/api/boards/' + boardId);
   S.board = state.board; S.columns = state.columns; S.cards = state.cards; S.tags = state.tags;
   renderBoard();
+  loadWorkflows();
 }
 
 async function refreshRunners() {
   try { const { runners } = await api.get('/api/runners'); S.runners = runners; renderRunners(); }
   catch (e) {}
+}
+
+async function loadWorkflows() {
+  if (S.demo || !S.boardId) { S.workflows = []; S.workflowById = {}; return; }
+  try {
+    const { workflows } = await api.get(`/api/boards/${S.boardId}/workflows`);
+    S.workflows = workflows || [];
+  } catch (e) { S.workflows = []; }
+  S.workflowById = Object.fromEntries(S.workflows.map(w => [w.id, w]));
+  renderColumns();
+}
+
+async function ensureTemplates() {
+  if (S.workflowTemplates.length || S.demo) return S.workflowTemplates;
+  try { const { templates } = await api.get('/api/workflow-templates'); S.workflowTemplates = templates || []; }
+  catch (e) { S.workflowTemplates = []; }
+  return S.workflowTemplates;
 }
 
 // ---- websocket ----------------------------------------------------------
@@ -393,6 +420,13 @@ function handleEvent(msg) {
       break;
     case 'agent.sessions.updated':
       loadAgentSessions();
+      break;
+    case 'workflow.saved':
+    case 'workflow.deleted':
+      if (!msg.board_id || msg.board_id === S.boardId) {
+        loadWorkflows();
+        if (S.workflowsModalOpen) openWorkflowsModal();
+      }
       break;
     case 'board.created':
       loadBoards();
@@ -589,6 +623,14 @@ function renderCard(c) {
 
   const meta = el('div', 'cmeta');
   meta.appendChild(agentBadge(c.agent));
+  if (c.workflow_id) {
+    const wf = S.workflowById[c.workflow_id];
+    const total = wf ? wf.steps.length : 0;
+    const idx = (c.step_index || 0) + 1;
+    const badge = el('span', 'resume-badge wf-badge', `⛓ ${total ? `step ${idx}/${total}` : 'workflow'}`);
+    if (wf) badge.title = wf.name + (wf.steps[c.step_index] ? ' · ' + wf.steps[c.step_index].name : '');
+    meta.appendChild(badge);
+  }
   if (c.resume_of) meta.appendChild(el('span', 'resume-badge', '⟳ resumed'));
   if (c.loop_max > 1) meta.appendChild(el('span', 'resume-badge', `⟳ loop ×${c.loop_max}`));
   if (c.profile) meta.appendChild(el('span', 'resume-badge', `◇ ${c.profile}`));
@@ -1264,6 +1306,26 @@ REST ENDPOINTS
          Adopts a discovered AgentSession as a card that RESUMES it
          (claude --resume / codex exec resume). run=true dispatches immediately.
 
+  -- workflows (multi-step runs; the unit for long 1-5hr autonomous work) --
+  Workflow  { id, board_id, name, description, agent, cwd, steps:[Step] }
+  Step      { name, prompt, agent, profile, command, loop_max, loop_until,
+              carry_context, continue_on_fail }
+            A workflow runs as ONE card that walks its steps in order (a session
+            per step). carry_context injects the prior step's output into the
+            next prompt; continue_on_fail advances even when a step fails.
+  GET    /api/workflow-templates                 -> { templates:[Workflow] }  (starter library)
+  GET    /api/boards/{id}/workflows              -> { workflows:[Workflow] }
+  POST   /api/boards/{id}/workflows  {name,description?,agent?,cwd?,steps[]} -> Workflow
+  GET    /api/workflows/{id}                      -> Workflow
+  PUT    /api/workflows/{id}        {name,...,steps[]}  -> Workflow   (replace)
+  DELETE /api/workflows/{id}                      -> { ok }
+  GET    /api/workflows/{id}/export               -> template (id-free, portable)
+  POST   /api/workflows/{id}/clone   {name?}      -> Workflow
+  POST   /api/boards/{id}/workflows/import  {template}        -> Workflow
+  POST   /api/boards/{id}/workflows/extract {session_id, save?} -> Workflow | {template}
+            Turns a discovered Claude/Codex session into a draft workflow.
+  POST   /api/workflows/{id}/run    {cwd?, title?, run?}  -> Card   (the run card)
+
 WEBSOCKET (live updates): ws://127.0.0.1:8787/ws/web
   Read-only stream of JSON events. Connect and re-render on each:
     { type:"hello", version }
@@ -1356,10 +1418,308 @@ function sessRow(s) {
   const sub = (pv ? pv + ' · ' : '') + `${s.turns} turns · ${timeAgo(s.mtime)} · ${shortCwd(s.cwd)}`;
   info.appendChild(el('div', 'ssub', sub));
   row.appendChild(info);
+  const wfBtn = el('button', 'btn ghost small', '⛓ workflow');
+  wfBtn.title = 'Extract a reusable workflow from this session';
+  wfBtn.onclick = () => extractWorkflowFromSession(s);
+  row.appendChild(wfBtn);
   const btn = el('button', 'btn small', active ? '⟳ continue' : '⟳ revive');
   btn.onclick = () => promptRevive(s);
   row.appendChild(btn);
   return row;
+}
+
+// ---- workflows: create / manage / run ----------------------------------
+// A workflow is an ordered chain of agent steps built to drive long (1-5hr)
+// autonomous runs. Everything here is about making them easy to extract,
+// template, and run.
+
+function blankStep(i) {
+  return { name: `Step ${i + 1}`, prompt: '', agent: '', profile: '', command: '',
+    loop_max: 1, loop_until: '', carry_context: i > 0, continue_on_fail: false };
+}
+
+function stepAgentSelect(value) {
+  const sel = el('select', 'select');
+  const inh = el('option', null, 'inherit workflow agent'); inh.value = ''; sel.appendChild(inh);
+  const auto = el('option', null, 'auto (any available)'); auto.value = 'auto'; sel.appendChild(auto);
+  for (const a of S.agents) { const o = el('option', null, a.label); o.value = a.name; sel.appendChild(o); }
+  sel.value = value || '';
+  return sel;
+}
+
+async function runWorkflow(id, cwd, title) {
+  try {
+    const card = await api.post(`/api/workflows/${id}/run`, { cwd: cwd || '', title: title || '', run: true });
+    const wf = S.workflowById[id];
+    toast(`▶ running “${(wf && wf.name) || 'workflow'}” — step 1/${wf ? wf.steps.length : '?'}`);
+    return card;
+  } catch (e) { toast('run failed: ' + e.message); }
+}
+
+function openWorkflowsModal() {
+  if (S.demo) { toast('Workflows run on your local Deckhand — connect first'); return; }
+  S.workflowsModalOpen = true;
+  const m = $('#modal'); m.innerHTML = '';
+  m.classList.add('wide');
+  const head = el('div', 'wf-modal-head');
+  head.appendChild(el('h3', null, '⛓ Workflows'));
+  const sub = el('div', 'label', 'Reusable, multi-step agent runs — built for 1–5hr autonomous work.');
+  head.appendChild(sub);
+  m.appendChild(head);
+
+  const bar = el('div', 'wf-actions');
+  const mk = (label, fn, cls) => { const b = el('button', 'btn ' + (cls || ''), label); b.onclick = fn; return b; };
+  bar.appendChild(mk('＋ New', () => openWorkflowBuilder(null), 'primary'));
+  bar.appendChild(mk('◇ From template', openTemplatePicker));
+  bar.appendChild(mk('⬇ Import JSON', importWorkflowModal));
+  bar.appendChild(mk('⟳ From a session', () => { S.workflowsModalOpen = false; openSessionsModal(true); }));
+  m.appendChild(bar);
+
+  const list = el('div', 'wf-list');
+  if (!S.workflows.length) {
+    list.appendChild(el('div', 'label',
+      'No workflows yet. Start from a template, import one, or extract a workflow from a Claude/Codex session you already ran.'));
+  } else {
+    for (const wf of S.workflows) list.appendChild(workflowRow(wf));
+  }
+  m.appendChild(list);
+
+  const actions = el('div', 'modal-actions');
+  const close = el('button', 'btn primary', 'Done');
+  close.onclick = () => { S.workflowsModalOpen = false; closeModal(); };
+  actions.appendChild(close);
+  m.appendChild(actions);
+  openModal(); m.classList.add('wide');
+}
+
+function workflowRow(wf) {
+  const row = el('div', 'wf-row');
+  const info = el('div', 'wf-info');
+  const title = el('div', 'wf-title');
+  title.appendChild(agentBadge(wf.agent || 'auto'));
+  title.appendChild(el('span', 'wf-name', wf.name));
+  title.appendChild(el('span', 'wf-stepcount', `${wf.steps.length} step${wf.steps.length === 1 ? '' : 's'}`));
+  info.appendChild(title);
+  if (wf.description) info.appendChild(el('div', 'wf-desc', wf.description));
+  const chain = el('div', 'wf-chain');
+  wf.steps.forEach((s, i) => {
+    if (i) chain.appendChild(el('span', 'wf-arrow', '→'));
+    const pill = el('span', 'wf-step-pill', s.name);
+    if (s.loop_max > 1) pill.appendChild(el('span', 'wf-loop', ` ⟳×${s.loop_max}`));
+    chain.appendChild(pill);
+  });
+  info.appendChild(chain);
+  row.appendChild(info);
+
+  const ctrls = el('div', 'wf-ctrls');
+  const run = el('button', 'btn primary small', '▶ Run');
+  run.onclick = () => runWorkflow(wf.id, wf.cwd, '');
+  const edit = el('button', 'btn ghost small', '✎ Edit'); edit.onclick = () => openWorkflowBuilder(wf);
+  const more = el('button', 'btn ghost small', '⋯'); more.onclick = () => openWorkflowOverflow(wf);
+  ctrls.appendChild(run); ctrls.appendChild(edit); ctrls.appendChild(more);
+  row.appendChild(ctrls);
+  return row;
+}
+
+function openWorkflowOverflow(wf) {
+  const m = $('#modal'); m.innerHTML = '';
+  m.appendChild(el('h3', null, wf.name));
+  const list = el('div', 'wf-list');
+  const item = (label, fn) => { const b = el('button', 'btn', label); b.style.width = '100%'; b.onclick = fn; list.appendChild(b); };
+  item('⧉ Clone', async () => { try { await api.post(`/api/workflows/${wf.id}/clone`, {}); toast('cloned'); openWorkflowsModal(); } catch (e) { toast(e.message); } });
+  item('⬆ Export JSON', () => exportWorkflow(wf.id));
+  item('🗑 Delete', async () => { if (confirm(`Delete workflow “${wf.name}”?`)) { try { await api.del(`/api/workflows/${wf.id}`); toast('deleted'); openWorkflowsModal(); } catch (e) { toast(e.message); } } });
+  m.appendChild(list);
+  const actions = el('div', 'modal-actions');
+  const back = el('button', 'btn ghost', 'Back'); back.onclick = openWorkflowsModal;
+  actions.appendChild(back); m.appendChild(actions); openModal();
+}
+
+async function exportWorkflow(id) {
+  try {
+    const tpl = await api.get(`/api/workflows/${id}/export`);
+    const json = JSON.stringify(tpl, null, 2);
+    try { await navigator.clipboard.writeText(json); toast('workflow JSON copied to clipboard'); }
+    catch (e) {
+      const blob = new Blob([json], { type: 'application/json' });
+      const a = el('a'); a.href = URL.createObjectURL(blob);
+      a.download = (tpl.name || 'workflow').replace(/\s+/g, '-').toLowerCase() + '.json';
+      a.click();
+    }
+  } catch (e) { toast('export failed: ' + e.message); }
+}
+
+function importWorkflowModal() {
+  const m = $('#modal'); m.innerHTML = '';
+  m.appendChild(el('h3', null, 'Import workflow'));
+  m.appendChild(el('div', 'label', 'Paste a workflow template (the JSON from Export).'));
+  const ta = textareaField('Workflow JSON', '{ "name": "...", "steps": [ ... ] }');
+  ta.input.style.minHeight = '220px'; ta.input.classList.add('mono-input');
+  m.appendChild(ta.wrap);
+  const actions = el('div', 'modal-actions');
+  const back = el('button', 'btn ghost', 'Back'); back.onclick = openWorkflowsModal;
+  const imp = el('button', 'btn primary', 'Import');
+  imp.onclick = async () => {
+    let tpl;
+    try { tpl = JSON.parse(ta.input.value); } catch (e) { toast('invalid JSON'); return; }
+    try { await api.post(`/api/boards/${S.boardId}/workflows/import`, { template: tpl }); toast('imported ✓'); openWorkflowsModal(); }
+    catch (e) { toast('import failed: ' + e.message); }
+  };
+  actions.appendChild(back); actions.appendChild(imp);
+  m.appendChild(actions); openModal(); m.classList.add('wide');
+}
+
+async function openTemplatePicker() {
+  const templates = await ensureTemplates();
+  const m = $('#modal'); m.innerHTML = '';
+  m.appendChild(el('h3', null, 'Start from a template'));
+  const list = el('div', 'wf-list');
+  if (!templates.length) list.appendChild(el('div', 'label', 'no templates available'));
+  for (const t of templates) {
+    const row = el('div', 'wf-row');
+    const info = el('div', 'wf-info');
+    info.appendChild(el('div', 'wf-name', t.name));
+    if (t.description) info.appendChild(el('div', 'wf-desc', t.description));
+    const chain = el('div', 'wf-chain');
+    t.steps.forEach((s, i) => { if (i) chain.appendChild(el('span', 'wf-arrow', '→')); chain.appendChild(el('span', 'wf-step-pill', s.name)); });
+    info.appendChild(chain);
+    row.appendChild(info);
+    const ctrls = el('div', 'wf-ctrls');
+    const use = el('button', 'btn primary small', 'Use'); use.onclick = () => openWorkflowBuilder(null, t);
+    ctrls.appendChild(use); row.appendChild(ctrls);
+    list.appendChild(row);
+  }
+  m.appendChild(list);
+  const actions = el('div', 'modal-actions');
+  const back = el('button', 'btn ghost', 'Back'); back.onclick = openWorkflowsModal;
+  actions.appendChild(back); m.appendChild(actions); openModal(); m.classList.add('wide');
+}
+
+// The builder. `wf` = edit an existing workflow; `prefill` = a template to start
+// from (create mode). Steps are edited as a local array, re-rendered on change.
+function openWorkflowBuilder(wf, prefill) {
+  const src = wf || prefill || { name: '', description: '', agent: 'auto', cwd: S.board?.repo_path || '', steps: [] };
+  const steps = (src.steps && src.steps.length ? src.steps : [blankStep(0)]).map(s => ({ ...s }));
+
+  const m = $('#modal'); m.innerHTML = '';
+  m.appendChild(el('h3', null, wf ? 'Edit workflow' : 'New workflow'));
+
+  const name = inputField('Name', 'e.g. Ship a feature'); name.input.value = src.name || '';
+  const desc = inputField('Description', 'what this workflow is for'); desc.input.value = src.description || '';
+  m.appendChild(name.wrap); m.appendChild(desc.wrap);
+  const row = el('div', 'row');
+  const agentSel = agentSelectField(src.agent || 'auto');
+  const cwd = inputField('Default working directory', '/path/to/repo'); cwd.input.value = src.cwd || '';
+  row.appendChild(agentSel.wrap); row.appendChild(cwd.wrap);
+  m.appendChild(row);
+
+  m.appendChild(el('div', 'label', 'Steps — run top to bottom, each a fresh agent run'));
+  const stepsBox = el('div', 'wf-steps');
+  m.appendChild(stepsBox);
+
+  const renderSteps = () => {
+    stepsBox.innerHTML = '';
+    steps.forEach((s, i) => stepsBox.appendChild(stepEditor(s, i, steps.length, {
+      move: (d) => { const j = i + d; if (j < 0 || j >= steps.length) return; [steps[i], steps[j]] = [steps[j], steps[i]]; renderSteps(); },
+      remove: () => { steps.splice(i, 1); if (!steps.length) steps.push(blankStep(0)); renderSteps(); },
+    })));
+  };
+  renderSteps();
+
+  const addStep = el('button', 'btn ghost', '＋ add step');
+  addStep.onclick = () => { steps.push(blankStep(steps.length)); renderSteps(); };
+  m.appendChild(addStep);
+
+  const collect = () => ({
+    name: name.input.value.trim(),
+    description: desc.input.value.trim(),
+    agent: agentSel.select.value || 'auto',
+    cwd: cwd.input.value.trim(),
+    steps: steps.map(s => ({
+      name: s.name, prompt: s.prompt, agent: s.agent, profile: s.profile,
+      command: s.command, loop_max: parseInt(s.loop_max) || 1, loop_until: s.loop_until,
+      carry_context: !!s.carry_context, continue_on_fail: !!s.continue_on_fail,
+    })),
+  });
+  const save = async (thenRun) => {
+    const body = collect();
+    if (!body.name) { toast('name required'); return null; }
+    try {
+      const saved = wf ? await api.put(`/api/workflows/${wf.id}`, body)
+                       : await api.post(`/api/boards/${S.boardId}/workflows`, body);
+      toast('workflow saved ✓');
+      if (thenRun && saved && saved.id) await runWorkflow(saved.id, saved.cwd, '');
+      else openWorkflowsModal();
+      return saved;
+    } catch (e) { toast('save failed: ' + e.message); return null; }
+  };
+
+  const actions = el('div', 'modal-actions');
+  const back = el('button', 'btn ghost', 'Cancel'); back.onclick = openWorkflowsModal;
+  const saveBtn = el('button', 'btn', 'Save'); saveBtn.onclick = () => save(false);
+  const runBtn = el('button', 'btn primary', '💾 Save & run'); runBtn.onclick = () => save(true);
+  actions.appendChild(back); actions.appendChild(saveBtn); actions.appendChild(runBtn);
+  m.appendChild(actions);
+  openModal(); m.classList.add('wide');
+  setTimeout(() => name.input.focus(), 50);
+}
+
+function stepEditor(s, i, total, h) {
+  const wrap = el('div', 'wf-step');
+  const head = el('div', 'wf-step-head');
+  head.appendChild(el('span', 'wf-step-num', String(i + 1)));
+  const nm = el('input', 'input wf-step-name'); nm.value = s.name; nm.placeholder = 'step name';
+  nm.oninput = () => s.name = nm.value;
+  head.appendChild(nm);
+  const up = el('button', 'wf-mini', '↑'); up.onclick = () => h.move(-1); up.disabled = i === 0;
+  const dn = el('button', 'wf-mini', '↓'); dn.onclick = () => h.move(1); dn.disabled = i === total - 1;
+  const rm = el('button', 'wf-mini danger', '×'); rm.onclick = h.remove;
+  head.appendChild(up); head.appendChild(dn); head.appendChild(rm);
+  wrap.appendChild(head);
+
+  const pr = el('textarea', 'textarea'); pr.value = s.prompt; pr.placeholder = 'Prompt for this step (file-based handoff via PLAN.md / NOTES.md works well across steps)';
+  pr.style.minHeight = '70px'; pr.oninput = () => s.prompt = pr.value;
+  wrap.appendChild(pr);
+
+  const row = el('div', 'row wf-step-row');
+  const agw = el('div', 'field'); agw.appendChild(el('div', 'label', 'Agent'));
+  const ag = stepAgentSelect(s.agent); ag.onchange = () => s.agent = ag.value; agw.appendChild(ag);
+  const lmw = el('div', 'field'); lmw.appendChild(el('div', 'label', 'Loop iterations'));
+  const lm = el('input', 'input'); lm.type = 'number'; lm.min = '1'; lm.value = s.loop_max;
+  lm.oninput = () => s.loop_max = lm.value; lmw.appendChild(lm);
+  row.appendChild(agw); row.appendChild(lmw);
+  wrap.appendChild(row);
+
+  const lu = el('input', 'input mono-input'); lu.value = s.loop_until;
+  lu.placeholder = 'Loop until (shell exits 0 = stop) — e.g. ! grep -q FAIL test.log';
+  lu.oninput = () => s.loop_until = lu.value;
+  const luw = el('div', 'field'); luw.appendChild(el('div', 'label', 'Stop condition (optional)')); luw.appendChild(lu);
+  wrap.appendChild(luw);
+
+  const flags = el('div', 'wf-flags');
+  const carry = checkRow('Carry previous step output into this prompt', s.carry_context, (v) => s.carry_context = v);
+  const cof = checkRow('Continue even if this step fails', s.continue_on_fail, (v) => s.continue_on_fail = v);
+  flags.appendChild(carry); flags.appendChild(cof);
+  wrap.appendChild(flags);
+  return wrap;
+}
+
+function checkRow(label, checked, onChange) {
+  const l = el('label', 'wf-check');
+  const cb = el('input'); cb.type = 'checkbox'; cb.checked = !!checked;
+  cb.onchange = () => onChange(cb.checked);
+  l.appendChild(cb); l.appendChild(el('span', null, label));
+  return l;
+}
+
+async function extractWorkflowFromSession(s) {
+  try {
+    const { template } = await api.post(`/api/boards/${S.boardId}/workflows/extract`,
+      { session_id: s.session_id, save: false });
+    S.sessionsModalOpen = false; S.workflowsModalOpen = false;
+    openWorkflowBuilder(null, template);   // open the draft for editing before saving
+    toast('extracted — review & save');
+  } catch (e) { toast('extract failed: ' + e.message); }
 }
 
 // ---- minimal markdown -> HTML (for the terminal transcript preview) -----
@@ -1616,12 +1976,13 @@ function profileSelectField(value) {
 
 // ---- modal helpers ------------------------------------------------------
 function openModal() { $('#modal').classList.remove('wide'); $('#modalScrim').classList.add('open'); }
-function closeModal() { $('#modalScrim').classList.remove('open'); S.sessionsModalOpen = false; }
+function closeModal() { $('#modalScrim').classList.remove('open'); S.sessionsModalOpen = false; S.workflowsModalOpen = false; }
 
 // ---- global UI ----------------------------------------------------------
 function wireGlobalUI() {
   installGlobalImageDrop();
   const nb = $('#newTaskBtn'); if (nb) nb.onclick = () => openComposer();
+  const wb = $('#workflowsBtn'); if (wb) wb.onclick = openWorkflowsModal;
   $('#sessionsBtn').onclick = openSessionsModal;
   $('#manageTagsBtn').onclick = openManageTags;
   $('#apiBtn').onclick = openApiModal;
@@ -1635,6 +1996,9 @@ function wireGlobalUI() {
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test((e.target.tagName || ''));
     if (!typing && (e.key === 'n' || e.key === 'N') && !modalOpen() && !$('#drawer').classList.contains('open')) {
       e.preventDefault(); openComposer();
+    }
+    if (!typing && (e.key === 'w' || e.key === 'W') && !modalOpen() && !$('#drawer').classList.contains('open')) {
+      e.preventDefault(); openWorkflowsModal();
     }
   });
 }

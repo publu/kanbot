@@ -16,11 +16,13 @@ from fastapi.staticfiles import StaticFiles
 from .. import __version__
 from ..agents import catalog
 from ..profiles import list_profiles
+from ..workflows import extract_from_session, starter_templates
 from .db import DB, now
 from .hub import Hub, RunnerConn
 from .insights import PROVIDER_META, compute
 from .schemas import (BoardCreate, CardCreate, CardMove, CardPatch, ReviveRequest,
-                      TagAttach, TagCreate, UploadRequest)
+                      TagAttach, TagCreate, UploadRequest, WorkflowClone,
+                      WorkflowExtract, WorkflowImport, WorkflowRun, WorkflowSave)
 
 STATIC_DIR = Path(__file__).parent / "static"
 SERVER_TOKEN = os.environ.get("KANBOT_TOKEN") or os.environ.get("DECKHAND_TOKEN", "")
@@ -216,6 +218,110 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                 res["tag"] = {"id": tag["id"], "name": tag["name"], "color": tag["color"]}
                 results.append(res)
         return {"insights": results}
+
+    # -- workflows ---------------------------------------------------------
+    @app.get("/api/workflow-templates")
+    async def workflow_templates():
+        """The built-in starter library — instantiate or import into any board."""
+        return {"templates": starter_templates()}
+
+    @app.get("/api/boards/{board_id}/workflows")
+    async def list_workflows(board_id: str):
+        if not db.get_board(board_id):
+            raise HTTPException(404, "board not found")
+        return {"workflows": db.list_workflows(board_id)}
+
+    @app.post("/api/boards/{board_id}/workflows")
+    async def create_workflow(board_id: str, body: WorkflowSave):
+        if not db.get_board(board_id):
+            raise HTTPException(404, "board not found")
+        wf = db.save_workflow(board_id, body.name, body.description, body.agent,
+                              body.cwd, [s.dict() for s in body.steps])
+        await hub.broadcast({"type": "workflow.saved", "board_id": board_id, "workflow": wf})
+        return wf
+
+    @app.get("/api/workflows/{workflow_id}")
+    async def get_workflow(workflow_id: str):
+        wf = db.get_workflow(workflow_id)
+        if not wf:
+            raise HTTPException(404, "workflow not found")
+        return wf
+
+    @app.put("/api/workflows/{workflow_id}")
+    async def update_workflow(workflow_id: str, body: WorkflowSave):
+        existing = db.get_workflow(workflow_id)
+        if not existing:
+            raise HTTPException(404, "workflow not found")
+        wf = db.save_workflow(existing["board_id"], body.name, body.description,
+                              body.agent, body.cwd, [s.dict() for s in body.steps],
+                              workflow_id=workflow_id)
+        await hub.broadcast({"type": "workflow.saved", "board_id": wf["board_id"], "workflow": wf})
+        return wf
+
+    @app.delete("/api/workflows/{workflow_id}")
+    async def delete_workflow(workflow_id: str):
+        wf = db.get_workflow(workflow_id)
+        if not wf:
+            raise HTTPException(404, "workflow not found")
+        db.delete_workflow(workflow_id)
+        await hub.broadcast({"type": "workflow.deleted", "board_id": wf["board_id"],
+                             "workflow_id": workflow_id})
+        return {"ok": True}
+
+    @app.get("/api/workflows/{workflow_id}/export")
+    async def export_workflow(workflow_id: str):
+        """A portable, id-free template dict — share it or import it elsewhere."""
+        tpl = db.workflow_template(workflow_id)
+        if not tpl:
+            raise HTTPException(404, "workflow not found")
+        return tpl
+
+    @app.post("/api/workflows/{workflow_id}/clone")
+    async def clone_workflow(workflow_id: str, body: WorkflowClone):
+        wf = db.clone_workflow(workflow_id, body.name or None)
+        if not wf:
+            raise HTTPException(404, "workflow not found")
+        await hub.broadcast({"type": "workflow.saved", "board_id": wf["board_id"], "workflow": wf})
+        return wf
+
+    @app.post("/api/boards/{board_id}/workflows/import")
+    async def import_workflow(board_id: str, body: WorkflowImport):
+        if not db.get_board(board_id):
+            raise HTTPException(404, "board not found")
+        t = body.template or {}
+        if not t.get("name") or not isinstance(t.get("steps"), list):
+            raise HTTPException(400, "template needs a name and a steps list")
+        wf = db.save_workflow(board_id, t["name"], t.get("description", ""),
+                              t.get("agent", "auto"), t.get("cwd", ""), t["steps"])
+        await hub.broadcast({"type": "workflow.saved", "board_id": board_id, "workflow": wf})
+        return wf
+
+    @app.post("/api/boards/{board_id}/workflows/extract")
+    async def extract_workflow(board_id: str, body: WorkflowExtract):
+        """Turn a discovered Claude/Codex session into a draft workflow."""
+        if not db.get_board(board_id):
+            raise HTTPException(404, "board not found")
+        session = next((s for s in hub.all_agent_sessions()
+                        if s.get("session_id") == body.session_id), None)
+        if not session:
+            raise HTTPException(404, "agent session not found")
+        tpl = extract_from_session(session)
+        if not body.save:
+            return {"template": tpl}
+        wf = db.save_workflow(board_id, tpl["name"], tpl["description"],
+                              tpl["agent"], tpl["cwd"], tpl["steps"])
+        await hub.broadcast({"type": "workflow.saved", "board_id": board_id, "workflow": wf})
+        return wf
+
+    @app.post("/api/workflows/{workflow_id}/run")
+    async def run_workflow(workflow_id: str, body: WorkflowRun):
+        wf = db.get_workflow(workflow_id)
+        if not wf:
+            raise HTTPException(404, "workflow not found")
+        if not wf.get("steps"):
+            raise HTTPException(400, "workflow has no steps")
+        card = await hub.start_workflow(wf, cwd=body.cwd, title=body.title, run=body.run)
+        return card
 
     # -- tags --------------------------------------------------------------
     @app.post("/api/boards/{board_id}/tags")

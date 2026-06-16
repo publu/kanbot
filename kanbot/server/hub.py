@@ -208,14 +208,19 @@ class Hub:
             return
         self.db.update_session(sid, status=status, exit_code=exit_code, ended_at=now())
         card = self.db.get_card(sess["card_id"])
+        advanced = False
         if card:
-            # Any finished run (success or failure) leaves Running and lands in
-            # Done, carrying its status so the card shows ✓ done / ✗ failed.
-            new_status = "done" if status == "success" else status
-            self.db.update_card(card["id"], status=new_status)
-            col = self.db.column_by_kind(card["board_id"], "done")
-            if col:
-                self.db.move_card(card["id"], col["id"], self.db._next_position(col["id"]))
+            # Workflow run with another step to take? Queue the next step and
+            # keep the card in Running instead of finishing it.
+            advanced = await self._advance_workflow(card, status)
+            if not advanced:
+                # Any finished run (success or failure) leaves Running and lands
+                # in Done, carrying its status so the card shows ✓ done / ✗ failed.
+                new_status = "done" if status == "success" else status
+                self.db.update_card(card["id"], status=new_status)
+                col = self.db.column_by_kind(card["board_id"], "done")
+                if col:
+                    self.db.move_card(card["id"], col["id"], self.db._next_position(col["id"]))
             await self._emit_card(card["id"])
         # Free the runner slot.
         runner = self.runners.get(sess["runner_id"])
@@ -247,3 +252,84 @@ class Hub:
         card = self.db.get_card(card_id)
         if card:
             await self.broadcast({"type": "card.updated", "card": card})
+
+    # -- workflows ---------------------------------------------------------
+    def _step_card_fields(self, workflow: Dict[str, Any], step: Dict[str, Any],
+                          step_index: int, carry_text: str = "") -> Dict[str, Any]:
+        """Map a workflow step onto the card fields the dispatcher reads, so the
+        existing card->session machinery runs each step unchanged."""
+        prompt = step.get("prompt", "") or ""
+        if carry_text and step.get("carry_context"):
+            prompt = (prompt + "\n\n--- Output from the previous step (for context) ---\n"
+                      + carry_text).strip()
+        return {
+            "agent": step.get("agent") or workflow.get("agent") or "auto",
+            "prompt": prompt,
+            "profile": step.get("profile", "") or "",
+            "command": step.get("command", "") or "",
+            "loop_max": max(1, int(step.get("loop_max") or 1)),
+            "loop_until": step.get("loop_until", "") or "",
+            "step_index": step_index,
+        }
+
+    async def start_workflow(self, workflow: Dict[str, Any], cwd: str = "",
+                             title: str = "", run: bool = True) -> Dict[str, Any]:
+        """Instantiate a workflow as a single run card parked on step 0."""
+        board_id = workflow["board_id"]
+        steps = workflow.get("steps") or []
+        if not steps:
+            raise ValueError("workflow has no steps")
+        kind = "running" if run else "backlog"
+        col = self.db.column_by_kind(board_id, kind) or self.db.columns(board_id)[0]
+        f = self._step_card_fields(workflow, steps[0], 0)
+        card = self.db.create_card(
+            board_id, col["id"], title or workflow["name"], prompt=f["prompt"],
+            agent=f["agent"], cwd=cwd or workflow.get("cwd", ""), loop_max=f["loop_max"],
+            loop_until=f["loop_until"], profile=f["profile"], command=f["command"],
+            workflow_id=workflow["id"], step_index=0,
+        )
+        await self.broadcast({"type": "card.created", "card": card})
+        if run:
+            self.db.update_card(card["id"], status="queued")
+            card = self.db.get_card(card["id"])
+            await self.broadcast({"type": "card.updated", "card": card})
+            await self.try_dispatch()
+        return card
+
+    def _session_tail_text(self, sid: str, limit: int = 2400) -> str:
+        """The last slice of a session's stdout — carried into the next step."""
+        evs = self.db.events(sid)
+        text = "\n".join(e["text"] for e in evs if e.get("stream") == "stdout")
+        return text[-limit:] if len(text) > limit else text
+
+    async def _advance_workflow(self, card: Dict[str, Any], session_status: str) -> bool:
+        """If `card` is a workflow run with a next step to take, queue it and
+        return True. Returns False to let normal completion (done/failed) run."""
+        wf_id = card.get("workflow_id") or ""
+        if not wf_id:
+            return False
+        workflow = self.db.get_workflow(wf_id)
+        if not workflow:
+            return False
+        steps = workflow.get("steps") or []
+        cur = int(card.get("step_index") or 0)
+        nxt = cur + 1
+        if nxt >= len(steps):
+            return False
+        cur_step = steps[cur]
+        ok = session_status == "success"
+        if not ok and not cur_step.get("continue_on_fail"):
+            return False
+        carry = ""
+        nxt_step = steps[nxt]
+        if nxt_step.get("carry_context"):
+            sess = self.db.list_sessions(card_id=card["id"], limit=1)
+            if sess:
+                carry = self._session_tail_text(sess[0]["id"])
+        f = self._step_card_fields(workflow, nxt_step, nxt, carry)
+        self.db.update_card(
+            card["id"], status="queued", step_index=nxt, prompt=f["prompt"],
+            agent=f["agent"], profile=f["profile"], command=f["command"],
+            loop_max=f["loop_max"], loop_until=f["loop_until"],
+        )
+        return True
