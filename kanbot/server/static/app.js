@@ -61,6 +61,7 @@ const S = {
   agentSessions: [],    // discovered claude/codex sessions across runners
   sessionsModalOpen: false,
   workflowsModalOpen: false,
+  autoView: 'list',         // which automations sub-view is showing
   extractPick: new Set(),   // session_ids selected to extract a workflow from
   inspectSessionId: null,   // session_id whose live transcript is open
   dragSession: null,    // session object currently being dragged
@@ -377,6 +378,7 @@ async function loadWorkflows() {
   } catch (e) { S.workflows = []; }
   S.workflowById = Object.fromEntries(S.workflows.map(w => [w.id, w]));
   renderColumns();
+  if (autoIsOpen() && S.autoView === 'list') openWorkflowsModal();
 }
 
 async function ensureTemplates() {
@@ -431,7 +433,6 @@ function handleEvent(msg) {
     case 'workflow.deleted':
       if (!msg.board_id || msg.board_id === S.boardId) {
         loadWorkflows();
-        if (S.workflowsModalOpen) openWorkflowsModal();
       }
       break;
     case 'board.created':
@@ -1467,26 +1468,53 @@ async function runWorkflow(id, cwd, title) {
   } catch (e) { toast('run failed: ' + e.message); }
 }
 
+// ---- automations surface (full screen, internal navigation) ------------
+function autoIsOpen() { return $('#autoView').classList.contains('open'); }
+function openAutomations() {
+  if (S.demo) { toast('Automations run on your local Deckhand — connect first'); return; }
+  $('#autoView').classList.add('open');
+  openWorkflowsModal();
+}
+function closeAutomations() { $('#autoView').classList.remove('open'); $('#autoView').innerHTML = ''; }
+
+// Build the surface chrome (fixed header + scrolling body + optional footer)
+// and return the regions to fill. `back` shows a back-to-list button.
+function autoFrame(view, title, opts) {
+  opts = opts || {};
+  S.autoView = view;
+  $('#autoView').classList.add('open');
+  const v = $('#autoView'); v.innerHTML = '';
+  const head = el('div', 'auto-head');
+  const left = el('div', 'auto-head-left');
+  if (opts.back) { const b = el('button', 'auto-back', '‹ Automations'); b.onclick = openWorkflowsModal; left.appendChild(b); }
+  const tt = el('div', 'auto-titles');
+  tt.appendChild(el('h2', 'auto-title', title));
+  if (opts.sub) tt.appendChild(el('div', 'auto-sub', opts.sub));
+  left.appendChild(tt);
+  head.appendChild(left);
+  const right = el('div', 'auto-head-right');
+  (opts.actions || []).forEach(a => right.appendChild(a));
+  const close = el('button', 'auto-close', '✕'); close.title = 'Close (Esc)'; close.onclick = closeAutomations;
+  right.appendChild(close);
+  head.appendChild(right);
+  v.appendChild(head);
+  const body = el('div', 'auto-body'); v.appendChild(body);
+  const foot = el('div', 'auto-foot'); foot.style.display = 'none'; v.appendChild(foot);
+  return { body, foot };
+}
+function autoBtn(label, fn, cls) { const b = el('button', 'btn ' + (cls || ''), label); b.onclick = fn; return b; }
+
 function openWorkflowsModal() {
-  if (S.demo) { toast('Workflows run on your local Deckhand — connect first'); return; }
-  S.workflowsModalOpen = true;
-  const m = $('#modal'); m.innerHTML = '';
-  m.classList.add('wide');
-  const head = el('div', 'wf-modal-head');
-  head.appendChild(el('h3', null, '⛓ Automations'));
-  const sub = el('div', 'label', 'Multi-step agent runs that work unattended for hours.');
-  head.appendChild(sub);
-  m.appendChild(head);
+  if (S.demo) { toast('Automations run on your local Deckhand — connect first'); return; }
+  const actions = [
+    autoBtn('✨ Suggest from my sessions', openSuggestAutomations, 'primary'),
+    autoBtn('＋ New', () => openWorkflowBuilder(null)),
+    autoBtn('◇ Template', openTemplatePicker, 'ghost'),
+    autoBtn('⬇ Import', importWorkflowModal, 'ghost'),
+  ];
+  const { body } = autoFrame('list', '⛓ Automations',
+    { sub: 'Multi-step agent runs that work unattended for hours.', actions });
 
-  const bar = el('div', 'wf-actions');
-  const mk = (label, fn, cls) => { const b = el('button', 'btn ' + (cls || ''), label); b.onclick = fn; return b; };
-  bar.appendChild(mk('✨ Suggest from my sessions', openSuggestAutomations, 'primary'));
-  bar.appendChild(mk('＋ New', () => openWorkflowBuilder(null)));
-  bar.appendChild(mk('◇ Template', openTemplatePicker));
-  bar.appendChild(mk('⬇ Import', importWorkflowModal));
-  m.appendChild(bar);
-
-  const list = el('div', 'wf-list');
   if (!S.workflows.length) {
     const empty = el('div', 'wf-empty');
     empty.appendChild(el('div', 'wf-empty-mark', '✨'));
@@ -1496,18 +1524,12 @@ function openWorkflowsModal() {
     const cta = el('button', 'btn primary', '✨ Analyze my sessions');
     cta.onclick = openSuggestAutomations;
     empty.appendChild(cta);
-    list.appendChild(empty);
+    body.appendChild(empty);
   } else {
+    const list = el('div', 'wf-list');
     for (const wf of S.workflows) list.appendChild(workflowRow(wf));
+    body.appendChild(list);
   }
-  m.appendChild(list);
-
-  const actions = el('div', 'modal-actions');
-  const close = el('button', 'btn primary', 'Done');
-  close.onclick = () => { S.workflowsModalOpen = false; closeModal(); };
-  actions.appendChild(close);
-  m.appendChild(actions);
-  openModal(); m.classList.add('wide');
 }
 
 function workflowRow(wf) {
@@ -1533,8 +1555,12 @@ function workflowRow(wf) {
   const run = el('button', 'btn primary small', '▶ Run');
   run.onclick = () => runWorkflow(wf.id, wf.cwd, '');
   const edit = el('button', 'btn ghost small', '✎ Edit'); edit.onclick = () => openWorkflowBuilder(wf);
-  const more = el('button', 'btn ghost small', '⋯'); more.onclick = () => openWorkflowOverflow(wf);
-  ctrls.appendChild(run); ctrls.appendChild(edit); ctrls.appendChild(more);
+  const clone = el('button', 'btn ghost small', '⧉'); clone.title = 'Clone';
+  clone.onclick = async () => { try { await api.post(`/api/workflows/${wf.id}/clone`, {}); toast('cloned'); } catch (e) { toast(e.message); } };
+  const exp = el('button', 'btn ghost small', '⬆'); exp.title = 'Export JSON'; exp.onclick = () => exportWorkflow(wf.id);
+  const del = el('button', 'btn ghost small danger', '🗑'); del.title = 'Delete';
+  del.onclick = async () => { if (confirm(`Delete automation “${wf.name}”?`)) { try { await api.del(`/api/workflows/${wf.id}`); toast('deleted'); } catch (e) { toast(e.message); } } };
+  ctrls.appendChild(run); ctrls.appendChild(edit); ctrls.appendChild(clone); ctrls.appendChild(exp); ctrls.appendChild(del);
   row.appendChild(ctrls);
   return row;
 }
@@ -1543,21 +1569,14 @@ function workflowRow(wf) {
 // discovered session server-side and presents ready-to-save automations.
 async function openSuggestAutomations() {
   if (S.demo) { toast('Connect your local Deckhand to analyze sessions'); return; }
-  S.workflowsModalOpen = false;
-  const m = $('#modal'); m.innerHTML = '';
-  m.appendChild(el('h3', null, '✨ Automations from your sessions'));
-  const note = el('div', 'label', `Reading ${S.agentSessions.length} sessions for repeatable work…`);
-  m.appendChild(note);
+  const { body, foot } = autoFrame('suggest', '✨ Automations from your sessions',
+    { back: true, sub: `Reading ${S.agentSessions.length} sessions for repeatable work…` });
+  const note = $('#autoView').querySelector('.auto-sub');
   const list = el('div', 'wf-list');
   const loading = el('div', 'sug-loading');
   loading.appendChild(el('span', 'spinner')); loading.appendChild(el('span', null, 'analyzing your sessions…'));
   list.appendChild(loading);
-  m.appendChild(list);
-  const actions = el('div', 'modal-actions');
-  const back = el('button', 'btn ghost', 'Back'); back.onclick = openWorkflowsModal;
-  actions.appendChild(back);
-  m.appendChild(actions);
-  openModal(); m.classList.add('wide');
+  body.appendChild(list);
 
   let suggestions = [];
   try {
@@ -1567,17 +1586,18 @@ async function openSuggestAutomations() {
     list.innerHTML = ''; list.appendChild(el('div', 'label', 'could not analyze sessions: ' + e.message));
     return;
   }
+  if (S.autoView !== 'suggest') return;   // user navigated away while we waited
 
   list.innerHTML = '';
   if (!suggestions.length) {
-    note.textContent = 'No clear patterns yet.';
+    if (note) note.textContent = 'No clear patterns yet.';
     list.appendChild(el('div', 'label',
       'Nothing obvious to automate from your current sessions — run a few more, or build one by hand / from a template.'));
     return;
   }
-  note.textContent = S.distillAvailable
-    ? `${suggestions.length} draft${suggestions.length === 1 ? '' : 's'} from your sessions. Hit ✨ Refine to have an agent turn the raw transcript into clean, reusable prompts.`
-    : `${suggestions.length} draft${suggestions.length === 1 ? '' : 's'} pulled from your sessions (raw transcript — connect a runner with a reasoning agent to auto-refine them).`;
+  if (note) note.textContent = S.distillAvailable
+    ? `${suggestions.length} draft${suggestions.length === 1 ? '' : 's'}. Hit ✨ Refine to have an agent rewrite the raw transcript into clean prompts.`
+    : `${suggestions.length} draft${suggestions.length === 1 ? '' : 's'} (raw transcript — connect a reasoning agent to auto-refine).`;
   for (const sug of suggestions) list.appendChild(suggestionCard(sug));
 
   const all = el('button', 'btn primary', `Create all ${suggestions.length}`);
@@ -1586,9 +1606,9 @@ async function openSuggestAutomations() {
     try {
       for (const sug of suggestions) await api.post(`/api/boards/${S.boardId}/workflows/import`, { template: sug.template });
       toast(`created ${suggestions.length} automations ✓`); openWorkflowsModal();
-    } catch (e) { toast('create failed: ' + e.message); all.disabled = false; all.textContent = 'Create all'; }
+    } catch (e) { toast('create failed: ' + e.message); all.disabled = false; all.textContent = `Create all ${suggestions.length}`; }
   };
-  actions.appendChild(all);
+  foot.appendChild(all); foot.style.display = '';
 }
 
 function suggestionCard(sug) {
@@ -1639,20 +1659,6 @@ function suggestionCard(sug) {
   return row;
 }
 
-function openWorkflowOverflow(wf) {
-  const m = $('#modal'); m.innerHTML = '';
-  m.appendChild(el('h3', null, wf.name));
-  const list = el('div', 'wf-list');
-  const item = (label, fn) => { const b = el('button', 'btn', label); b.style.width = '100%'; b.onclick = fn; list.appendChild(b); };
-  item('⧉ Clone', async () => { try { await api.post(`/api/workflows/${wf.id}/clone`, {}); toast('cloned'); openWorkflowsModal(); } catch (e) { toast(e.message); } });
-  item('⬆ Export JSON', () => exportWorkflow(wf.id));
-  item('🗑 Delete', async () => { if (confirm(`Delete workflow “${wf.name}”?`)) { try { await api.del(`/api/workflows/${wf.id}`); toast('deleted'); openWorkflowsModal(); } catch (e) { toast(e.message); } } });
-  m.appendChild(list);
-  const actions = el('div', 'modal-actions');
-  const back = el('button', 'btn ghost', 'Back'); back.onclick = openWorkflowsModal;
-  actions.appendChild(back); m.appendChild(actions); openModal();
-}
-
 async function exportWorkflow(id) {
   try {
     const tpl = await api.get(`/api/workflows/${id}/export`);
@@ -1668,14 +1674,11 @@ async function exportWorkflow(id) {
 }
 
 function importWorkflowModal() {
-  const m = $('#modal'); m.innerHTML = '';
-  m.appendChild(el('h3', null, 'Import workflow'));
-  m.appendChild(el('div', 'label', 'Paste a workflow template (the JSON from Export).'));
+  const { body, foot } = autoFrame('import', 'Import automation',
+    { back: true, sub: 'Paste a workflow template (the JSON from Export).' });
   const ta = textareaField('Workflow JSON', '{ "name": "...", "steps": [ ... ] }');
-  ta.input.style.minHeight = '220px'; ta.input.classList.add('mono-input');
-  m.appendChild(ta.wrap);
-  const actions = el('div', 'modal-actions');
-  const back = el('button', 'btn ghost', 'Back'); back.onclick = openWorkflowsModal;
+  ta.input.style.minHeight = '300px'; ta.input.classList.add('mono-input');
+  body.appendChild(ta.wrap);
   const imp = el('button', 'btn primary', 'Import');
   imp.onclick = async () => {
     let tpl;
@@ -1683,14 +1686,15 @@ function importWorkflowModal() {
     try { await api.post(`/api/boards/${S.boardId}/workflows/import`, { template: tpl }); toast('imported ✓'); openWorkflowsModal(); }
     catch (e) { toast('import failed: ' + e.message); }
   };
-  actions.appendChild(back); actions.appendChild(imp);
-  m.appendChild(actions); openModal(); m.classList.add('wide');
+  foot.appendChild(imp); foot.style.display = '';
 }
 
 async function openTemplatePicker() {
+  const { body } = autoFrame('templates', 'Start from a template', { back: true });
+  body.appendChild(el('div', 'sug-loading', 'loading templates…'));
   const templates = await ensureTemplates();
-  const m = $('#modal'); m.innerHTML = '';
-  m.appendChild(el('h3', null, 'Start from a template'));
+  if (S.autoView !== 'templates') return;
+  body.innerHTML = '';
   const list = el('div', 'wf-list');
   if (!templates.length) list.appendChild(el('div', 'label', 'no templates available'));
   for (const t of templates) {
@@ -1707,10 +1711,7 @@ async function openTemplatePicker() {
     ctrls.appendChild(use); row.appendChild(ctrls);
     list.appendChild(row);
   }
-  m.appendChild(list);
-  const actions = el('div', 'modal-actions');
-  const back = el('button', 'btn ghost', 'Back'); back.onclick = openWorkflowsModal;
-  actions.appendChild(back); m.appendChild(actions); openModal(); m.classList.add('wide');
+  body.appendChild(list);
 }
 
 // The builder. `wf` = edit an existing workflow; `prefill` = a template to start
@@ -1721,15 +1722,9 @@ function openWorkflowBuilder(wf, prefill) {
   const steps = (src.steps && src.steps.length ? src.steps : [blankStep(0)]).map(s => ({ ...s }));
   let open = steps.length - 1;   // index of the expanded step (-1 = all collapsed)
 
-  const m = $('#modal'); m.innerHTML = '';
-
-  const head = el('div', 'wf-build-head');
-  head.appendChild(el('h3', null, wf ? 'Edit workflow' : 'New workflow'));
-  head.appendChild(el('span', 'wf-build-sub', 'Steps run top → bottom, each a fresh agent run.'));
-  m.appendChild(head);
-
-  const scroll = el('div', 'wf-scroll');
-  m.appendChild(scroll);
+  const { body, foot } = autoFrame('builder', wf ? 'Edit automation' : 'New automation',
+    { back: true, sub: 'Steps run top → bottom, each a fresh agent run.' });
+  const scroll = body;
 
   const name = inputField('Name', 'e.g. Ship a feature'); name.input.value = src.name || ''; name.input.classList.add('wf-name-input');
   const desc = inputField('Description', 'what this workflow is for'); desc.input.value = src.description || '';
@@ -1780,11 +1775,11 @@ function openWorkflowBuilder(wf, prefill) {
     const distillBtn = el('button', 'btn ghost wf-distill', '✨ Distill prompts with an agent');
     distillBtn.title = 'Rewrite these steps into clean, generalized, guided prompts using a connected agent (~1 min)';
     distillBtn.onclick = async () => {
-      const body = collect();
-      if (!body.steps.length) { toast('add a step first'); return; }
+      const payload = collect();
+      if (!payload.steps.length) { toast('add a step first'); return; }
       distillBtn.disabled = true; distillBtn.textContent = '✨ distilling…';
       try {
-        const { template } = await api.post('/api/workflows/distill', { template: body });
+        const { template } = await api.post('/api/workflows/distill', { template: payload });
         if (template.name) name.input.value = template.name;
         if (template.description) desc.input.value = template.description;
         steps.length = 0; (template.steps || []).forEach(s => steps.push({ ...s })); open = 0; renderSteps();
@@ -1796,25 +1791,21 @@ function openWorkflowBuilder(wf, prefill) {
   }
 
   const save = async (thenRun) => {
-    const body = collect();
-    if (!body.name) { toast('name required'); name.input.focus(); return null; }
+    const payload = collect();
+    if (!payload.name) { toast('name required'); name.input.focus(); return null; }
     try {
-      const saved = wf ? await api.put(`/api/workflows/${wf.id}`, body)
-                       : await api.post(`/api/boards/${S.boardId}/workflows`, body);
-      toast('workflow saved ✓');
-      if (thenRun && saved && saved.id) await runWorkflow(saved.id, saved.cwd, '');
-      else openWorkflowsModal();
+      const saved = wf ? await api.put(`/api/workflows/${wf.id}`, payload)
+                       : await api.post(`/api/boards/${S.boardId}/workflows`, payload);
+      if (thenRun && saved && saved.id) { await runWorkflow(saved.id, saved.cwd, ''); closeAutomations(); }
+      else { toast('automation saved ✓'); openWorkflowsModal(); }
       return saved;
     } catch (e) { toast('save failed: ' + e.message); return null; }
   };
 
-  const actions = el('div', 'modal-actions wf-build-actions');
   const back = el('button', 'btn ghost', 'Cancel'); back.onclick = openWorkflowsModal;
   const saveBtn = el('button', 'btn', 'Save'); saveBtn.onclick = () => save(false);
   const runBtn = el('button', 'btn primary', '▶ Save & run'); runBtn.onclick = () => save(true);
-  actions.appendChild(back); actions.appendChild(saveBtn); actions.appendChild(runBtn);
-  m.appendChild(actions);
-  openModal(); m.classList.add('wide', 'wf-builder');
+  foot.appendChild(back); foot.appendChild(saveBtn); foot.appendChild(runBtn); foot.style.display = '';
   setTimeout(() => name.input.focus(), 50);
 }
 
@@ -1902,20 +1893,23 @@ function checkRow(label, checked, onChange) {
   return l;
 }
 
-function extractWorkflowFromSession(s) { openExtractReview([s.session_id]); }
+function extractWorkflowFromSession(s) { closeModal(); openExtractReview([s.session_id]); }
 
 // A session is not always one workflow. Extraction segments it by topic; this
 // review lets you decide split-vs-combine, drop segments, and rename before
 // anything is saved.
 async function openExtractReview(sessionIds) {
   if (!sessionIds || !sessionIds.length) { toast('pick a session first'); return; }
+  const { body, foot } = autoFrame('extract', 'Extract an automation', { back: true, sub: 'reading the transcript…' });
+  body.appendChild(el('div', 'sug-loading', 'analyzing the session…'));
   let segments;
   try {
     const r = await api.post(`/api/boards/${S.boardId}/workflows/extract`,
       { session_ids: sessionIds, split: true, save: false });
     segments = (r.segments || []).map(t => ({ ...t, _include: true }));
-  } catch (e) { toast('extract failed: ' + e.message); return; }
-  if (!segments.length) { toast('nothing to extract from that session'); return; }
+  } catch (e) { toast('extract failed: ' + e.message); openWorkflowsModal(); return; }
+  if (S.autoView !== 'extract') return;
+  if (!segments.length) { toast('nothing to extract from that session'); openWorkflowsModal(); return; }
 
   let mode = segments.length > 1 ? 'split' : 'combine';
   const combined = () => ({
@@ -1925,27 +1919,24 @@ async function openExtractReview(sessionIds) {
     steps: segments.flatMap(s => s.steps),
   });
 
-  const m = $('#modal');
+  const sub = $('#autoView').querySelector('.auto-sub');
   const render = () => {
-    m.innerHTML = '';
-    m.appendChild(el('h3', null, 'Extract workflow'));
-    const note = el('div', 'label',
-      mode === 'split'
-        ? `This session looks like ${segments.length} separate objectives. Create one workflow each, or combine.`
-        : 'Combine everything into a single workflow.');
-    m.appendChild(note);
+    body.innerHTML = ''; foot.innerHTML = '';
+    if (sub) sub.textContent = mode === 'split'
+      ? `Looks like ${segments.length} separate objectives — create one automation each, or combine.`
+      : 'Combine everything into one automation.';
 
     const toggle = el('div', 'wf-toggle');
     const tb = (label, val) => { const b = el('button', 'btn small' + (mode === val ? ' primary' : ' ghost'), label); b.onclick = () => { mode = val; render(); }; return b; };
     toggle.appendChild(tb(`Split into ${segments.length}`, 'split'));
     toggle.appendChild(tb('Combine into one', 'combine'));
-    m.appendChild(toggle);
+    body.appendChild(toggle);
 
     const list = el('div', 'wf-list');
     if (mode === 'split') {
-      segments.forEach((seg, i) => {
+      segments.forEach((seg) => {
         const row = el('div', 'wf-row');
-        const cb = el('input'); cb.type = 'checkbox'; cb.checked = seg._include;
+        const cb = el('input', 'sess-pick'); cb.type = 'checkbox'; cb.checked = seg._include;
         cb.onchange = () => seg._include = cb.checked; row.appendChild(cb);
         const info = el('div', 'wf-info');
         const nm = el('input', 'input wf-step-name'); nm.value = seg.name; nm.oninput = () => seg.name = nm.value;
@@ -1954,8 +1945,8 @@ async function openExtractReview(sessionIds) {
         seg.steps.forEach((st, j) => { if (j) chain.appendChild(el('span', 'wf-arrow', '→')); chain.appendChild(el('span', 'wf-step-pill', st.name)); });
         info.appendChild(chain);
         row.appendChild(info);
-        const edit = el('button', 'btn ghost small', '✎'); edit.title = 'open in builder';
-        edit.onclick = () => { S.sessionsModalOpen = false; openWorkflowBuilder(null, seg); };
+        const edit = el('button', 'btn ghost small', '✎ Edit'); edit.title = 'open in builder';
+        edit.onclick = () => openWorkflowBuilder(null, seg);
         row.appendChild(edit);
         list.appendChild(row);
       });
@@ -1968,30 +1959,26 @@ async function openExtractReview(sessionIds) {
       c.steps.forEach((st, j) => { if (j) chain.appendChild(el('span', 'wf-arrow', '→')); chain.appendChild(el('span', 'wf-step-pill', st.name)); });
       info.appendChild(chain);
       row.appendChild(info);
-      const edit = el('button', 'btn ghost small', '✎ builder');
-      edit.onclick = () => { S.sessionsModalOpen = false; openWorkflowBuilder(null, c); };
+      const edit = el('button', 'btn ghost small', '✎ Edit in builder');
+      edit.onclick = () => openWorkflowBuilder(null, c);
       row.appendChild(edit);
       list.appendChild(row);
     }
-    m.appendChild(list);
+    body.appendChild(list);
 
-    const actions = el('div', 'modal-actions');
-    const back = el('button', 'btn ghost', 'Cancel'); back.onclick = () => openSessionsModal();
     const create = el('button', 'btn primary', 'Create');
     create.onclick = async () => {
       const toMake = mode === 'split' ? segments.filter(s => s._include) : [combined()];
       if (!toMake.length) { toast('nothing selected'); return; }
       try {
         for (const tpl of toMake) await api.post(`/api/boards/${S.boardId}/workflows/import`, { template: { name: tpl.name, description: tpl.description, agent: tpl.agent, cwd: tpl.cwd, steps: tpl.steps } });
-        toast(`created ${toMake.length} workflow${toMake.length === 1 ? '' : 's'} ✓`);
-        S.extractPick.clear(); openWorkflowsModal();
+        toast(`created ${toMake.length} automation${toMake.length === 1 ? '' : 's'} ✓`);
+        openWorkflowsModal();
       } catch (e) { toast('create failed: ' + e.message); }
     };
-    actions.appendChild(back); actions.appendChild(create);
-    m.appendChild(actions);
+    foot.appendChild(create); foot.style.display = '';
   };
   render();
-  openModal(); m.classList.add('wide');
 }
 
 // ---- minimal markdown -> HTML (for the terminal transcript preview) -----
@@ -2324,7 +2311,7 @@ function closeModal() { $('#modalScrim').classList.remove('open'); S.sessionsMod
 function wireGlobalUI() {
   installGlobalImageDrop();
   const nb = $('#newTaskBtn'); if (nb) nb.onclick = () => openComposer();
-  const wb = $('#workflowsBtn'); if (wb) wb.onclick = openWorkflowsModal;
+  const wb = $('#workflowsBtn'); if (wb) wb.onclick = openAutomations;
   $('#sessionsBtn').onclick = () => { S.extractPick.clear(); openSessionsModal(); };
   $('#manageTagsBtn').onclick = openManageTags;
   $('#apiBtn').onclick = openApiModal;
@@ -2333,14 +2320,14 @@ function wireGlobalUI() {
   $('#modalScrim').onclick = (e) => { if (e.target.id === 'modalScrim') closeModal(); };
   $('#dTitle').onblur = () => { if (S.openCardId) patchCard(S.openCardId, { title: $('#dTitle').value }); };
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') { closeModal(); closeDrawer(); }
+    if (e.key === 'Escape') { closeModal(); closeDrawer(); closeAutomations(); }
     // 'n' opens the composer when not typing into a field
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test((e.target.tagName || ''));
     if (!typing && (e.key === 'n' || e.key === 'N') && !modalOpen() && !$('#drawer').classList.contains('open')) {
       e.preventDefault(); openComposer();
     }
     if (!typing && (e.key === 'w' || e.key === 'W') && !modalOpen() && !$('#drawer').classList.contains('open')) {
-      e.preventDefault(); openWorkflowsModal();
+      e.preventDefault(); openAutomations();
     }
   });
 }
