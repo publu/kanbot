@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from .. import __version__
 from ..agents import catalog
 from ..profiles import list_profiles
-from ..workflows import extract_workflows, starter_templates
+from ..workflows import extract_workflows, starter_templates, suggest_automations
 from .db import DB, now
 from .hub import Hub, RunnerConn
 from .insights import PROVIDER_META, compute
@@ -323,6 +323,13 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             saved.append(wf)
             await hub.broadcast({"type": "workflow.saved", "board_id": board_id, "workflow": wf})
         return {"workflows": saved}
+
+    @app.post("/api/boards/{board_id}/workflows/suggest")
+    async def suggest_workflows(board_id: str):
+        """Analyze every discovered session and propose automations to save."""
+        if not db.get_board(board_id):
+            raise HTTPException(404, "board not found")
+        return {"suggestions": suggest_automations(hub.all_agent_sessions())}
 
     @app.post("/api/workflows/{workflow_id}/run")
     async def run_workflow(workflow_id: str, body: WorkflowRun):
