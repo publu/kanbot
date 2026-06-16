@@ -1621,39 +1621,56 @@ async function openTemplatePicker() {
 }
 
 // The builder. `wf` = edit an existing workflow; `prefill` = a template to start
-// from (create mode). Steps are edited as a local array, re-rendered on change.
+// from. Steps render as an accordion (one open at a time) above a visual chain,
+// so you see the whole workflow's shape and edit one step in focus.
 function openWorkflowBuilder(wf, prefill) {
   const src = wf || prefill || { name: '', description: '', agent: 'auto', cwd: S.board?.repo_path || '', steps: [] };
   const steps = (src.steps && src.steps.length ? src.steps : [blankStep(0)]).map(s => ({ ...s }));
+  let open = steps.length - 1;   // index of the expanded step (-1 = all collapsed)
 
   const m = $('#modal'); m.innerHTML = '';
-  m.appendChild(el('h3', null, wf ? 'Edit workflow' : 'New workflow'));
 
-  const name = inputField('Name', 'e.g. Ship a feature'); name.input.value = src.name || '';
+  const head = el('div', 'wf-build-head');
+  head.appendChild(el('h3', null, wf ? 'Edit workflow' : 'New workflow'));
+  head.appendChild(el('span', 'wf-build-sub', 'Steps run top → bottom, each a fresh agent run.'));
+  m.appendChild(head);
+
+  const scroll = el('div', 'wf-scroll');
+  m.appendChild(scroll);
+
+  const name = inputField('Name', 'e.g. Ship a feature'); name.input.value = src.name || ''; name.input.classList.add('wf-name-input');
   const desc = inputField('Description', 'what this workflow is for'); desc.input.value = src.description || '';
-  m.appendChild(name.wrap); m.appendChild(desc.wrap);
+  scroll.appendChild(name.wrap); scroll.appendChild(desc.wrap);
   const row = el('div', 'row');
   const agentSel = agentSelectField(src.agent || 'auto');
   const cwd = inputField('Default working directory', '/path/to/repo'); cwd.input.value = src.cwd || '';
   row.appendChild(agentSel.wrap); row.appendChild(cwd.wrap);
-  m.appendChild(row);
+  scroll.appendChild(row);
 
-  m.appendChild(el('div', 'label', 'Steps — run top to bottom, each a fresh agent run'));
-  const stepsBox = el('div', 'wf-steps');
-  m.appendChild(stepsBox);
+  const chain = el('div', 'wf-build-chain'); scroll.appendChild(chain);
+  const stepsBox = el('div', 'wf-steps'); scroll.appendChild(stepsBox);
+  const addStep = el('button', 'btn ghost wf-addstep', '＋ add step'); scroll.appendChild(addStep);
 
   const renderSteps = () => {
+    chain.innerHTML = '';
+    steps.forEach((s, i) => {
+      if (i) chain.appendChild(el('span', 'wf-arrow', '→'));
+      const pill = el('button', 'wf-cpill' + (i === open ? ' on' : ''));
+      pill.appendChild(el('span', 'wf-cpill-n', String(i + 1)));
+      pill.appendChild(el('span', 'wf-cpill-name', s.name || 'step'));
+      pill.onclick = () => { open = open === i ? -1 : i; renderSteps(); };
+      chain.appendChild(pill);
+    });
     stepsBox.innerHTML = '';
-    steps.forEach((s, i) => stepsBox.appendChild(stepEditor(s, i, steps.length, {
-      move: (d) => { const j = i + d; if (j < 0 || j >= steps.length) return; [steps[i], steps[j]] = [steps[j], steps[i]]; renderSteps(); },
-      remove: () => { steps.splice(i, 1); if (!steps.length) steps.push(blankStep(0)); renderSteps(); },
+    steps.forEach((s, i) => stepsBox.appendChild(stepCard(s, i, steps.length, i === open, {
+      toggle: () => { open = open === i ? -1 : i; renderSteps(); },
+      move: (d) => { const j = i + d; if (j < 0 || j >= steps.length) return; [steps[i], steps[j]] = [steps[j], steps[i]]; open = j; renderSteps(); },
+      remove: () => { steps.splice(i, 1); if (!steps.length) steps.push(blankStep(0)); open = Math.min(open, steps.length - 1); renderSteps(); },
     })));
   };
   renderSteps();
 
-  const addStep = el('button', 'btn ghost', '＋ add step');
-  addStep.onclick = () => { steps.push(blankStep(steps.length)); renderSteps(); };
-  m.appendChild(addStep);
+  addStep.onclick = () => { steps.push(blankStep(steps.length)); open = steps.length - 1; renderSteps(); };
 
   const collect = () => ({
     name: name.input.value.trim(),
@@ -1668,7 +1685,7 @@ function openWorkflowBuilder(wf, prefill) {
   });
   const save = async (thenRun) => {
     const body = collect();
-    if (!body.name) { toast('name required'); return null; }
+    if (!body.name) { toast('name required'); name.input.focus(); return null; }
     try {
       const saved = wf ? await api.put(`/api/workflows/${wf.id}`, body)
                        : await api.post(`/api/boards/${S.boardId}/workflows`, body);
@@ -1679,32 +1696,67 @@ function openWorkflowBuilder(wf, prefill) {
     } catch (e) { toast('save failed: ' + e.message); return null; }
   };
 
-  const actions = el('div', 'modal-actions');
+  const actions = el('div', 'modal-actions wf-build-actions');
   const back = el('button', 'btn ghost', 'Cancel'); back.onclick = openWorkflowsModal;
   const saveBtn = el('button', 'btn', 'Save'); saveBtn.onclick = () => save(false);
-  const runBtn = el('button', 'btn primary', '💾 Save & run'); runBtn.onclick = () => save(true);
+  const runBtn = el('button', 'btn primary', '▶ Save & run'); runBtn.onclick = () => save(true);
   actions.appendChild(back); actions.appendChild(saveBtn); actions.appendChild(runBtn);
   m.appendChild(actions);
-  openModal(); m.classList.add('wide');
+  openModal(); m.classList.add('wide', 'wf-builder');
   setTimeout(() => name.input.focus(), 50);
 }
 
-function stepEditor(s, i, total, h) {
-  const wrap = el('div', 'wf-step');
+// Collapsed chips that summarize a step at a glance, so the accordion reads as
+// a real overview without expanding every step.
+function stepSummary(s) {
+  const wrap = el('div', 'wf-step-sum');
+  if (s.agent) wrap.appendChild(el('span', 'wf-chip', s.agent));
+  const lm = parseInt(s.loop_max) || 1;
+  if (lm > 1) wrap.appendChild(el('span', 'wf-chip loop', `⟳ ×${lm}`));
+  if (s.loop_until) wrap.appendChild(el('span', 'wf-chip', '⌖ stop'));
+  if (s.continue_on_fail) wrap.appendChild(el('span', 'wf-chip warn', 'continues on fail'));
+  if (!(s.prompt || '').trim()) wrap.appendChild(el('span', 'wf-chip warn', 'no prompt'));
+  return wrap;
+}
+
+function stepCard(s, i, total, expanded, h) {
+  const card = el('div', 'wf-step' + (expanded ? ' open' : ''));
   const head = el('div', 'wf-step-head');
   head.appendChild(el('span', 'wf-step-num', String(i + 1)));
-  const nm = el('input', 'input wf-step-name'); nm.value = s.name; nm.placeholder = 'step name';
-  nm.oninput = () => s.name = nm.value;
-  head.appendChild(nm);
-  const up = el('button', 'wf-mini', '↑'); up.onclick = () => h.move(-1); up.disabled = i === 0;
-  const dn = el('button', 'wf-mini', '↓'); dn.onclick = () => h.move(1); dn.disabled = i === total - 1;
-  const rm = el('button', 'wf-mini danger', '×'); rm.onclick = h.remove;
-  head.appendChild(up); head.appendChild(dn); head.appendChild(rm);
-  wrap.appendChild(head);
 
-  const pr = el('textarea', 'textarea'); pr.value = s.prompt; pr.placeholder = 'Prompt for this step (file-based handoff via PLAN.md / NOTES.md works well across steps)';
-  pr.style.minHeight = '70px'; pr.oninput = () => s.prompt = pr.value;
-  wrap.appendChild(pr);
+  if (!expanded) {
+    head.appendChild(el('span', 'wf-step-title', s.name || `Step ${i + 1}`));
+    head.appendChild(stepSummary(s));
+    head.appendChild(el('span', 'wf-chevron', '⌄'));
+    head.onclick = h.toggle;
+    card.appendChild(head);
+    return card;
+  }
+
+  const nm = el('input', 'input wf-step-name'); nm.value = s.name; nm.placeholder = 'step name';
+  nm.oninput = () => s.name = nm.value; nm.onclick = (e) => e.stopPropagation();
+  head.appendChild(nm);
+  const tools = el('div', 'wf-step-tools');
+  const up = el('button', 'wf-mini', '↑'); up.disabled = i === 0; up.onclick = (e) => { e.stopPropagation(); h.move(-1); };
+  const dn = el('button', 'wf-mini', '↓'); dn.disabled = i === total - 1; dn.onclick = (e) => { e.stopPropagation(); h.move(1); };
+  const rm = el('button', 'wf-mini danger', '×'); rm.title = 'remove step'; rm.onclick = (e) => { e.stopPropagation(); h.remove(); };
+  const cv = el('button', 'wf-mini', '⌃'); cv.title = 'collapse'; cv.onclick = (e) => { e.stopPropagation(); h.toggle(); };
+  tools.appendChild(up); tools.appendChild(dn); tools.appendChild(rm); tools.appendChild(cv);
+  head.appendChild(tools);
+  card.appendChild(head);
+
+  const pr = el('textarea', 'textarea wf-prompt'); pr.value = s.prompt;
+  pr.placeholder = 'What the agent should do in this step. Each step starts fresh — write durable notes to PLAN.md / NOTES.md to hand off to the next.';
+  pr.oninput = () => s.prompt = pr.value;
+  card.appendChild(pr);
+
+  // Advanced: most steps only need a prompt, so tuck the knobs away (auto-open
+  // when the step already uses them).
+  const advUsed = !!(s.agent || (parseInt(s.loop_max) || 1) > 1 || s.loop_until || s.continue_on_fail);
+  const adv = el('div', 'wf-adv' + (advUsed ? ' open' : ''));
+  const advBtn = el('button', 'wf-adv-toggle');
+  const setLabel = () => advBtn.textContent = (adv.classList.contains('open') ? '▾' : '▸') + ' Advanced — agent · loop · stop · flags';
+  advBtn.onclick = () => { adv.classList.toggle('open'); setLabel(); }; setLabel();
 
   const row = el('div', 'row wf-step-row');
   const agw = el('div', 'field'); agw.appendChild(el('div', 'label', 'Agent'));
@@ -1713,20 +1765,21 @@ function stepEditor(s, i, total, h) {
   const lm = el('input', 'input'); lm.type = 'number'; lm.min = '1'; lm.value = s.loop_max;
   lm.oninput = () => s.loop_max = lm.value; lmw.appendChild(lm);
   row.appendChild(agw); row.appendChild(lmw);
-  wrap.appendChild(row);
+  adv.appendChild(row);
 
+  const luw = el('div', 'field'); luw.appendChild(el('div', 'label', 'Stop condition (optional)'));
   const lu = el('input', 'input mono-input'); lu.value = s.loop_until;
-  lu.placeholder = 'Loop until (shell exits 0 = stop) — e.g. ! grep -q FAIL test.log';
-  lu.oninput = () => s.loop_until = lu.value;
-  const luw = el('div', 'field'); luw.appendChild(el('div', 'label', 'Stop condition (optional)')); luw.appendChild(lu);
-  wrap.appendChild(luw);
+  lu.placeholder = 'shell exits 0 = stop — e.g. ! grep -q FAIL test.log';
+  lu.oninput = () => s.loop_until = lu.value; luw.appendChild(lu);
+  adv.appendChild(luw);
 
   const flags = el('div', 'wf-flags');
-  const carry = checkRow('Carry previous step output into this prompt', s.carry_context, (v) => s.carry_context = v);
-  const cof = checkRow('Continue even if this step fails', s.continue_on_fail, (v) => s.continue_on_fail = v);
-  flags.appendChild(carry); flags.appendChild(cof);
-  wrap.appendChild(flags);
-  return wrap;
+  flags.appendChild(checkRow('Carry previous step output into this prompt', s.carry_context, (v) => s.carry_context = v));
+  flags.appendChild(checkRow('Continue even if this step fails', s.continue_on_fail, (v) => s.continue_on_fail = v));
+  adv.appendChild(flags);
+
+  card.appendChild(advBtn); card.appendChild(adv);
+  return card;
 }
 
 function checkRow(label, checked, onChange) {
@@ -2082,7 +2135,7 @@ function profileSelectField(value) {
 }
 
 // ---- modal helpers ------------------------------------------------------
-function openModal() { $('#modal').classList.remove('wide'); $('#modalScrim').classList.add('open'); }
+function openModal() { $('#modal').classList.remove('wide', 'wf-builder'); $('#modalScrim').classList.add('open'); }
 function closeModal() { $('#modalScrim').classList.remove('open'); S.sessionsModalOpen = false; S.workflowsModalOpen = false; S.extractPick.clear(); }
 
 // ---- global UI ----------------------------------------------------------
