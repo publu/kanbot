@@ -11,3 +11,6 @@ build/
 .vercel
 .vercel/
 dist/
+
+# macOS
+.DS_Store

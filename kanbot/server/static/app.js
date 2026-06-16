@@ -54,12 +54,23 @@ const S = {
   agentSessions: [],    // discovered claude/codex sessions across runners
   sessionsModalOpen: false,
   dragSession: null,    // session object currently being dragged
+  dragging: false,      // a card/session drag is in flight — pause re-renders
   demo: false,          // true when running without a backend (Vercel)
   apiBase: '',          // '' = same origin; or an absolute local server URL
   imageTarget: null,    // the prompt textarea a dropped image should attach to
 };
 
 const COLOR_BY_KIND = { info: 'info', backlog: 'backlog', queued: 'queued', running: 'running', review: 'review', done: 'done', custom: 'custom' };
+
+// A discovered session counts as "working" only if its transcript was written
+// very recently. The server sends a frozen `active` flag (a 45s window snapped
+// at discovery time); we re-check it against the live clock so a card can never
+// get stuck spinning "working" when updates stop or lag arriving.
+const ACTIVE_GRACE_S = 90;
+function isSessionActive(s) {
+  if (!s || !s.active) return false;
+  return (Date.now() / 1000 - (s.mtime || 0)) <= ACTIVE_GRACE_S;
+}
 
 // ---- demo data (used only when there is no backend) ---------------------
 const NOW = Math.floor(Date.now() / 1000);
@@ -275,6 +286,18 @@ async function liveSetup() {
   await loadAgentSessions();
   connectWS();
   wireGlobalUI();
+  startStaleSweep();
+}
+
+// Re-render periodically so "working" badges and time-ago labels stay honest
+// even if a connected runner goes quiet without disconnecting. Cheap now that
+// renderColumns preserves scroll and bails out mid-drag.
+let _staleSweep = null;
+function startStaleSweep() {
+  if (_staleSweep) return;
+  _staleSweep = setInterval(() => {
+    if (!S.demo && S.board && !S.dragging) renderColumns();
+  }, 20000);
 }
 
 async function attemptLocal() {
@@ -304,7 +327,7 @@ async function loadAgentSessions() {
 }
 
 function updateLiveBadge() {
-  const active = S.agentSessions.filter(s => s.active).length;
+  const active = S.agentSessions.filter(isSessionActive).length;
   const badge = $('#liveBadge');
   if (active > 0) { badge.textContent = active; badge.classList.remove('hidden'); }
   else badge.classList.add('hidden');
@@ -415,8 +438,20 @@ function renderBoard() {
 
 function renderColumns() {
   const board = $('#board');
+  if (!S.board) { board.innerHTML = ''; return; }
+  // Don't yank the board out from under an in-progress drag — a mid-drag wipe
+  // drops the card being moved. The next event after dragend re-renders fresh.
+  if (S.dragging) return;
+
+  // Preserve where the user is looking: column bodies scroll vertically and the
+  // board scrolls horizontally. A naive innerHTML wipe resets all of that to the
+  // top on every 6s background refresh, so we snapshot and restore the offsets.
+  const scrollByCol = {};
+  for (const b of board.querySelectorAll('.col-body'))
+    scrollByCol[b.dataset.colId] = b.scrollTop;
+  const boardScrollLeft = board.scrollLeft;
+
   board.innerHTML = '';
-  if (!S.board) return;
 
   // Discovered agent sessions are injected inline by recency: working now ->
   // Running, finished in the last 30 min -> Done, anything older -> Backlog
@@ -431,8 +466,9 @@ function renderColumns() {
   const byBucket = { backlog: [], running: [], done: [] };
   for (const s of S.agentSessions) {
     if (adopted.has(s.session_id)) continue;
-    if (s.active && runningCwds.has(s.cwd)) continue;
-    if (s.active) byBucket.running.push(s);
+    const active = isSessionActive(s);
+    if (active && runningCwds.has(s.cwd)) continue;
+    if (active) byBucket.running.push(s);
     else if ((nowS - (s.mtime || 0)) <= RECENT_DONE_S) byBucket.done.push(s);
     else byBucket.backlog.push(s);
   }
@@ -455,6 +491,7 @@ function renderColumns() {
     column.appendChild(head);
 
     const body = el('div', 'col-body');
+    body.dataset.colId = col.id;
     if (cards.length + injected.length === 0) body.classList.add('empty-hint');
 
     if (col.kind === 'backlog') {
@@ -483,7 +520,9 @@ function renderColumns() {
 
     column.appendChild(body);
     board.appendChild(column);
+    if (scrollByCol[col.id] != null) body.scrollTop = scrollByCol[col.id];
   }
+  board.scrollLeft = boardScrollLeft;
 }
 
 function sessionPreview(s) {
@@ -502,19 +541,20 @@ function fmtDur(sec) {
 }
 
 function renderSessionCard(s) {
-  const card = el('div', 'card sess' + (s.active ? ' s-running' : ''));
+  const active = isSessionActive(s);
+  const card = el('div', 'card sess' + (active ? ' s-running' : ''));
   card.style.cursor = 'grab';
   card.draggable = true;
   card.addEventListener('dragstart', (e) => {
-    S.dragSession = s;
+    S.dragSession = s; S.dragging = true;
     e.dataTransfer.setData('text/plain', 'session:' + s.session_id);
     card.classList.add('dragging');
   });
-  card.addEventListener('dragend', () => card.classList.remove('dragging'));
+  card.addEventListener('dragend', () => { S.dragging = false; card.classList.remove('dragging'); });
   const top = el('div', 'sess-top');
   top.appendChild(agentBadge(s.agent));
   top.appendChild(el('span', 'sess-name', s.name || 'session'));
-  if (s.active) {
+  if (active) {
     const w = el('span', 'sess-work');
     w.appendChild(el('span', 'spinner'));
     w.appendChild(el('span', null, 'working'));
@@ -532,7 +572,7 @@ function renderSessionCard(s) {
   }
   const foot = el('div', 'sess-foot');
   foot.appendChild(el('span', 'sess-turns', `${s.turns} turns · brewed ${fmtDur(s.duration)}`));
-  const rev = el('button', 'sess-revive', s.active ? '⟳ continue' : '⟳ revive');
+  const rev = el('button', 'sess-revive', active ? '⟳ continue' : '⟳ revive');
   rev.onclick = (e) => { e.stopPropagation(); promptRevive(s); };
   foot.appendChild(rev);
   card.appendChild(foot);
@@ -552,6 +592,9 @@ function renderCard(c) {
   if (c.resume_of) meta.appendChild(el('span', 'resume-badge', '⟳ resumed'));
   if (c.loop_max > 1) meta.appendChild(el('span', 'resume-badge', `⟳ loop ×${c.loop_max}`));
   if (c.profile) meta.appendChild(el('span', 'resume-badge', `◇ ${c.profile}`));
+  if (c.command) meta.appendChild(el('span', 'resume-badge cmd-badge', '⚡ custom'));
+  const nImg = imageCount(c.prompt);
+  if (nImg) meta.appendChild(el('span', 'resume-badge', `📎 ${nImg}`));
   card.appendChild(meta);
 
   if (c.tags && c.tags.length) {
@@ -565,15 +608,24 @@ function renderCard(c) {
     sl.appendChild(el('span', 'spinner'));
     sl.appendChild(el('span', null, 'running…'));
     card.appendChild(sl);
-  } else if (['queued', 'failed', 'done', 'review', 'cancelled'].includes(c.status)) {
-    card.appendChild(el('div', 'status-line', c.status));
+  } else if (c.status === 'queued') {
+    const waiting = !canRunAgent(c.agent);
+    const sl = el('div', 'status-line' + (waiting ? ' warn' : ''));
+    sl.textContent = waiting
+      ? `⏸ waiting — no runner for ${c.agent === 'auto' ? 'any agent' : c.agent}`
+      : '⏳ queued — waiting for a runner slot';
+    card.appendChild(sl);
+  } else if (['failed', 'done', 'review', 'cancelled'].includes(c.status)) {
+    const icon = { done: '✓ done', failed: '✗ failed', cancelled: '◼ cancelled', review: 'review' }[c.status] || c.status;
+    card.appendChild(el('div', 'status-line s-' + c.status, icon));
   }
 
   card.addEventListener('dragstart', (e) => {
+    S.dragging = true;
     e.dataTransfer.setData('text/plain', c.id);
     card.classList.add('dragging');
   });
-  card.addEventListener('dragend', () => card.classList.remove('dragging'));
+  card.addEventListener('dragend', () => { S.dragging = false; card.classList.remove('dragging'); });
   card.onclick = () => openDrawer(c.id);
   return card;
 }
@@ -667,7 +719,13 @@ function loopSection(initialMax, initialUntil, onChange) {
 }
 
 // ---- composer (quick add) ----------------------------------------------
+function backlogColumnId() {
+  const col = S.columns.find(c => c.kind === 'backlog') || S.columns[0];
+  return col ? col.id : null;
+}
+
 function openComposer(columnId) {
+  columnId = columnId || backlogColumnId();
   const m = $('#modal');
   m.innerHTML = '';
   m.appendChild(el('h3', null, 'New task'));
@@ -690,6 +748,8 @@ function openComposer(columnId) {
 
   const loop = loopSection(1, '', null);
   m.appendChild(loop.wrap);
+  const cmd = commandSection('', null);
+  m.appendChild(cmd.wrap);
 
   const actions = el('div', 'modal-actions');
   const cancel = el('button', 'btn ghost', 'Cancel');
@@ -707,9 +767,17 @@ function openComposer(columnId) {
       loop_max: parseInt(loop.maxInput.value) || 1,
       loop_until: loop.untilInput.value,
       profile: profileSel.select.value,
+      command: cmd.input.value.trim(),
     });
     closeModal();
-    if (queue) { try { await api.post(`/api/cards/${card.id}/run`); } catch (e) { toast(e.message); } }
+    if (queue) {
+      try {
+        await api.post(`/api/cards/${card.id}/run`);
+        if (!canRunAgent(agentSel.select.value))
+          toast(`queued — no online runner has “${agentSel.select.value}” yet`);
+        else toast('queued ✓');
+      } catch (e) { toast(e.message); }
+    } else toast('added to backlog');
   };
   addBtn.onclick = () => submit(false);
   queueBtn.onclick = () => submit(true);
@@ -717,6 +785,37 @@ function openComposer(columnId) {
   m.appendChild(actions);
   openModal();
   setTimeout(() => title.input.focus(), 50);
+}
+
+// collapsible custom-command override — advanced; most cards use the agent default
+function commandSection(initial, onChange) {
+  const value = initial || '';
+  const wrap = el('div', 'field');
+  const toggle = el('button', 'loop-toggle');
+  const cbody = el('div', 'loop-body');
+  cbody.style.display = value ? 'block' : 'none';
+  const label = () => { toggle.textContent = (cbody.style.display === 'none' ? '▸' : '▾') + ' ⚡ custom command'; };
+  toggle.onclick = () => { cbody.style.display = cbody.style.display === 'none' ? 'block' : 'none'; label(); };
+  label();
+  const field = inputField('Command override — runs instead of the agent default. {prompt} and {session_id} expand.',
+    'e.g. claude -p "{prompt}" --model opus --add-dir /data');
+  field.input.value = value;
+  field.input.classList.add('mono-input');
+  const hint = el('div', 'label');
+  hint.textContent = 'leave blank to use the selected agent. set this to run literally any CLI.';
+  cbody.appendChild(field.wrap);
+  cbody.appendChild(hint);
+  if (onChange) field.input.onblur = () => onChange(field.input.value.trim());
+  wrap.appendChild(toggle); wrap.appendChild(cbody);
+  return { wrap, input: field.input };
+}
+
+// can any connected runner actually execute this agent right now?
+function canRunAgent(agent) {
+  const online = (S.runners || []).filter(r => r.status !== 'offline');
+  if (!online.length) return false;
+  if (agent === 'auto') return online.some(r => (r.capabilities || []).length);
+  return online.some(r => (r.capabilities || []).includes(agent));
 }
 
 // ---- drawer (card detail) ----------------------------------------------
@@ -751,7 +850,12 @@ function renderDrawerBody(card) {
   // status + actions
   const actions = el('div', 'drawer-actions');
   const runBtn = el('button', 'btn primary', '⏵ Queue & run');
-  runBtn.onclick = async () => { try { await api.post(`/api/cards/${card.id}/run`); toast('queued'); } catch (e) { toast(e.message); } };
+  runBtn.onclick = async () => {
+    try {
+      await api.post(`/api/cards/${card.id}/run`);
+      toast(canRunAgent(card.agent) ? 'queued ✓' : `queued — no online runner has “${card.agent}” yet`);
+    } catch (e) { toast(e.message); }
+  };
   actions.appendChild(runBtn);
   if (card.status === 'running' || card.status === 'queued') {
     const cancelBtn = el('button', 'btn', '◼ Cancel run');
@@ -786,6 +890,11 @@ function renderDrawerBody(card) {
   const loop = loopSection(card.loop_max, card.loop_until,
     (max, until) => patchCard(card.id, { loop_max: max, loop_until: until }));
   body.appendChild(loop.wrap);
+
+  // custom command override (collapsed unless the card already has one)
+  const cmd = commandSection(card.command || '',
+    (command) => patchCard(card.id, { command }));
+  body.appendChild(cmd.wrap);
 
   // tags
   body.appendChild(renderTagsField(card));
@@ -918,30 +1027,41 @@ async function reloadSessions() {
   box.innerHTML = '';
   S.terminals = {};
   if (!sessions.length) { box.appendChild(el('div', 'label', 'no runs yet — queue this task to start one')); return; }
-  for (const s of sessions) box.appendChild(await renderSession(s));
+  // sessions arrive newest-first; expand only the most recent (or any live) one
+  for (let i = 0; i < sessions.length; i++)
+    box.appendChild(await renderSession(sessions[i], i === 0));
 }
 
-async function renderSession(s) {
+async function renderSession(s, expanded) {
+  const live = ['pending', 'assigned', 'running'].includes(s.status);
+  const open = expanded || live;
   const wrap = el('div', 'session');
   const head = el('div', 'session-head');
   head.appendChild(el('span', 'sstatus ss-' + s.status, s.status));
   head.appendChild(agentBadge(s.agent || 'auto'));
   const meta = el('span', 'smeta', timeAgo(s.started_at || s.created_at) + (s.exit_code != null ? ` · exit ${s.exit_code}` : ''));
   head.appendChild(meta);
+  const chev = el('span', 'schev', open ? '▾' : '▸');
+  head.appendChild(chev);
   wrap.appendChild(head);
 
   const term = el('div', 'terminal');
+  term.style.display = open ? 'block' : 'none';
   S.terminals[s.id] = term;
-  head.onclick = () => { term.style.display = term.style.display === 'none' ? 'block' : 'none'; };
+  head.onclick = () => {
+    const show = term.style.display === 'none';
+    term.style.display = show ? 'block' : 'none';
+    chev.textContent = show ? '▾' : '▸';
+    if (show) term.scrollTop = term.scrollHeight;
+  };
   wrap.appendChild(term);
 
   // backfill events
   try {
     const { events } = await api.get(`/api/sessions/${s.id}`);
     for (const ev of events) appendTerminal(s.id, ev, true);
+    if (open) term.scrollTop = term.scrollHeight;
   } catch (e) {}
-
-  // collapse finished sessions except the most recent
   return wrap;
 }
 
@@ -1085,11 +1205,17 @@ CORE MODEL
   Column    { id, board_id, name, kind, position }
             kind in: backlog | running | done   (queue is a status, not a column)
   Card      { id, board_id, column_id, title, prompt, agent, cwd, status,
-              position, auto_advance, resume_of, pin_runner, tags[], created_at, updated_at }
+              position, auto_advance, resume_of, pin_runner, loop_max, loop_until,
+              profile, command, tags[], created_at, updated_at }
             status in: idle | queued | running | done | failed | cancelled
             agent: "auto" or an agent name (claude, codex, gemini, glm, shell, ...)
             resume_of: an external session id this card resumes (optional)
             pin_runner: restrict execution to one runner id (optional)
+            loop_max/loop_until: Ralph loop — rerun with fresh context until a
+              shell predicate exits 0 (optional)
+            profile: prompt mode prepended to the prompt, e.g. "lean" (optional)
+            command: raw command override (argv template; {prompt} & {session_id}
+              expand) that runs instead of the agent's default (optional)
   Tag       { id, board_id, name, color, insight, config }
             insight in: "" (plain label) | git | files | command
   Session   { id, card_id, board_id, runner_id, runner_name, agent, status,
@@ -1115,8 +1241,10 @@ REST ENDPOINTS
   GET    /api/boards/{id}                     -> { board, columns, cards, tags }
   DELETE /api/boards/{id}                     -> { ok }
 
-  POST   /api/boards/{id}/cards {title, prompt?, agent?, cwd?, column_id?} -> Card
-  PATCH  /api/cards/{id}        {title?,prompt?,agent?,cwd?,status?,auto_advance?} -> Card
+  POST   /api/boards/{id}/cards {title, prompt?, agent?, cwd?, column_id?,
+                                 loop_max?, loop_until?, profile?, command?} -> Card
+  PATCH  /api/cards/{id}        {title?,prompt?,agent?,cwd?,status?,auto_advance?,
+                                 loop_max?,loop_until?,profile?,command?} -> Card
   POST   /api/cards/{id}/move   {column_id, position}  -> Card   (drop into 'running' kind = queue it)
   POST   /api/cards/{id}/run                  -> Card   (queue this card for a runner now)
   DELETE /api/cards/{id}                      -> { ok }
@@ -1185,17 +1313,17 @@ function openApiModal() {
 function openSessionsModal() {
   S.sessionsModalOpen = true;
   const m = $('#modal'); m.innerHTML = '';
-  const h = el('h3', null, 'Claude / Codex sessions');
+  const h = el('h3', null, 'Agent sessions');
   m.appendChild(h);
 
   const sessions = S.agentSessions;
   if (!sessions.length) {
     m.appendChild(el('div', 'label',
-      'No agent sessions discovered. The runner reports recent Claude (~/.claude) and Codex (~/.codex) sessions; make sure a runner is connected.'));
+      'No agent sessions discovered yet. A connected runner surfaces recent Claude (~/.claude), Codex (~/.codex), and any custom trackers (Hermes, OpenCode, …) you add to discovery_sources. Make sure a runner is connected.'));
   } else {
     const browser = el('div', 'sess-browser');
-    const active = sessions.filter(s => s.active);
-    const recent = sessions.filter(s => !s.active);
+    const active = sessions.filter(isSessionActive);
+    const recent = sessions.filter(s => !isSessionActive(s));
     if (active.length) {
       browser.appendChild(el('div', 'sess-section-label', '● working now'));
       for (const s of active) browser.appendChild(sessRow(s));
@@ -1216,8 +1344,9 @@ function openSessionsModal() {
 }
 
 function sessRow(s) {
-  const row = el('div', 'sess-row' + (s.active ? ' active' : ''));
-  row.appendChild(el('span', s.active ? 'working-dot' : 'idle-dot'));
+  const active = isSessionActive(s);
+  const row = el('div', 'sess-row' + (active ? ' active' : ''));
+  row.appendChild(el('span', active ? 'working-dot' : 'idle-dot'));
   const info = el('div', 'sinfo');
   const title = el('div', 'stitle');
   title.appendChild(agentBadge(s.agent));
@@ -1227,7 +1356,7 @@ function sessRow(s) {
   const sub = (pv ? pv + ' · ' : '') + `${s.turns} turns · ${timeAgo(s.mtime)} · ${shortCwd(s.cwd)}`;
   info.appendChild(el('div', 'ssub', sub));
   row.appendChild(info);
-  const btn = el('button', 'btn small', s.active ? '⟳ continue' : '⟳ revive');
+  const btn = el('button', 'btn small', active ? '⟳ continue' : '⟳ revive');
   btn.onclick = () => promptRevive(s);
   row.appendChild(btn);
   return row;
@@ -1279,7 +1408,7 @@ function renderMarkdown(md) {
 
 function promptRevive(s) {
   const m = $('#modal'); m.innerHTML = '';
-  m.appendChild(el('h3', null, (s.active ? 'Continue ' : 'Revive ') + (s.name || s.agent)));
+  m.appendChild(el('h3', null, (isSessionActive(s) ? 'Continue ' : 'Revive ') + (s.name || s.agent)));
   const sub = el('div', 'ssub', `${s.agent} · ${s.cwd || '?'} · ${s.session_id.slice(0,8)} · ${s.turns} turns · ${timeAgo(s.mtime)}`);
   sub.style.cssText = 'font-family:var(--mono);font-size:11px;color:var(--text-faint);margin-bottom:2px;';
   m.appendChild(sub);
@@ -1370,9 +1499,33 @@ function textareaField(label, ph) {
 // reference the agent can read, and show a thumbnail.
 function hasFiles(dt) { return dt && dt.types && [...dt.types].includes('Files'); }
 
+const IMG_LINE = 'Attached image (read this file): ';
+
 function enableImagePaste(input, onChange) {
   const strip = el('div', 'img-strip');
   input.after(strip);
+  // a removable thumbnail that also strips its line from the prompt
+  const addThumb = (path, url) => {
+    const cell = el('div', 'img-cell');
+    const thumb = el('img', 'img-thumb');
+    thumb.src = url || ((S.apiBase || '') + '/uploads/' + path.split('/').pop());
+    thumb.title = path;
+    const rm = el('button', 'img-rm', '×');
+    rm.title = 'remove';
+    rm.onclick = () => {
+      input.value = input.value
+        .split('\n').filter(l => l.trim() !== (IMG_LINE + path).trim()).join('\n');
+      cell.remove();
+      if (onChange) onChange();
+    };
+    cell.appendChild(thumb); cell.appendChild(rm);
+    strip.appendChild(cell);
+  };
+  // restore thumbnails for images already referenced in the prompt
+  for (const line of (input.value || '').split('\n')) {
+    const p = line.indexOf(IMG_LINE);
+    if (p === 0) addThumb(line.slice(IMG_LINE.length).trim());
+  }
   const handle = async (file) => {
     if (!file || !(file.type || '').startsWith('image/')) return;
     if (S.demo) { toast('Image drop works on your local KanBot — connect first'); return; }
@@ -1380,11 +1533,10 @@ function enableImagePaste(input, onChange) {
     try {
       const out = await api.post('/api/uploads', { name: file.name || 'pasted.png', data: dataUrl });
       if (!out || !out.path) { toast('upload failed'); return; }
-      input.value += (input.value && !input.value.endsWith('\n') ? '\n' : '') + 'Attached image (read this file): ' + out.path;
+      input.value += (input.value && !input.value.endsWith('\n') ? '\n' : '') + IMG_LINE + out.path;
       if (onChange) onChange();
-      const thumb = el('img', 'img-thumb'); thumb.src = (S.apiBase || '') + out.url; thumb.title = out.path;
-      strip.appendChild(thumb);
-      toast('image attached');
+      addThumb(out.path, (S.apiBase || '') + out.url);
+      toast('image attached ✓');
     } catch (e) { toast('upload failed: ' + e.message); }
   };
   // expose so a drop anywhere on the page can route to the active prompt
@@ -1469,6 +1621,7 @@ function closeModal() { $('#modalScrim').classList.remove('open'); S.sessionsMod
 // ---- global UI ----------------------------------------------------------
 function wireGlobalUI() {
   installGlobalImageDrop();
+  const nb = $('#newTaskBtn'); if (nb) nb.onclick = () => openComposer();
   $('#sessionsBtn').onclick = openSessionsModal;
   $('#manageTagsBtn').onclick = openManageTags;
   $('#apiBtn').onclick = openApiModal;
@@ -1478,14 +1631,24 @@ function wireGlobalUI() {
   $('#dTitle').onblur = () => { if (S.openCardId) patchCard(S.openCardId, { title: $('#dTitle').value }); };
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') { closeModal(); closeDrawer(); }
+    // 'n' opens the composer when not typing into a field
+    const typing = /^(INPUT|TEXTAREA|SELECT)$/.test((e.target.tagName || ''));
+    if (!typing && (e.key === 'n' || e.key === 'N') && !modalOpen() && !$('#drawer').classList.contains('open')) {
+      e.preventDefault(); openComposer();
+    }
   });
 }
+function modalOpen() { return $('#modalScrim').classList.contains('open'); }
 
 // ---- utils --------------------------------------------------------------
 function hexA(hex, a) {
   const h = (hex || '#888888').replace('#', '');
   const n = parseInt(h.length === 3 ? h.split('').map(c => c + c).join('') : h, 16);
   return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+}
+function imageCount(prompt) {
+  if (!prompt) return 0;
+  return (prompt.match(/Attached image \(read this file\): /g) || []).length;
 }
 function shortCwd(p) {
   if (!p) return '?';

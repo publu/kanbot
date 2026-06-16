@@ -103,6 +103,15 @@ KanBot at its store in `~/.kanbot/config.json`:
 Override or add any agent's command in `~/.kanbot/config.json` →
 `agent_overrides`. A card set to `auto` runs on whatever the matched runner has.
 
+**Custom command per card.** Need to run *literally any* CLI for one task? Open a
+card → **⚡ custom command** and write it yourself, e.g.
+`claude -p "{prompt}" --model opus --add-dir /data`. It runs instead of the
+agent's default; `{prompt}` and `{session_id}` expand. Blank = use the agent.
+
+**Images.** Paste or drop an image onto any prompt box (composer or card). KanBot
+uploads it and hands the agent a local path it can read; thumbnails are shown and
+removable, and the card gets a 📎 badge.
+
 > **Safety:** by default agents run with auto-approve flags so tasks run
 > unattended (Claude `--dangerously-skip-permissions`, Codex `workspace-write`).
 > For **safe mode** — agents run without those flags (Codex read-only, Claude

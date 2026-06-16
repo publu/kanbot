@@ -130,6 +130,7 @@ class Runner:
         prompt = msg.get("prompt", "")
         cwd = msg.get("cwd", "")
         resume_of = msg.get("resume_of", "")
+        command = msg.get("command", "") or ""
         loop_max = min(MAX_LOOP_ITERATIONS, max(1, int(msg.get("loop_max", 1) or 1)))
         loop_until = msg.get("loop_until", "") or ""
         agent = self.agents.get(agent_name)
@@ -139,6 +140,11 @@ class Runner:
         async def on_log(stream: str, text: str) -> None:
             await self.send({"type": "log", "session_id": sid, "stream": stream, "text": text})
 
+        if not agent and command.strip():
+            # A pure custom command doesn't need the named agent installed —
+            # run it with no special env via a minimal synthetic agent.
+            agent = ResolvedAgent(name=agent_name or "custom", label="Custom command",
+                                  argv=[], env={})
         if not agent:
             await on_log("stderr", f"agent '{agent_name}' is not available on this runner")
             await self.send({"type": "session.end", "session_id": sid,
@@ -158,7 +164,8 @@ class Runner:
                     await on_log("system", f"━━━━━ iteration {i}/{loop_max} ━━━━━")
                 rc = await run_agent(agent, prompt, cwd, on_log, register,
                                      resume_of=resume_of if i == 1 else "",
-                                     auto_approve=self.cfg.auto_approve)
+                                     auto_approve=self.cfg.auto_approve,
+                                     command=command)
                 if loop_max == 1:
                     break
                 if loop_until:

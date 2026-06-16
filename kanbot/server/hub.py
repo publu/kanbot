@@ -179,6 +179,7 @@ class Hub:
             "resume_of": card.get("resume_of", "") or "",
             "loop_max": int(card.get("loop_max", 1) or 1),
             "loop_until": card.get("loop_until", "") or "",
+            "command": card.get("command", "") or "",
         }
         try:
             await runner.ws.send_text(json.dumps(payload))

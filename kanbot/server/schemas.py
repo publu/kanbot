@@ -20,6 +20,7 @@ class CardCreate(BaseModel):
     loop_max: int = 1
     loop_until: str = ""
     profile: str = ""
+    command: str = ""  # optional raw command override (argv template with {prompt})
 
 
 class CardPatch(BaseModel):
@@ -32,6 +33,7 @@ class CardPatch(BaseModel):
     loop_max: Optional[int] = None
     loop_until: Optional[str] = None
     profile: Optional[str] = None
+    command: Optional[str] = None
 
 
 class CardMove(BaseModel):

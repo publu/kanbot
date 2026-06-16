@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS cards (
     loop_max    INTEGER DEFAULT 1, -- Ralph loop: max fresh-context iterations (1 = run once)
     loop_until  TEXT DEFAULT '',   -- shell predicate; exit 0 in cwd => stop the loop early
     profile     TEXT DEFAULT '',   -- prompt mode prepended to the prompt (e.g. 'lean')
+    command     TEXT DEFAULT '',   -- raw command override (argv template, {prompt}); empty = use agent default
     created_at  REAL NOT NULL,
     updated_at  REAL NOT NULL,
     FOREIGN KEY (board_id) REFERENCES boards(id) ON DELETE CASCADE
@@ -167,7 +168,8 @@ class DB:
                           ("pin_runner", "TEXT DEFAULT ''"),
                           ("loop_max", "INTEGER DEFAULT 1"),
                           ("loop_until", "TEXT DEFAULT ''"),
-                          ("profile", "TEXT DEFAULT ''")):
+                          ("profile", "TEXT DEFAULT ''"),
+                          ("command", "TEXT DEFAULT ''")):
             if name not in cols:
                 self.conn.execute(f"ALTER TABLE cards ADD COLUMN {name} {ddl}")
         rcols = {r["name"] for r in self.q("PRAGMA table_info(runners)")}
@@ -248,17 +250,18 @@ class DB:
     def create_card(self, board_id: str, column_id: str, title: str, prompt: str = "",
                      agent: str = "auto", cwd: str = "", resume_of: str = "",
                      pin_runner: str = "", loop_max: int = 1, loop_until: str = "",
-                     profile: str = "") -> Dict[str, Any]:
+                     profile: str = "", command: str = "") -> Dict[str, Any]:
         cid = gen_id()
         pos = self._next_position(column_id)
         ts = now()
         self.exec(
             """INSERT INTO cards (id, board_id, column_id, title, prompt, agent, cwd,
                status, position, resume_of, pin_runner, loop_max, loop_until, profile,
-               created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               command, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (cid, board_id, column_id, title, prompt, agent, cwd, "idle", pos,
-             resume_of, pin_runner, max(1, int(loop_max or 1)), loop_until, profile, ts, ts),
+             resume_of, pin_runner, max(1, int(loop_max or 1)), loop_until, profile,
+             command, ts, ts),
         )
         return self.get_card(cid)
 

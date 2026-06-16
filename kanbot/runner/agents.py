@@ -62,13 +62,18 @@ def detect_agents(cfg: Config) -> Dict[str, ResolvedAgent]:
 
 
 def build_argv(agent: ResolvedAgent, prompt: str, resume_of: str = "",
-               auto_approve: bool = True) -> List[str]:
-    resuming = bool(resume_of and agent.can_resume)
-    if resuming:
-        template = (agent.resume_argv if auto_approve
-                    else (agent.safe_resume_argv or agent.resume_argv))
+               auto_approve: bool = True, command: str = "") -> List[str]:
+    # A per-card raw command override wins over the agent's built-in templates,
+    # so the user can run literally any command ({prompt}/{session_id} expand).
+    if command and command.strip():
+        template = _override_argv(command)
     else:
-        template = agent.argv if auto_approve else (agent.safe_argv or agent.argv)
+        resuming = bool(resume_of and agent.can_resume)
+        if resuming:
+            template = (agent.resume_argv if auto_approve
+                        else (agent.safe_resume_argv or agent.resume_argv))
+        else:
+            template = agent.argv if auto_approve else (agent.safe_argv or agent.argv)
     out: List[str] = []
     for tok in template:
         tok = tok.replace("{prompt}", prompt)
@@ -104,13 +109,16 @@ class Execution:
 
 async def run_agent(agent: ResolvedAgent, prompt: str, cwd: str, on_log: LogCb,
                     register: Callable[[Execution], None], resume_of: str = "",
-                    auto_approve: bool = True) -> int:
+                    auto_approve: bool = True, command: str = "") -> int:
     """Run the agent, streaming output. Returns the process exit code."""
-    if resume_of and not agent.can_resume:
+    using_override = bool(command and command.strip())
+    if resume_of and not agent.can_resume and not using_override:
         await on_log("system", f"agent '{agent.name}' can't resume sessions; starting fresh.")
         resume_of = ""
-    argv = build_argv(agent, prompt, resume_of, auto_approve=auto_approve)
-    if not auto_approve:
+    argv = build_argv(agent, prompt, resume_of, auto_approve=auto_approve, command=command)
+    if using_override:
+        await on_log("system", "running custom command override for this card")
+    elif not auto_approve:
         await on_log("system", "safe mode: agent runs without auto-approve flags")
     if resume_of:
         await on_log("system", f"resuming {agent.name} session {resume_of}")

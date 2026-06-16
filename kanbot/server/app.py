@@ -155,7 +155,8 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         cwd = body.cwd or board.get("repo_path", "")
         card = db.create_card(board_id, column_id, body.title, body.prompt,
                               body.agent, cwd, loop_max=body.loop_max,
-                              loop_until=body.loop_until, profile=body.profile)
+                              loop_until=body.loop_until, profile=body.profile,
+                              command=body.command)
         await hub.broadcast({"type": "card.created", "card": card})
         await enqueue_if_needed(card, "idle")
         return card
