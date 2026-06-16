@@ -638,3 +638,4 @@ input, textarea, select { font-family: var(--ui); }
 
 /* inspect modal "working" indicator */
 .insp-working { display: inline-flex; align-items: center; gap: 6px; margin-left: 10px; font-size: 11px; color: var(--cyan); font-weight: 500; vertical-align: middle; }
+.insp-working.idle { color: var(--text-faint); font-weight: 400; }

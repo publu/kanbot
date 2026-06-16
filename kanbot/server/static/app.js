@@ -62,6 +62,7 @@ const S = {
   sessionsModalOpen: false,
   workflowsModalOpen: false,
   extractPick: new Set(),   // session_ids selected to extract a workflow from
+  inspectSessionId: null,   // session_id whose live transcript is open
   dragSession: null,    // session object currently being dragged
   dragging: false,      // a card/session drag is in flight — pause re-renders
   demo: false,          // true when running without a backend (Vercel)
@@ -333,9 +334,10 @@ async function loadAgentSessions() {
   } catch (e) { S.agentSessions = []; }
   updateLiveBadge();
   renderColumns();
-  // NOTE: deliberately do NOT rebuild the sessions modal here. It refreshes on
-  // the 6s discovery tick, and rebuilding it underfoot wipes the user's scroll
-  // position and ticked selections mid-task. The modal freezes while open.
+  updateInspectLive();   // live-update the inspect transcript if it's open
+  // NOTE: deliberately do NOT rebuild the sessions LIST modal here — rebuilding
+  // it underfoot would wipe the user's scroll position. (Inspect updates in
+  // place above, preserving scroll.)
 }
 
 function updateLiveBadge() {
@@ -2000,8 +2002,9 @@ function renderMarkdown(md) {
 }
 
 // The "where it left off" terminal view — shared by inspect (read-only) and
-// revive (which adds a prompt box).
-function transcriptCard(s) {
+// revive (which adds a prompt box). stick=true pins to the newest line (live);
+// otherwise it restores prevTop so a user reading back isn't yanked down.
+function transcriptCard(s, stick = true, prevTop = 0) {
   const term = el('div', 'terminal-card');
   const bar = el('div', 'term-bar');
   const dots = el('div', 'term-dots');
@@ -2034,40 +2037,73 @@ function transcriptCard(s) {
     outLine('(no readable transcript)');
   }
   term.appendChild(body);
-  requestAnimationFrame(() => { body.scrollTop = body.scrollHeight; });
+  requestAnimationFrame(() => { body.scrollTop = stick ? body.scrollHeight : prevTop; });
   return term;
 }
 
 // For a session that's actively working you don't want to barge in with a new
-// instruction — you want to SEE what it's doing. Inspect shows the live-ish
-// transcript, with refresh, and a way to step in only if you choose to.
+// instruction — you want to SEE what it's doing. Inspect is a live transcript:
+// it rides the same discovery stream the board does and updates itself, staying
+// pinned to the newest line unless you've scrolled up to read back.
 function inspectSession(s) {
+  S.inspectSessionId = s.session_id;
   const m = $('#modal'); m.innerHTML = '';
   const active = isSessionActive(s);
   const head = el('div', 'wf-modal-head');
   const h = el('h3', null, `Inspecting ${s.name || s.agent}`);
-  if (active) { const w = el('span', 'insp-working'); w.appendChild(el('span', 'spinner')); w.appendChild(el('span', null, 'working')); h.appendChild(w); }
+  const w = el('span', 'insp-working'); w.id = 'inspWorking';
+  h.appendChild(w);
   head.appendChild(h);
-  head.appendChild(el('div', 'label',
-    `${s.agent} · ${shortCwd(s.cwd)} · ${s.turns} turns · ${active ? 'live now' : 'last active ' + timeAgo(s.mtime)}`));
+  const sub = el('div', 'label'); sub.id = 'inspSub';
+  head.appendChild(sub);
   m.appendChild(head);
-  m.appendChild(transcriptCard(s));
+
+  const holder = el('div'); holder.id = 'inspHolder';
+  holder.appendChild(transcriptCard(s));
+  m.appendChild(holder);
 
   const actions = el('div', 'modal-actions');
-  const back = el('button', 'btn ghost', 'Back'); back.onclick = openSessionsModal;
-  const refresh = el('button', 'btn', '↻ Refresh');
-  refresh.onclick = async () => {
-    refresh.disabled = true; refresh.textContent = 'refreshing…';
-    await loadAgentSessions();
-    const fresh = S.agentSessions.find(x => x.session_id === s.session_id);
-    if (fresh) inspectSession(fresh); else { toast('session ended'); openSessionsModal(); }
-  };
+  const back = el('button', 'btn ghost', 'Back'); back.onclick = () => { S.inspectSessionId = null; openSessionsModal(); };
   const cont = el('button', 'btn primary', '⟳ Steer it…');
   cont.title = 'Queue a follow-up instruction for this session';
-  cont.onclick = () => promptRevive(s);
-  actions.appendChild(back); actions.appendChild(refresh); actions.appendChild(cont);
+  cont.onclick = () => { S.inspectSessionId = null; promptRevive(s); };
+  actions.appendChild(back); actions.appendChild(cont);
   m.appendChild(actions);
   openModal(); m.classList.add('wide');
+  setInspectMeta(s);
+}
+
+// Update the header working/idle indicator + subtitle for the inspected session.
+function setInspectMeta(s) {
+  const active = isSessionActive(s);
+  const w = $('#inspWorking');
+  if (w) {
+    w.innerHTML = ''; w.className = 'insp-working' + (active ? '' : ' idle');
+    if (active) { w.appendChild(el('span', 'spinner')); w.appendChild(el('span', null, 'working')); }
+    else w.appendChild(el('span', null, 'idle · ' + timeAgo(s.mtime)));
+  }
+  const sub = $('#inspSub');
+  if (sub) sub.textContent = `${s.agent} · ${shortCwd(s.cwd)} · ${s.turns} turns · ${active ? 'live' : 'last active ' + timeAgo(s.mtime)}`;
+}
+
+// Called on every discovery tick: refresh the open inspect view in place,
+// preserving scroll unless the user is already at the bottom (then it follows).
+function updateInspectLive() {
+  if (!S.inspectSessionId) return;
+  const holder = $('#inspHolder');
+  if (!holder) { S.inspectSessionId = null; return; }
+  const s = S.agentSessions.find(x => x.session_id === S.inspectSessionId);
+  if (!s) {
+    const w = $('#inspWorking');
+    if (w) { w.innerHTML = ''; w.className = 'insp-working idle'; w.appendChild(el('span', null, '● ended')); }
+    return;
+  }
+  setInspectMeta(s);
+  const body = holder.querySelector('.term-body');
+  const atBottom = body ? (body.scrollHeight - body.scrollTop - body.clientHeight < 48) : true;
+  const prevTop = body ? body.scrollTop : 0;
+  holder.innerHTML = '';
+  holder.appendChild(transcriptCard(s, atBottom, prevTop));
 }
 
 function promptRevive(s) {
@@ -2245,7 +2281,7 @@ function profileSelectField(value) {
 
 // ---- modal helpers ------------------------------------------------------
 function openModal() { $('#modal').classList.remove('wide', 'wf-builder'); $('#modalScrim').classList.add('open'); }
-function closeModal() { $('#modalScrim').classList.remove('open'); S.sessionsModalOpen = false; S.workflowsModalOpen = false; S.extractPick.clear(); }
+function closeModal() { $('#modalScrim').classList.remove('open'); S.sessionsModalOpen = false; S.workflowsModalOpen = false; S.inspectSessionId = null; S.extractPick.clear(); }
 
 // ---- global UI ----------------------------------------------------------
 function wireGlobalUI() {
