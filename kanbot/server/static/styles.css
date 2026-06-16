@@ -635,3 +635,6 @@ input, textarea, select { font-family: var(--ui); }
 .sug-kind.proj { color: var(--cyan); background: rgba(79,209,224,.12); }
 .sug-sources { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; margin-top: 2px; }
 .sug-src-label { font-size: 10px; color: var(--text-faint); text-transform: uppercase; letter-spacing: .1em; }
+
+/* inspect modal "working" indicator */
+.insp-working { display: inline-flex; align-items: center; gap: 6px; margin-left: 10px; font-size: 11px; color: var(--cyan); font-weight: 500; vertical-align: middle; }

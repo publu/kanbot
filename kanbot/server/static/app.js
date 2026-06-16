@@ -609,11 +609,11 @@ function renderSessionCard(s) {
   }
   const foot = el('div', 'sess-foot');
   foot.appendChild(el('span', 'sess-turns', `${s.turns} turns · brewed ${fmtDur(s.duration)}`));
-  const rev = el('button', 'sess-revive', active ? '⟳ continue' : '⟳ revive');
-  rev.onclick = (e) => { e.stopPropagation(); promptRevive(s); };
+  const rev = el('button', 'sess-revive', active ? '🔍 inspect' : '⟳ revive');
+  rev.onclick = (e) => { e.stopPropagation(); (active ? inspectSession : promptRevive)(s); };
   foot.appendChild(rev);
   card.appendChild(foot);
-  card.onclick = () => promptRevive(s);
+  card.onclick = () => (active ? inspectSession : promptRevive)(s);
   return card;
 }
 
@@ -1430,8 +1430,8 @@ function sessRow(s) {
   wfBtn.title = 'Extract a reusable workflow from this session';
   wfBtn.onclick = () => extractWorkflowFromSession(s);
   row.appendChild(wfBtn);
-  const btn = el('button', 'btn small', active ? '⟳ continue' : '⟳ revive');
-  btn.onclick = () => promptRevive(s);
+  const btn = el('button', 'btn small', active ? '🔍 inspect' : '⟳ revive');
+  btn.onclick = () => (active ? inspectSession : promptRevive)(s);
   row.appendChild(btn);
   return row;
 }
@@ -1999,14 +1999,9 @@ function renderMarkdown(md) {
   return html;
 }
 
-function promptRevive(s) {
-  const m = $('#modal'); m.innerHTML = '';
-  m.appendChild(el('h3', null, (isSessionActive(s) ? 'Continue ' : 'Revive ') + (s.name || s.agent)));
-  const sub = el('div', 'ssub', `${s.agent} · ${s.cwd || '?'} · ${s.session_id.slice(0,8)} · ${s.turns} turns · ${timeAgo(s.mtime)}`);
-  sub.style.cssText = 'font-family:var(--mono);font-size:11px;color:var(--text-faint);margin-bottom:2px;';
-  m.appendChild(sub);
-
-  // terminal "where it left off" preview
+// The "where it left off" terminal view — shared by inspect (read-only) and
+// revive (which adds a prompt box).
+function transcriptCard(s) {
   const term = el('div', 'terminal-card');
   const bar = el('div', 'term-bar');
   const dots = el('div', 'term-dots');
@@ -2039,11 +2034,52 @@ function promptRevive(s) {
     outLine('(no readable transcript)');
   }
   term.appendChild(body);
-  m.appendChild(term);
-  // jump to the most recent message
   requestAnimationFrame(() => { body.scrollTop = body.scrollHeight; });
+  return term;
+}
 
-  const prompt = textareaField('What should the agent do next?',
+// For a session that's actively working you don't want to barge in with a new
+// instruction — you want to SEE what it's doing. Inspect shows the live-ish
+// transcript, with refresh, and a way to step in only if you choose to.
+function inspectSession(s) {
+  const m = $('#modal'); m.innerHTML = '';
+  const active = isSessionActive(s);
+  const head = el('div', 'wf-modal-head');
+  const h = el('h3', null, `Inspecting ${s.name || s.agent}`);
+  if (active) { const w = el('span', 'insp-working'); w.appendChild(el('span', 'spinner')); w.appendChild(el('span', null, 'working')); h.appendChild(w); }
+  head.appendChild(h);
+  head.appendChild(el('div', 'label',
+    `${s.agent} · ${shortCwd(s.cwd)} · ${s.turns} turns · ${active ? 'live now' : 'last active ' + timeAgo(s.mtime)}`));
+  m.appendChild(head);
+  m.appendChild(transcriptCard(s));
+
+  const actions = el('div', 'modal-actions');
+  const back = el('button', 'btn ghost', 'Back'); back.onclick = openSessionsModal;
+  const refresh = el('button', 'btn', '↻ Refresh');
+  refresh.onclick = async () => {
+    refresh.disabled = true; refresh.textContent = 'refreshing…';
+    await loadAgentSessions();
+    const fresh = S.agentSessions.find(x => x.session_id === s.session_id);
+    if (fresh) inspectSession(fresh); else { toast('session ended'); openSessionsModal(); }
+  };
+  const cont = el('button', 'btn primary', '⟳ Steer it…');
+  cont.title = 'Queue a follow-up instruction for this session';
+  cont.onclick = () => promptRevive(s);
+  actions.appendChild(back); actions.appendChild(refresh); actions.appendChild(cont);
+  m.appendChild(actions);
+  openModal(); m.classList.add('wide');
+}
+
+function promptRevive(s) {
+  const m = $('#modal'); m.innerHTML = '';
+  m.appendChild(el('h3', null, (isSessionActive(s) ? 'Steer ' : 'Revive ') + (s.name || s.agent)));
+  const sub = el('div', 'ssub', `${s.agent} · ${s.cwd || '?'} · ${s.session_id.slice(0,8)} · ${s.turns} turns · ${timeAgo(s.mtime)}`);
+  sub.style.cssText = 'font-family:var(--mono);font-size:11px;color:var(--text-faint);margin-bottom:2px;';
+  m.appendChild(sub);
+
+  m.appendChild(transcriptCard(s));
+
+  const prompt = textareaField(isSessionActive(s) ? 'Queue a follow-up instruction' : 'What should the agent do next?',
     'e.g. Now write tests for the change you just made.');
   prompt.input.style.minHeight = '110px';
   m.appendChild(prompt.wrap);
