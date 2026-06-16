@@ -1,6 +1,7 @@
 """Deckhand FastAPI application: REST API, realtime WebSockets, and static UI."""
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import os
@@ -16,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from .. import __version__
 from ..agents import catalog
 from ..profiles import list_profiles
+from ..distill import claude_available, distill_template
 from ..workflows import extract_workflows, starter_templates, suggest_automations
 from .db import DB, now
 from .hub import Hub, RunnerConn
@@ -90,7 +92,8 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
 
     @app.get("/api/agents")
     async def agents():
-        return {"agents": catalog(), "insights": PROVIDER_META, "profiles": list_profiles()}
+        return {"agents": catalog(), "insights": PROVIDER_META,
+                "profiles": list_profiles(), "distill": claude_available()}
 
     @app.get("/api/runners")
     async def runners():
@@ -330,6 +333,20 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         if not db.get_board(board_id):
             raise HTTPException(404, "board not found")
         return {"suggestions": suggest_automations(hub.all_agent_sessions())}
+
+    @app.post("/api/workflows/distill")
+    async def distill_workflow(body: WorkflowImport):
+        """Use the local `claude` CLI to turn a raw, session-derived draft into a
+        clean reusable workflow with short, generalized, guided step prompts."""
+        if not claude_available():
+            raise HTTPException(503, "claude CLI not found on the server host")
+        t = body.template or {}
+        if not isinstance(t.get("steps"), list) or not t["steps"]:
+            raise HTTPException(400, "template needs steps to distill")
+        out = await asyncio.to_thread(distill_template, t)
+        if not out:
+            raise HTTPException(502, "distillation failed (claude returned nothing usable)")
+        return {"template": out, "distilled": True}
 
     @app.post("/api/workflows/{workflow_id}/run")
     async def run_workflow(workflow_id: str, body: WorkflowRun):

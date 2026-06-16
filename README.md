@@ -134,10 +134,21 @@ e.g. *Plan → Build until tests pass → Review → Report*.
 
 The point of 0.4.0 is making workflows **easy to get**, not just run:
 
+- **Suggest** — open **⛓ Automations → ✨ Suggest from my sessions** and Deckhand
+  reads every Claude/Codex session you've run and proposes automations (per
+  project + cross-cutting patterns), each with a rationale and its source
+  sessions.
+- **Refine with Claude (distillation)** — the suggestions start as raw drafts
+  (your actual transcript turns). Hit **✨ Refine** and your local `claude` CLI
+  rewrites them into clean, *generalized*, short guided step-prompts that work in
+  fresh context — adding test/verify loops where you were iterating. This is the
+  difference between parroting your chat and a real reusable automation. (Needs
+  the `claude` CLI on the host; the same **✨ Distill** button lives in the
+  builder.)
 - **Templates** — a built-in starter library (*Ship a feature*, *Harden until
   green*, *Deep refactor*); pick one and tweak.
-- **Extract** — turn a Claude/Codex session you already ran into a draft
-  workflow: open **⟳ sessions → ⛓ workflow**, each human turn becomes a step.
+- **Extract** — turn a single Claude/Codex session into a draft workflow: open
+  **⟳ sessions → ⛓ workflow**.
 - **Export / import** — every workflow exports to portable JSON you can share,
   version, or paste into another board.
 - **Clone & edit** — duplicate and adjust in the builder.
