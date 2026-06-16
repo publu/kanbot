@@ -122,6 +122,15 @@ class Hub:
     def runner_count(self) -> int:
         return len(self.runners)
 
+    def available_agents(self) -> List[str]:
+        """Union of agent capabilities advertised by connected runners."""
+        names: List[str] = []
+        for r in self.runners.values():
+            for c in r.capabilities:
+                if c not in names:
+                    names.append(c)
+        return names
+
     # -- scheduling --------------------------------------------------------
     async def try_dispatch(self) -> None:
         """Match queued cards against available runner slots."""

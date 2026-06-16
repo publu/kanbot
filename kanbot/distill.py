@@ -2,22 +2,30 @@
 
 The heuristic extractor in workflows.py copies a user's raw chat turns verbatim
 as steps — useful as a *draft*, but it's literally their transcript, not a
-reusable automation. This module runs the user's local `claude` CLI to do the
-real work: read the raw turns and synthesize a generalized workflow with short,
-guided, standalone step-prompts (the kind that actually work with fresh context),
-adding loops where the work was iterative.
+reusable automation. This module runs whichever coding-agent CLI is available to
+do the real work: read the raw turns and synthesize a generalized workflow with
+short, guided, standalone step-prompts (the kind that actually work with fresh
+context), adding loops where the work was iterative.
 
-No API key needed — it shells out to the same `claude` CLI the runner already
-uses. If `claude` isn't installed or the call fails, callers fall back to the
-heuristic draft.
+Agent-agnostic: it uses any reasoning agent the connected runners advertise
+(claude, codex, glm, gemini, …) — not a hardcoded one — resolving the command
+from the shared catalog. No API key needed. If nothing usable is available or
+the call fails, callers fall back to the heuristic draft.
 """
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import tempfile
 from typing import Any, Dict, List, Optional
+
+from .agents import BUILTIN_BY_NAME, builtin_names
+
+# Agents that can actually reason text -> JSON, best first. `shell` can't, and
+# the others have unknown output shapes so they sit at the back.
+_PREFERENCE = ["claude", "codex", "glm", "gemini", "cursor-agent", "opencode"]
 
 META_PROMPT = """You are turning a developer's past coding-agent session into a \
 REUSABLE automation (a workflow) they can run again on similar tasks.
@@ -49,8 +57,28 @@ HUMAN INSTRUCTIONS FROM THE SESSION:
 """
 
 
-def claude_available() -> bool:
-    return shutil.which("claude") is not None
+def _candidate_specs(available: Optional[List[str]] = None) -> List[Any]:
+    """Resolve usable agents: prefer real reasoning CLIs, restrict to what the
+    connected runners advertise (if given), and require the binary on this host."""
+    names = available if available else builtin_names()
+    ordered = [n for n in _PREFERENCE if n in names]
+    ordered += [n for n in names if n not in _PREFERENCE and n != "shell"]
+    specs = []
+    seen = set()
+    for n in ordered:
+        spec = BUILTIN_BY_NAME.get(n)
+        if spec and spec.name not in seen and shutil.which(spec.bin):
+            specs.append(spec); seen.add(spec.name)
+    return specs
+
+
+def pick_agent(available: Optional[List[str]] = None):
+    specs = _candidate_specs(available)
+    return specs[0] if specs else None
+
+
+def distill_available(available: Optional[List[str]] = None) -> bool:
+    return pick_agent(available) is not None
 
 
 def _extract_json(text: str) -> Optional[Dict[str, Any]]:
@@ -98,10 +126,19 @@ def _normalize(data: Dict[str, Any], base: Dict[str, Any]) -> Optional[Dict[str,
     }
 
 
-def distill_template(template: Dict[str, Any], timeout: int = 120) -> Optional[Dict[str, Any]]:
-    """Run `claude` to turn a raw draft workflow into a clean reusable one.
-    Returns the distilled template, or None if claude is unavailable/failed."""
-    if not claude_available():
+def _argv_for(spec, prompt: str) -> List[str]:
+    out = []
+    for tok in spec.argv:                       # the agent's headless/auto template
+        out.append(tok.replace("{prompt}", prompt).replace("{session_id}", ""))
+    return out
+
+
+def distill_template(template: Dict[str, Any], available: Optional[List[str]] = None,
+                     timeout: int = 180) -> Optional[Dict[str, Any]]:
+    """Turn a raw draft workflow into a clean reusable one using any available
+    agent. Returns the distilled template, or None if none usable / it failed."""
+    spec = pick_agent(available)
+    if not spec:
         return None
     turns = [str(s.get("prompt") or "").strip() for s in template.get("steps", [])]
     turns = [t for t in turns if t]
@@ -109,11 +146,14 @@ def distill_template(template: Dict[str, Any], timeout: int = 120) -> Optional[D
         return None
     body = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(turns))[:6000]
     prompt = META_PROMPT % body
+    env = os.environ.copy()
+    env.update(spec.env)
     try:
         proc = subprocess.run(
-            ["claude", "-p", prompt, "--dangerously-skip-permissions"],
+            _argv_for(spec, prompt),
             cwd=tempfile.gettempdir(),
             stdin=subprocess.DEVNULL,
+            env=env,
             capture_output=True, text=True, timeout=timeout,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -121,4 +161,7 @@ def distill_template(template: Dict[str, Any], timeout: int = 120) -> Optional[D
     data = _extract_json(proc.stdout or "")
     if not data:
         return None
-    return _normalize(data, template)
+    out = _normalize(data, template)
+    if out:
+        out["_distilled_by"] = spec.name
+    return out

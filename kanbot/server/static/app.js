@@ -1576,8 +1576,8 @@ async function openSuggestAutomations() {
     return;
   }
   note.textContent = S.distillAvailable
-    ? `${suggestions.length} draft${suggestions.length === 1 ? '' : 's'} from your sessions. Hit ✨ Refine to have Claude turn the raw transcript into clean, reusable prompts.`
-    : `${suggestions.length} draft${suggestions.length === 1 ? '' : 's'} pulled from your sessions (raw transcript — install the claude CLI to auto-refine them).`;
+    ? `${suggestions.length} draft${suggestions.length === 1 ? '' : 's'} from your sessions. Hit ✨ Refine to have an agent turn the raw transcript into clean, reusable prompts.`
+    : `${suggestions.length} draft${suggestions.length === 1 ? '' : 's'} pulled from your sessions (raw transcript — connect a runner with a reasoning agent to auto-refine them).`;
   for (const sug of suggestions) list.appendChild(suggestionCard(sug));
 
   const all = el('button', 'btn primary', `Create all ${suggestions.length}`);
@@ -1610,19 +1610,19 @@ function suggestionCard(sug) {
     [...new Set(sug.sources)].slice(0, 5).forEach(n => src.appendChild(el('span', 'wf-chip', n)));
     info.appendChild(src);
   }
-  if (sug._distilled) { const b = el('span', 'sug-refined', '✨ refined by Claude'); info.appendChild(b); }
+  if (sug._distilled) { const b = el('span', 'sug-refined', '✨ refined' + (sug._by ? ' by ' + sug._by : '')); info.appendChild(b); }
   row.appendChild(info);
   const ctrls = el('div', 'wf-ctrls');
   if (S.distillAvailable && !sug._distilled) {
     const refine = el('button', 'btn ghost small', '✨ Refine');
-    refine.title = 'Use Claude to rewrite the raw transcript into clean, generalized step prompts (~1 min)';
+    refine.title = 'Use a connected agent to rewrite the raw transcript into clean, generalized step prompts (~1 min)';
     refine.onclick = async () => {
       refine.disabled = true; refine.textContent = '✨ refining…';
       try {
-        const { template } = await api.post('/api/workflows/distill', { template: sug.template });
-        sug.template = template; sug._distilled = true;
+        const r = await api.post('/api/workflows/distill', { template: sug.template });
+        sug.template = r.template; sug._distilled = true; sug._by = r.by;
         row.replaceWith(suggestionCard(sug));
-        toast('refined with Claude ✓');
+        toast('refined' + (r.by ? ' by ' + r.by : '') + ' ✓');
       } catch (e) { toast('refine failed: ' + e.message); refine.disabled = false; refine.textContent = '✨ Refine'; }
     };
     ctrls.appendChild(refine);
@@ -1777,8 +1777,8 @@ function openWorkflowBuilder(wf, prefill) {
     })),
   });
   if (S.distillAvailable) {
-    const distillBtn = el('button', 'btn ghost wf-distill', '✨ Distill prompts with Claude');
-    distillBtn.title = 'Rewrite these steps into clean, generalized, guided prompts (~1 min)';
+    const distillBtn = el('button', 'btn ghost wf-distill', '✨ Distill prompts with an agent');
+    distillBtn.title = 'Rewrite these steps into clean, generalized, guided prompts using a connected agent (~1 min)';
     distillBtn.onclick = async () => {
       const body = collect();
       if (!body.steps.length) { toast('add a step first'); return; }
@@ -1790,7 +1790,7 @@ function openWorkflowBuilder(wf, prefill) {
         steps.length = 0; (template.steps || []).forEach(s => steps.push({ ...s })); open = 0; renderSteps();
         toast('distilled ✓ — review & save');
       } catch (e) { toast('distill failed: ' + e.message); }
-      distillBtn.disabled = false; distillBtn.textContent = '✨ Distill prompts with Claude';
+      distillBtn.disabled = false; distillBtn.textContent = '✨ Distill prompts with an agent';
     };
     scroll.appendChild(distillBtn);
   }

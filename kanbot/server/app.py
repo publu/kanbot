@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from .. import __version__
 from ..agents import catalog
 from ..profiles import list_profiles
-from ..distill import claude_available, distill_template
+from ..distill import distill_available, distill_template
 from ..workflows import extract_workflows, starter_templates, suggest_automations
 from .db import DB, now
 from .hub import Hub, RunnerConn
@@ -93,7 +93,8 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
     @app.get("/api/agents")
     async def agents():
         return {"agents": catalog(), "insights": PROVIDER_META,
-                "profiles": list_profiles(), "distill": claude_available()}
+                "profiles": list_profiles(),
+                "distill": distill_available(hub.available_agents())}
 
     @app.get("/api/runners")
     async def runners():
@@ -336,17 +337,19 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
 
     @app.post("/api/workflows/distill")
     async def distill_workflow(body: WorkflowImport):
-        """Use the local `claude` CLI to turn a raw, session-derived draft into a
-        clean reusable workflow with short, generalized, guided step prompts."""
-        if not claude_available():
-            raise HTTPException(503, "claude CLI not found on the server host")
+        """Use any available agent (claude/codex/glm/gemini/…) to turn a raw,
+        session-derived draft into a clean reusable workflow with short,
+        generalized, guided step prompts."""
+        avail = hub.available_agents()
+        if not distill_available(avail):
+            raise HTTPException(503, "no reasoning agent available to distill with")
         t = body.template or {}
         if not isinstance(t.get("steps"), list) or not t["steps"]:
             raise HTTPException(400, "template needs steps to distill")
-        out = await asyncio.to_thread(distill_template, t)
+        out = await asyncio.to_thread(distill_template, t, avail)
         if not out:
-            raise HTTPException(502, "distillation failed (claude returned nothing usable)")
-        return {"template": out, "distilled": True}
+            raise HTTPException(502, "distillation failed (agent returned nothing usable)")
+        return {"template": out, "distilled": True, "by": out.get("_distilled_by")}
 
     @app.post("/api/workflows/{workflow_id}/run")
     async def run_workflow(workflow_id: str, body: WorkflowRun):
