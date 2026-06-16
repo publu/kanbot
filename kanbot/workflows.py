@@ -108,9 +108,6 @@ def starter_templates() -> List[Dict[str, Any]]:
     return STARTER_TEMPLATES
 
 
-_WORD = re.compile(r"[A-Za-z0-9].*")
-
-
 def _step_name_from(text: str, fallback: str) -> str:
     text = " ".join((text or "").split())
     if not text:
@@ -121,35 +118,117 @@ def _step_name_from(text: str, fallback: str) -> str:
     return head or fallback
 
 
-def extract_from_session(session: Dict[str, Any]) -> Dict[str, Any]:
-    """Build a draft workflow template from a discovered agent session.
+# --- session -> workflow(s) ------------------------------------------------
+# A long session rarely maps to a single workflow: it tends to contain several
+# distinct objectives separated by topic shifts. We split human turns into
+# segments (each segment = one candidate workflow) and let the caller decide
+# whether to keep them split or combine them into one.
+_STOP = set(
+    "the a an to of and or for in on with into your you it its is are be do done now then please "
+    "make sure that this these those i we he she they them his her their use using also let lets ok "
+    "okay next so but if when can could would should will from at as by".split()
+)
+_CUE = ("now ", "now,", "ok now", "okay now", "next ", "next,", "then ", "also ",
+        "another", "switch", "new task", "different", "finally", "moving on",
+        "one more", "let's now", "lets now", "separately")
+_IMPERATIVE = ("add", "create", "implement", "write", "build", "refactor", "fix",
+               "make", "remove", "delete", "update", "set up", "setup", "test",
+               "document", "wire", "migrate", "rename", "extract", "split",
+               "convert", "generate", "design", "port", "integrate")
 
-    Each human turn in the transcript becomes a step, in order — so a real
-    Claude/Codex conversation you liked becomes a workflow you can rerun, tweak,
-    and template. Falls back to the session's first prompt if the tail is thin.
-    """
-    agent = session.get("agent", "auto") or "auto"
-    name = session.get("name") or f"{agent} workflow"
-    cwd = session.get("cwd", "") or ""
-    tail = session.get("tail") or []
-    user_turns = [m.get("text", "") for m in tail if m.get("role") == "user" and m.get("text")]
-    # de-noise / de-dup consecutive identical prompts
-    seen: List[str] = []
-    for t in user_turns:
-        if not seen or seen[-1] != t:
-            seen.append(t)
-    if not seen:
-        first = session.get("title") or session.get("recap") or ""
-        seen = [first] if first else ["Continue the work."]
-    steps = []
-    for i, text in enumerate(seen):
-        steps.append(_step(_step_name_from(text, f"Step {i + 1}"), text,
-                           carry_context=(i > 0)))
-    return {
-        "name": f"{name} (extracted)",
-        "description": f"Extracted from a {agent} session — {len(steps)} step(s). "
-                       "Edit the prompts to generalize it into a reusable workflow.",
-        "agent": agent,
-        "cwd": cwd,
-        "steps": steps,
-    }
+
+def _keywords(text: str) -> set:
+    toks = re.findall(r"[a-zA-Z][a-zA-Z0-9_]+", (text or "").lower())
+    return {t for t in toks if len(t) > 2 and t not in _STOP}
+
+
+def _is_boundary(turn: str, acc_kw: set) -> bool:
+    """Does this human turn start a NEW objective (vs. continue the current one)?
+
+    Conservative on purpose: short follow-ups ("make sure it has tests", "now fix
+    the lint") must stay attached to what they refer to. We only break on an
+    explicit transition cue, or a *substantial* fresh imperative that shares
+    almost no vocabulary with the current segment."""
+    t = turn.strip().lower()
+    if not t:
+        return False
+    head = t[:24]
+    if any(c in head for c in _CUE):
+        return True
+    kw = _keywords(turn)
+    if len(kw) < 4 or not acc_kw:          # too short to be its own objective
+        return False
+    overlap = len(kw & acc_kw) / (len(kw | acc_kw) or 1)
+    starts_imperative = any(t.startswith(v) for v in _IMPERATIVE)
+    return overlap < 0.1 and starts_imperative
+
+
+def _segment_turns(turns: List[str]) -> List[List[str]]:
+    segments: List[List[str]] = []
+    cur: List[str] = []
+    acc: set = set()
+    for turn in turns:
+        if cur and _is_boundary(turn, acc):
+            segments.append(cur)
+            cur, acc = [], set()
+        cur.append(turn)
+        acc |= _keywords(turn)
+    if cur:
+        segments.append(cur)
+    return segments
+
+
+def _collect_turns(sessions: List[Dict[str, Any]]) -> List[str]:
+    turns: List[str] = []
+    for s in sessions:
+        for m in (s.get("tail") or []):
+            if m.get("role") == "user" and m.get("text"):
+                turns.append(m["text"])
+    dedup: List[str] = []
+    for t in turns:
+        if not dedup or dedup[-1] != t:
+            dedup.append(t)
+    if not dedup:
+        first = sessions[0].get("title") or sessions[0].get("recap") or ""
+        dedup = [first] if first else ["Continue the work."]
+    return dedup
+
+
+def _template(name: str, agent: str, cwd: str, turns: List[str], description: str) -> Dict[str, Any]:
+    steps = [_step(_step_name_from(t, f"Step {i + 1}"), t, carry_context=(i > 0))
+             for i, t in enumerate(turns)]
+    return {"name": name, "description": description, "agent": agent, "cwd": cwd, "steps": steps}
+
+
+def extract_workflows(sessions, split: bool = True) -> List[Dict[str, Any]]:
+    """Extract one or more workflow templates from a session (or several merged,
+    in the order given). split=True segments by topic into multiple workflows;
+    split=False combines everything into a single workflow."""
+    if isinstance(sessions, dict):
+        sessions = [sessions]
+    if not sessions:
+        return []
+    agent = sessions[0].get("agent", "auto") or "auto"
+    cwd = sessions[0].get("cwd", "") or ""
+    base = sessions[0].get("name") or f"{agent} workflow"
+    src = f"{len(sessions)} sessions" if len(sessions) > 1 else f"a {agent} session"
+    turns = _collect_turns(sessions)
+    if not split:
+        return [_template(f"{base} (extracted)", agent, cwd, turns,
+                          f"Extracted from {src} — {len(turns)} step(s). "
+                          "Edit the prompts to generalize it.")]
+    segments = _segment_turns(turns)
+    total = len(segments)
+    out = []
+    for i, seg in enumerate(segments):
+        label = _step_name_from(seg[0], f"part {i + 1}")
+        name = f"{base} (extracted)" if total == 1 else f"{base}: {label}"
+        out.append(_template(name, agent, cwd, seg,
+                             f"Extracted from {src} — segment {i + 1}/{total}, "
+                             f"{len(seg)} step(s)."))
+    return out
+
+
+def extract_from_session(session: Dict[str, Any]) -> Dict[str, Any]:
+    """Back-compat: one flat workflow from one session."""
+    return extract_workflows(session, split=False)[0]

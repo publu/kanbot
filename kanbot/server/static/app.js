@@ -61,6 +61,7 @@ const S = {
   agentSessions: [],    // discovered claude/codex sessions across runners
   sessionsModalOpen: false,
   workflowsModalOpen: false,
+  extractPick: new Set(),   // session_ids selected to extract a workflow from
   dragSession: null,    // session object currently being dragged
   dragging: false,      // a card/session drag is in flight — pause re-renders
   demo: false,          // true when running without a backend (Vercel)
@@ -1322,8 +1323,11 @@ REST ENDPOINTS
   GET    /api/workflows/{id}/export               -> template (id-free, portable)
   POST   /api/workflows/{id}/clone   {name?}      -> Workflow
   POST   /api/boards/{id}/workflows/import  {template}        -> Workflow
-  POST   /api/boards/{id}/workflows/extract {session_id, save?} -> Workflow | {template}
-            Turns a discovered Claude/Codex session into a draft workflow.
+  POST   /api/boards/{id}/workflows/extract
+         {session_id?, session_ids?[], split?, save?}  -> { segments:[Workflow] } | { workflows:[Workflow] }
+            Extract workflow(s) from session(s). A session is not always one
+            workflow: split=true segments by topic into several; multiple
+            session_ids merge (in order) into one extraction. save=false previews.
   POST   /api/workflows/{id}/run    {cwd?, title?, run?}  -> Card   (the run card)
 
 WEBSOCKET (live updates): ws://127.0.0.1:8787/ws/web
@@ -1372,11 +1376,25 @@ function openApiModal() {
 }
 
 // ---- sessions browser + revive -----------------------------------------
+function refreshExtractBtn() {
+  const b = $('#wfMakeBtn');
+  if (!b) return;
+  const n = S.extractPick.size;
+  b.hidden = n === 0;
+  b.textContent = `⛓ Make workflow from ${n} session${n === 1 ? '' : 's'}`;
+}
+
 function openSessionsModal() {
   S.sessionsModalOpen = true;
   const m = $('#modal'); m.innerHTML = '';
-  const h = el('h3', null, 'Agent sessions');
-  m.appendChild(h);
+  const head = el('div', 'wf-modal-head');
+  head.appendChild(el('h3', null, 'Agent sessions'));
+  head.appendChild(el('div', 'label', 'Tick sessions to combine them into one workflow, or use ⛓ on a single row.'));
+  m.appendChild(head);
+  const makeBtn = el('button', 'btn primary', '');
+  makeBtn.id = 'wfMakeBtn'; makeBtn.hidden = true;
+  makeBtn.onclick = () => openExtractReview([...S.extractPick]);
+  m.appendChild(makeBtn);
 
   const sessions = S.agentSessions;
   if (!sessions.length) {
@@ -1403,11 +1421,18 @@ function openSessionsModal() {
   actions.appendChild(close);
   m.appendChild(actions);
   openModal();
+  refreshExtractBtn();
 }
 
 function sessRow(s) {
   const active = isSessionActive(s);
   const row = el('div', 'sess-row' + (active ? ' active' : ''));
+  const pick = el('input', 'sess-pick'); pick.type = 'checkbox';
+  pick.checked = S.extractPick.has(s.session_id);
+  pick.title = 'select to combine into one workflow';
+  pick.onclick = (e) => e.stopPropagation();
+  pick.onchange = () => { pick.checked ? S.extractPick.add(s.session_id) : S.extractPick.delete(s.session_id); refreshExtractBtn(); };
+  row.appendChild(pick);
   row.appendChild(el('span', active ? 'working-dot' : 'idle-dot'));
   const info = el('div', 'sinfo');
   const title = el('div', 'stitle');
@@ -1472,7 +1497,7 @@ function openWorkflowsModal() {
   bar.appendChild(mk('＋ New', () => openWorkflowBuilder(null), 'primary'));
   bar.appendChild(mk('◇ From template', openTemplatePicker));
   bar.appendChild(mk('⬇ Import JSON', importWorkflowModal));
-  bar.appendChild(mk('⟳ From a session', () => { S.workflowsModalOpen = false; openSessionsModal(true); }));
+  bar.appendChild(mk('⟳ From a session', () => { S.workflowsModalOpen = false; S.extractPick.clear(); openSessionsModal(); }));
   m.appendChild(bar);
 
   const list = el('div', 'wf-list');
@@ -1712,14 +1737,96 @@ function checkRow(label, checked, onChange) {
   return l;
 }
 
-async function extractWorkflowFromSession(s) {
+function extractWorkflowFromSession(s) { openExtractReview([s.session_id]); }
+
+// A session is not always one workflow. Extraction segments it by topic; this
+// review lets you decide split-vs-combine, drop segments, and rename before
+// anything is saved.
+async function openExtractReview(sessionIds) {
+  if (!sessionIds || !sessionIds.length) { toast('pick a session first'); return; }
+  let segments;
   try {
-    const { template } = await api.post(`/api/boards/${S.boardId}/workflows/extract`,
-      { session_id: s.session_id, save: false });
-    S.sessionsModalOpen = false; S.workflowsModalOpen = false;
-    openWorkflowBuilder(null, template);   // open the draft for editing before saving
-    toast('extracted — review & save');
-  } catch (e) { toast('extract failed: ' + e.message); }
+    const r = await api.post(`/api/boards/${S.boardId}/workflows/extract`,
+      { session_ids: sessionIds, split: true, save: false });
+    segments = (r.segments || []).map(t => ({ ...t, _include: true }));
+  } catch (e) { toast('extract failed: ' + e.message); return; }
+  if (!segments.length) { toast('nothing to extract from that session'); return; }
+
+  let mode = segments.length > 1 ? 'split' : 'combine';
+  const combined = () => ({
+    name: (segments[0].name || 'workflow').replace(/:.*$/, '').trim() + ' (extracted)',
+    description: `Combined from ${sessionIds.length} session(s) — ${segments.reduce((n, s) => n + s.steps.length, 0)} steps.`,
+    agent: segments[0].agent || 'auto', cwd: segments[0].cwd || '',
+    steps: segments.flatMap(s => s.steps),
+  });
+
+  const m = $('#modal');
+  const render = () => {
+    m.innerHTML = '';
+    m.appendChild(el('h3', null, 'Extract workflow'));
+    const note = el('div', 'label',
+      mode === 'split'
+        ? `This session looks like ${segments.length} separate objectives. Create one workflow each, or combine.`
+        : 'Combine everything into a single workflow.');
+    m.appendChild(note);
+
+    const toggle = el('div', 'wf-toggle');
+    const tb = (label, val) => { const b = el('button', 'btn small' + (mode === val ? ' primary' : ' ghost'), label); b.onclick = () => { mode = val; render(); }; return b; };
+    toggle.appendChild(tb(`Split into ${segments.length}`, 'split'));
+    toggle.appendChild(tb('Combine into one', 'combine'));
+    m.appendChild(toggle);
+
+    const list = el('div', 'wf-list');
+    if (mode === 'split') {
+      segments.forEach((seg, i) => {
+        const row = el('div', 'wf-row');
+        const cb = el('input'); cb.type = 'checkbox'; cb.checked = seg._include;
+        cb.onchange = () => seg._include = cb.checked; row.appendChild(cb);
+        const info = el('div', 'wf-info');
+        const nm = el('input', 'input wf-step-name'); nm.value = seg.name; nm.oninput = () => seg.name = nm.value;
+        info.appendChild(nm);
+        const chain = el('div', 'wf-chain');
+        seg.steps.forEach((st, j) => { if (j) chain.appendChild(el('span', 'wf-arrow', '→')); chain.appendChild(el('span', 'wf-step-pill', st.name)); });
+        info.appendChild(chain);
+        row.appendChild(info);
+        const edit = el('button', 'btn ghost small', '✎'); edit.title = 'open in builder';
+        edit.onclick = () => { S.sessionsModalOpen = false; openWorkflowBuilder(null, seg); };
+        row.appendChild(edit);
+        list.appendChild(row);
+      });
+    } else {
+      const c = combined();
+      const row = el('div', 'wf-row');
+      const info = el('div', 'wf-info');
+      info.appendChild(el('div', 'wf-name', c.name));
+      const chain = el('div', 'wf-chain');
+      c.steps.forEach((st, j) => { if (j) chain.appendChild(el('span', 'wf-arrow', '→')); chain.appendChild(el('span', 'wf-step-pill', st.name)); });
+      info.appendChild(chain);
+      row.appendChild(info);
+      const edit = el('button', 'btn ghost small', '✎ builder');
+      edit.onclick = () => { S.sessionsModalOpen = false; openWorkflowBuilder(null, c); };
+      row.appendChild(edit);
+      list.appendChild(row);
+    }
+    m.appendChild(list);
+
+    const actions = el('div', 'modal-actions');
+    const back = el('button', 'btn ghost', 'Cancel'); back.onclick = () => openSessionsModal();
+    const create = el('button', 'btn primary', 'Create');
+    create.onclick = async () => {
+      const toMake = mode === 'split' ? segments.filter(s => s._include) : [combined()];
+      if (!toMake.length) { toast('nothing selected'); return; }
+      try {
+        for (const tpl of toMake) await api.post(`/api/boards/${S.boardId}/workflows/import`, { template: { name: tpl.name, description: tpl.description, agent: tpl.agent, cwd: tpl.cwd, steps: tpl.steps } });
+        toast(`created ${toMake.length} workflow${toMake.length === 1 ? '' : 's'} ✓`);
+        S.extractPick.clear(); openWorkflowsModal();
+      } catch (e) { toast('create failed: ' + e.message); }
+    };
+    actions.appendChild(back); actions.appendChild(create);
+    m.appendChild(actions);
+  };
+  render();
+  openModal(); m.classList.add('wide');
 }
 
 // ---- minimal markdown -> HTML (for the terminal transcript preview) -----
@@ -1976,14 +2083,14 @@ function profileSelectField(value) {
 
 // ---- modal helpers ------------------------------------------------------
 function openModal() { $('#modal').classList.remove('wide'); $('#modalScrim').classList.add('open'); }
-function closeModal() { $('#modalScrim').classList.remove('open'); S.sessionsModalOpen = false; S.workflowsModalOpen = false; }
+function closeModal() { $('#modalScrim').classList.remove('open'); S.sessionsModalOpen = false; S.workflowsModalOpen = false; S.extractPick.clear(); }
 
 // ---- global UI ----------------------------------------------------------
 function wireGlobalUI() {
   installGlobalImageDrop();
   const nb = $('#newTaskBtn'); if (nb) nb.onclick = () => openComposer();
   const wb = $('#workflowsBtn'); if (wb) wb.onclick = openWorkflowsModal;
-  $('#sessionsBtn').onclick = openSessionsModal;
+  $('#sessionsBtn').onclick = () => { S.extractPick.clear(); openSessionsModal(); };
   $('#manageTagsBtn').onclick = openManageTags;
   $('#apiBtn').onclick = openApiModal;
   $('#drawerClose').onclick = closeDrawer;

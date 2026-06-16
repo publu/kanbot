@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from .. import __version__
 from ..agents import catalog
 from ..profiles import list_profiles
-from ..workflows import extract_from_session, starter_templates
+from ..workflows import extract_workflows, starter_templates
 from .db import DB, now
 from .hub import Hub, RunnerConn
 from .insights import PROVIDER_META, compute
@@ -298,20 +298,31 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
 
     @app.post("/api/boards/{board_id}/workflows/extract")
     async def extract_workflow(board_id: str, body: WorkflowExtract):
-        """Turn a discovered Claude/Codex session into a draft workflow."""
+        """Extract workflow(s) from one or more discovered Claude/Codex sessions.
+
+        A session is not always one workflow: split=True segments by topic into
+        several candidate workflows; passing multiple session_ids merges them
+        (in order) into one extraction. Returns previews by default; save=True
+        persists them."""
         if not db.get_board(board_id):
             raise HTTPException(404, "board not found")
-        session = next((s for s in hub.all_agent_sessions()
-                        if s.get("session_id") == body.session_id), None)
-        if not session:
-            raise HTTPException(404, "agent session not found")
-        tpl = extract_from_session(session)
+        ids = body.session_ids or ([body.session_id] if body.session_id else [])
+        if not ids:
+            raise HTTPException(400, "need session_id or session_ids")
+        by_id = {s.get("session_id"): s for s in hub.all_agent_sessions()}
+        sessions = [by_id[i] for i in ids if i in by_id]
+        if not sessions:
+            raise HTTPException(404, "no matching agent sessions")
+        templates = extract_workflows(sessions, split=body.split)
         if not body.save:
-            return {"template": tpl}
-        wf = db.save_workflow(board_id, tpl["name"], tpl["description"],
-                              tpl["agent"], tpl["cwd"], tpl["steps"])
-        await hub.broadcast({"type": "workflow.saved", "board_id": board_id, "workflow": wf})
-        return wf
+            return {"segments": templates}
+        saved = []
+        for tpl in templates:
+            wf = db.save_workflow(board_id, tpl["name"], tpl["description"],
+                                  tpl["agent"], tpl["cwd"], tpl["steps"])
+            saved.append(wf)
+            await hub.broadcast({"type": "workflow.saved", "board_id": board_id, "workflow": wf})
+        return {"workflows": saved}
 
     @app.post("/api/workflows/{workflow_id}/run")
     async def run_workflow(workflow_id: str, body: WorkflowRun):

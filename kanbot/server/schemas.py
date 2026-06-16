@@ -100,8 +100,10 @@ class WorkflowRun(BaseModel):
 
 
 class WorkflowExtract(BaseModel):
-    session_id: str      # a discovered agent session to extract a workflow from
-    save: bool = True    # persist the extracted draft (vs. just return it)
+    session_id: str = ""           # a single session to extract from
+    session_ids: List[str] = []    # several sessions merged (in this order) into one extraction
+    split: bool = True             # segment by topic into multiple workflows (vs. one combined)
+    save: bool = False             # persist the result (vs. return a preview to edit first)
 
 
 class WorkflowClone(BaseModel):

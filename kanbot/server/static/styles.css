@@ -561,3 +561,5 @@ input, textarea, select { font-family: var(--ui); }
 .wf-check { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-dim); cursor: pointer; }
 .wf-check input { accent-color: var(--brand); }
 .mono-input { font-family: var(--mono); font-size: 12px; }
+.sess-pick { accent-color: var(--brand); width: 16px; height: 16px; flex: 0 0 auto; cursor: pointer; }
+.wf-toggle { display: flex; gap: 8px; }
