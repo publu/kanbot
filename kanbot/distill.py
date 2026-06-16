@@ -27,30 +27,43 @@ from .agents import BUILTIN_BY_NAME, builtin_names
 # the others have unknown output shapes so they sit at the back.
 _PREFERENCE = ["claude", "codex", "glm", "gemini", "cursor-agent", "opencode"]
 
-META_PROMPT = """You are turning a developer's past coding-agent session into a \
-REUSABLE automation (a workflow) they can run again on similar tasks.
+META_PROMPT = """You are converting a developer's past coding-agent session into \
+clean, REUSABLE automations (workflows) they can run again on similar tasks.
 
-Below are the human instructions from one session, in order. They are messy, \
-specific to that moment, and conversational.
+Below are the human instructions from the session, in order. They are messy, \
+conversational, full of dead ends, and specific to that moment.
 
-Produce a clean, GENERALIZED workflow:
-- Distill the real objective. Drop one-off chatter, profanity, and details that \
-won't transfer (specific names, ids, "the thing we discussed").
-- Write 3-6 STEPS. Each step's `prompt` must be a crisp, self-contained \
-instruction that works on its own with a fresh agent (no memory of this chat). \
-Keep prompts short and guided — say what to do and how to verify it.
+STEP 1 — FIND THE OBJECTIVES. A single session often mixes SEVERAL unrelated \
+goals (e.g. "add a rate limiter" … later … "now rewrite the docs" … later … \
+"set up CI"). Identify each distinct objective. Treat a clear topic shift, a new \
+unrelated noun/feature, or a "now/next/also/different thing" as a boundary. Short \
+follow-ups ("make sure it has tests", "now fix the lint") belong to the objective \
+they refer to — keep them attached.
+
+STEP 2 — EMIT ONE WORKFLOW PER OBJECTIVE so they're easy to tell apart:
+- If the session pursued multiple distinct objectives, output MULTIPLE workflows.
+- If it was one coherent task, output a single workflow.
+- Each workflow's `name` (short, imperative, specific — NOT "automation 1") and \
+one-line `description` must make it obvious at a glance what it does and how it \
+differs from the others.
+
+STEP 3 — For EACH workflow, write a clean GENERALIZED pipeline:
+- Distill the real intent. Drop chatter, profanity, dead ends, and details that \
+won't transfer (specific names/ids/"the thing we discussed").
+- 3-6 ordered STEPS. Each step's `prompt` is a crisp, self-contained instruction \
+that works on its own for a fresh agent with NO memory of this chat. Say what to \
+do AND how to verify it.
 - Steps run top-to-bottom, each a fresh agent run, handing off via files \
 (PLAN.md / NOTES.md) in the repo.
-- For work that iterates until done (e.g. "make the tests pass"), set \
-`loop_max` to a sensible cap (e.g. 20) and optionally `loop_until` to a shell \
-predicate that exits 0 when finished (e.g. `pytest -q`).
+- For work that iterates until done (e.g. "make the tests pass"), set `loop_max` \
+to a sensible cap (e.g. 20) and optionally `loop_until` to a shell predicate that \
+exits 0 when finished (e.g. `pytest -q`).
 - `carry_context` true when a step needs the previous step's output.
-- Give the workflow a short imperative `name` and a one-line `description`.
 
 Return ONLY a JSON object, no prose and no markdown fences:
-{"name": str, "description": str, "steps": [{"name": str, "prompt": str, \
-"loop_max": int, "loop_until": str, "carry_context": bool, \
-"continue_on_fail": bool}]}
+{"workflows": [{"name": str, "description": str, "steps": [{"name": str, \
+"prompt": str, "loop_max": int, "loop_until": str, "carry_context": bool, \
+"continue_on_fail": bool}]}]}
 
 HUMAN INSTRUCTIONS FROM THE SESSION:
 %s
@@ -133,17 +146,18 @@ def _argv_for(spec, prompt: str) -> List[str]:
     return out
 
 
-def distill_template(template: Dict[str, Any], available: Optional[List[str]] = None,
-                     timeout: int = 180) -> Optional[Dict[str, Any]]:
-    """Turn a raw draft workflow into a clean reusable one using any available
-    agent. Returns the distilled template, or None if none usable / it failed."""
+def distill_workflows(template: Dict[str, Any], available: Optional[List[str]] = None,
+                      timeout: int = 180) -> List[Dict[str, Any]]:
+    """Turn a raw draft into one OR MORE clean reusable workflows using any
+    available agent. A messy session covering several objectives comes back as
+    several clearly-named workflows. Returns [] if no agent / it failed."""
     spec = pick_agent(available)
     if not spec:
-        return None
+        return []
     turns = [str(s.get("prompt") or "").strip() for s in template.get("steps", [])]
     turns = [t for t in turns if t]
     if not turns:
-        return None
+        return []
     body = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(turns))[:6000]
     prompt = META_PROMPT % body
     env = os.environ.copy()
@@ -157,11 +171,24 @@ def distill_template(template: Dict[str, Any], available: Optional[List[str]] = 
             capture_output=True, text=True, timeout=timeout,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return None
+        return []
     data = _extract_json(proc.stdout or "")
     if not data:
-        return None
-    out = _normalize(data, template)
-    if out:
-        out["_distilled_by"] = spec.name
+        return []
+    raw = data.get("workflows") if isinstance(data.get("workflows"), list) else [data]
+    out: List[Dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        norm = _normalize(item, template)
+        if norm:
+            norm["_distilled_by"] = spec.name
+            out.append(norm)
     return out
+
+
+def distill_template(template: Dict[str, Any], available: Optional[List[str]] = None,
+                     timeout: int = 180) -> Optional[Dict[str, Any]]:
+    """Back-compat: first distilled workflow only."""
+    out = distill_workflows(template, available, timeout)
+    return out[0] if out else None

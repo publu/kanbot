@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from .. import __version__
 from ..agents import catalog
 from ..profiles import list_profiles
-from ..distill import distill_available, distill_template
+from ..distill import distill_available, distill_workflows
 from ..workflows import extract_workflows, starter_templates, suggest_automations
 from .db import DB, now
 from .hub import Hub, RunnerConn
@@ -346,10 +346,11 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         t = body.template or {}
         if not isinstance(t.get("steps"), list) or not t["steps"]:
             raise HTTPException(400, "template needs steps to distill")
-        out = await asyncio.to_thread(distill_template, t, avail)
+        out = await asyncio.to_thread(distill_workflows, t, avail)
         if not out:
             raise HTTPException(502, "distillation failed (agent returned nothing usable)")
-        return {"template": out, "distilled": True, "by": out.get("_distilled_by")}
+        return {"workflows": out, "by": out[0].get("_distilled_by"),
+                "template": out[0], "distilled": True}
 
     @app.post("/api/workflows/{workflow_id}/run")
     async def run_workflow(workflow_id: str, body: WorkflowRun):

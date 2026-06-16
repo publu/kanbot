@@ -1640,7 +1640,9 @@ function suggestionCard(sug) {
       refine.disabled = true; refine.textContent = '✨ refining…';
       try {
         const r = await api.post('/api/workflows/distill', { template: sug.template });
-        sug.template = r.template; sug._distilled = true; sug._by = r.by;
+        const wfs = r.workflows || (r.template ? [r.template] : []);
+        if (wfs.length > 1) { toast(`split into ${wfs.length} automations`); reviewDistilled(wfs); return; }
+        sug.template = wfs[0] || sug.template; sug._distilled = true; sug._by = r.by;
         row.replaceWith(suggestionCard(sug));
         toast('refined' + (r.by ? ' by ' + r.by : '') + ' ✓');
       } catch (e) { toast('refine failed: ' + e.message); refine.disabled = false; refine.textContent = '✨ Refine'; }
@@ -1779,11 +1781,16 @@ function openWorkflowBuilder(wf, prefill) {
       if (!payload.steps.length) { toast('add a step first'); return; }
       distillBtn.disabled = true; distillBtn.textContent = '✨ distilling…';
       try {
-        const { template } = await api.post('/api/workflows/distill', { template: payload });
-        if (template.name) name.input.value = template.name;
-        if (template.description) desc.input.value = template.description;
-        steps.length = 0; (template.steps || []).forEach(s => steps.push({ ...s })); open = 0; renderSteps();
-        toast('distilled ✓ — review & save');
+        const r = await api.post('/api/workflows/distill', { template: payload });
+        const wfs = r.workflows || (r.template ? [r.template] : []);
+        if (wfs.length > 1) { toast(`this is ${wfs.length} separate automations`); reviewDistilled(wfs); return; }
+        const template = wfs[0];
+        if (template) {
+          if (template.name) name.input.value = template.name;
+          if (template.description) desc.input.value = template.description;
+          steps.length = 0; (template.steps || []).forEach(s => steps.push({ ...s })); open = 0; renderSteps();
+          toast('distilled ✓ — review & save');
+        }
       } catch (e) { toast('distill failed: ' + e.message); }
       distillBtn.disabled = false; distillBtn.textContent = '✨ Distill prompts with an agent';
     };
@@ -1979,6 +1986,43 @@ async function openExtractReview(sessionIds) {
     foot.appendChild(create); foot.style.display = '';
   };
   render();
+}
+
+// When distillation splits a messy draft into several distinct automations,
+// show them clearly so the user can name, edit, and create the ones they want.
+function reviewDistilled(templates) {
+  const items = templates.map(t => ({ ...t, _include: true }));
+  const by = items[0] && items[0]._distilled_by;
+  const { body, foot } = autoFrame('extract', 'Distilled automations',
+    { back: true, sub: `${items.length} distinct automation${items.length === 1 ? '' : 's'} found${by ? ' (by ' + by + ')' : ''} — name, edit, and create the ones you want.` });
+  const list = el('div', 'wf-list');
+  items.forEach((t) => {
+    const row = el('div', 'wf-row');
+    const cb = el('input', 'sess-pick'); cb.type = 'checkbox'; cb.checked = true;
+    cb.onchange = () => t._include = cb.checked; row.appendChild(cb);
+    const info = el('div', 'wf-info');
+    const nm = el('input', 'input wf-step-name'); nm.value = t.name; nm.oninput = () => t.name = nm.value;
+    info.appendChild(nm);
+    if (t.description) info.appendChild(el('div', 'wf-desc', t.description));
+    const chain = el('div', 'wf-chain');
+    t.steps.forEach((s, i) => { if (i) chain.appendChild(el('span', 'wf-arrow', '→')); chain.appendChild(el('span', 'wf-step-pill', s.name)); });
+    info.appendChild(chain);
+    row.appendChild(info);
+    const edit = el('button', 'btn ghost small', '✎ Edit'); edit.onclick = () => openWorkflowBuilder(null, t);
+    row.appendChild(edit);
+    list.appendChild(row);
+  });
+  body.appendChild(list);
+  const create = el('button', 'btn primary', 'Create selected');
+  create.onclick = async () => {
+    const mk = items.filter(t => t._include);
+    if (!mk.length) { toast('nothing selected'); return; }
+    try {
+      for (const t of mk) await api.post(`/api/boards/${S.boardId}/workflows/import`, { template: { name: t.name, description: t.description, agent: t.agent, cwd: t.cwd, steps: t.steps } });
+      toast(`created ${mk.length} automation${mk.length === 1 ? '' : 's'} ✓`); openWorkflowsModal();
+    } catch (e) { toast('create failed: ' + e.message); }
+  };
+  foot.appendChild(create); foot.style.display = '';
 }
 
 // ---- minimal markdown -> HTML (for the terminal transcript preview) -----
