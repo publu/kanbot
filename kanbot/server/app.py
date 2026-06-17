@@ -17,20 +17,20 @@ from fastapi.staticfiles import StaticFiles
 from .. import __version__
 from ..agents import catalog
 from ..profiles import list_profiles
-from ..distill import distill_available, distill_workflows
+from ..distill import distill_available, distill_workflows, distill_workflows_stream
 from ..runner.discovery import all_user_turns
 from ..training.evaluator import evaluate_workflow
 from ..training.optimizer import run_improvement_pass
 from ..workflows import extract_workflows, starter_templates, suggest_automations
 
 EXEMPLAR_BAR = 75   # eval score at/above which a workflow becomes a few-shot exemplar
-from .db import DB, now
+from .db import DB, gen_id, now
 from .hub import Hub, RunnerConn
 from .insights import PROVIDER_META, compute
-from .schemas import (BoardCreate, CardCreate, CardMove, CardPatch, FromSession,
-                      ImproveRequest, ReviveRequest, TagAttach, TagCreate, UploadRequest,
-                      WorkflowClone, WorkflowEval, WorkflowExtract, WorkflowImport,
-                      WorkflowRun, WorkflowSave)
+from .schemas import (BoardCreate, BuildRequest, CardCreate, CardMove, CardPatch,
+                      FromSession, ImproveRequest, ReviveRequest, TagAttach, TagCreate,
+                      UploadRequest, WorkflowClone, WorkflowEval, WorkflowExtract,
+                      WorkflowImport, WorkflowRun, WorkflowSave)
 
 STATIC_DIR = Path(__file__).parent / "static"
 SERVER_TOKEN = os.environ.get("KANBOT_TOKEN") or os.environ.get("DECKHAND_TOKEN", "")
@@ -399,6 +399,56 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         if len(hub.distill_cache) > 128:        # bound memory on a long run
             hub.distill_cache.pop(next(iter(hub.distill_cache)))
         return {"workflows": wfs, "by": (wfs[0].get("_distilled_by") if wfs else None)}
+
+    @app.post("/api/boards/{board_id}/workflows/build")
+    async def build_automations(board_id: str, body: BuildRequest):
+        """Auto-analyze the given focus sessions and STREAM the agent's real work
+        (per-line stdout) + each extracted workflow over /ws/web as it happens, so
+        the UI is a live terminal feed — not a fake spinner."""
+        if not db.get_board(board_id):
+            raise HTTPException(404, "board not found")
+        avail = hub.available_agents()
+        if not distill_available(avail):
+            raise HTTPException(503, "no reasoning agent available")
+        by_id = {s.get("session_id"): s for s in hub.all_agent_sessions()}
+        sessions = [by_id[i] for i in (body.session_ids or []) if i in by_id][:5]
+        if not sessions:
+            raise HTTPException(422, "no matching sessions")
+        job = gen_id()
+        loop = asyncio.get_running_loop()
+
+        async def run_job():
+            try:
+                for i, s in enumerate(sessions):
+                    await hub.broadcast({"type": "build.session", "job": job,
+                                         "name": s.get("name") or "session", "i": i + 1, "n": len(sessions)})
+                    turns = all_user_turns(s.get("path", ""), s.get("fmt", "claude")) or \
+                        [m.get("text", "") for m in (s.get("tail") or []) if m.get("role") == "user"]
+                    turns = [t for t in turns if t]
+                    if not turns:
+                        continue
+                    src = sum(len(t) for t in turns) // 4
+                    draft = {"agent": s.get("agent", "auto") or "auto", "cwd": s.get("cwd", "") or "",
+                             "_context": s.get("title") or s.get("recap") or "",
+                             "steps": [{"prompt": t} for t in turns]}
+                    exemplars = [e["template"] for e in db.top_exemplars(3, board_id)]
+
+                    def on_line(line, _job=job):
+                        if line.strip():
+                            asyncio.run_coroutine_threadsafe(
+                                hub.broadcast({"type": "build.log", "job": _job, "line": line}), loop)
+
+                    wfs = await asyncio.to_thread(distill_workflows_stream, draft, avail, on_line, 300, exemplars)
+                    for w in wfs:
+                        w["source_tokens"] = src
+                        w["_from"] = s.get("name")
+                        await hub.broadcast({"type": "build.workflow", "job": job, "workflow": w})
+                await hub.broadcast({"type": "build.done", "job": job})
+            except Exception as e:
+                await hub.broadcast({"type": "build.done", "job": job, "error": str(e)})
+
+        asyncio.create_task(run_job())
+        return {"job": job}
 
     @app.post("/api/boards/{board_id}/workflows/eval")
     async def eval_workflow(board_id: str, body: WorkflowEval):

@@ -189,6 +189,126 @@ def run_agent_text(prompt: str, available: Optional[List[str]] = None,
     return _run_agent(spec, prompt, cwd, timeout, write) if spec else ""
 
 
+def _stream_argv(spec, prompt: str):
+    """Read-only argv tuned for a LIVE feed. For claude we switch to NDJSON
+    streaming so the UI sees every read/grep/tool-step as it happens; the final
+    'result' event still carries the full answer for JSON extraction. Returns
+    (argv, mode) where mode is 'claude-json' or 'raw'."""
+    base = _argv_for(spec, prompt)            # safe/read-only by construction
+    if spec.name == "claude" and base[:2] == ["claude", "-p"]:
+        return (["claude", "-p", prompt, "--output-format", "stream-json", "--verbose"],
+                "claude-json")
+    return base, "raw"
+
+
+def _render_claude_event(ev) -> Optional[str]:
+    """Turn one claude NDJSON event into a short human line for the terminal feed."""
+    t = ev.get("type")
+    if t == "system" and ev.get("subtype") == "init":
+        return "● session started — exploring the repo"
+    if t == "assistant":
+        out = []
+        for b in (ev.get("message", {}) or {}).get("content", []) or []:
+            if b.get("type") == "tool_use":
+                inp = b.get("input", {}) or {}
+                arg = inp.get("file_path") or inp.get("path") or inp.get("pattern") \
+                    or inp.get("command") or inp.get("query") or ""
+                out.append(f"→ {b.get('name','tool')} {str(arg)[:90]}".rstrip())
+            elif b.get("type") == "text":
+                txt = (b.get("text") or "").strip().splitlines()
+                if txt and txt[0]:
+                    out.append("  " + txt[0][:120])
+        return "\n".join(out) if out else None
+    if t == "result":
+        return "✓ analysis complete"
+    return None
+
+
+def stream_agent(prompt: str, available: Optional[List[str]], cwd: Optional[str],
+                 on_line, timeout: int = 300):
+    """Run an agent and call on_line(str) for each unit of activity as it arrives,
+    so callers can stream the agent's real work to the UI. Returns (full_text, name)."""
+    import time as _t
+    spec = pick_agent(available)
+    if not spec:
+        return "", None
+    env = os.environ.copy(); env.update(spec.env)
+    workdir = cwd if cwd and os.path.isdir(cwd) else tempfile.gettempdir()
+    argv, mode = _stream_argv(spec, prompt)
+    try:
+        proc = subprocess.Popen(
+            argv, cwd=workdir, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True, bufsize=1)
+    except OSError:
+        return "", spec.name
+    buf, start = [], _t.time()
+    final = ""
+
+    def feed(s):
+        if not on_line or not s:
+            return
+        for ln in str(s).splitlines():
+            if ln.strip():
+                try: on_line(ln[:400])
+                except Exception: pass
+
+    try:
+        for line in proc.stdout:
+            if mode == "claude-json":
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    feed(line); continue
+                if ev.get("type") == "result" and isinstance(ev.get("result"), str):
+                    final = ev["result"]
+                feed(_render_claude_event(ev))
+            else:
+                buf.append(line)
+                feed(line.rstrip("\n"))
+            if _t.time() - start > timeout:
+                proc.kill(); break
+    except Exception:
+        pass
+    try: proc.wait(timeout=5)
+    except Exception:
+        try: proc.kill()
+        except Exception: pass
+    text = final or "".join(buf)
+    return text, spec.name
+
+
+def distill_workflows_stream(template, available, on_line, timeout=300, exemplars=None):
+    """Same as distill_workflows but streams the agent's stdout via on_line."""
+    turns = [str(s.get("prompt") or "").strip() for s in template.get("steps", [])]
+    turns = [t for t in turns if t]
+    if not turns:
+        return []
+    ctx = str(template.get("_context") or "").strip()
+    body = _exemplar_block(exemplars)
+    if ctx:
+        body += f"\nTHE SESSION'S OPENING REQUEST (the real goal): {ctx[:800]}\n\n"
+    body += "LATER LINES FROM THE TRANSCRIPT (mostly noise — mine for intent):\n"
+    body += "\n".join(f"- {t}" for t in turns)
+    prompt = META_PROMPT % body[:7000]
+    text, by = stream_agent(prompt, available, str(template.get("cwd") or ""), on_line, timeout)
+    data = _extract_json(text)
+    if not data:
+        return []
+    raw = data.get("workflows") if isinstance(data.get("workflows"), list) else [data]
+    out = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        norm = _normalize(item, template)
+        if norm:
+            norm["_distilled_by"] = by
+            out.append(norm)
+    return out
+
+
 def run_agent_json(prompt: str, available: Optional[List[str]] = None,
                    cwd: Optional[str] = None, timeout: int = 300):
     """Run any available reasoning agent and return (parsed_json|None, agent_name).

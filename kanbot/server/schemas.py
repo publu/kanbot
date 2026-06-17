@@ -126,3 +126,7 @@ class WorkflowEval(BaseModel):
 class ImproveRequest(BaseModel):
     limit: int = 2               # how many sessions to run in this pass (cost cap)
     sandbox: bool = False        # Phase B execution-grounded reward (slow)
+
+
+class BuildRequest(BaseModel):
+    session_ids: List[str] = []  # focus sessions to auto-analyze + stream

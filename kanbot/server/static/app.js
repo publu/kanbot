@@ -449,6 +449,18 @@ function handleEvent(msg) {
         loadWorkflows();
       }
       break;
+    case 'build.session':
+      buildOnSession(msg);
+      break;
+    case 'build.log':
+      if (S.build && msg.job === S.build.job) buildTermLine(msg.line);
+      break;
+    case 'build.workflow':
+      buildOnWorkflow(msg);
+      break;
+    case 'build.done':
+      buildOnDone(msg);
+      break;
     case 'board.created':
       loadBoards();
       break;
@@ -1625,31 +1637,83 @@ async function buildAutomations() {
     return;
   }
 
+  // --- live header: which session, elapsed heartbeat -------------------
   const prog = el('div', 'build-prog'); body.appendChild(prog);
+  const head = el('div', 'build-line');
+  head.appendChild(el('span', 'spinner'));
+  const headTxt = el('span', null, ` warming up the agent…`);
+  head.appendChild(headTxt);
+  const clock = el('span', 'build-clock', '0s'); head.appendChild(clock);
+  prog.appendChild(head);
+  const count = el('div', 'build-count', ''); prog.appendChild(count);
+
+  // --- the cool terminal that keeps feeding the user data --------------
+  const term = el('div', 'build-term');
+  const termHead = el('div', 'build-term-head', '▌ agent · live');
+  const termBody = el('div', 'build-term-body');
+  term.appendChild(termHead); term.appendChild(termBody);
+  body.appendChild(term);
+
   const results = el('div', 'wf-list'); body.appendChild(results);
-  const made = [];
-  for (let i = 0; i < pick.length; i++) {
-    const s = pick[i];
-    prog.innerHTML = '';
-    const line = el('div', 'build-line');
-    line.appendChild(el('span', 'spinner'));
-    line.appendChild(el('span', null, ` analyzing ${s.name || 'session'} … (${i + 1}/${pick.length})`));
-    prog.appendChild(line);
-    if (made.length) prog.appendChild(el('div', 'build-count', `${made.length} automation${made.length === 1 ? '' : 's'} found so far`));
-    let wfs = [];
-    try {
-      const r = await api.post(`/api/boards/${S.boardId}/workflows/from-session`, { session_ids: [s.session_id] });
-      wfs = r.workflows || [];
-    } catch (e) { /* skip a failed session */ }
-    if (S.autoView !== 'build') return;   // user navigated away mid-run
-    for (const w of wfs) { w._from = s.name; made.push(w); results.appendChild(buildResultCard(w)); }
+
+  // shared build state that handleEvent() streams into
+  const t0 = Date.now();
+  const tick = setInterval(() => {
+    if (S.autoView !== 'build') return;
+    clock.textContent = Math.round((Date.now() - t0) / 1000) + 's';
+  }, 1000);
+  const st = S.build = {
+    job: null, made: [], pick, foot, results, prog, count, headTxt, term, termBody, tick, n: pick.length,
+  };
+
+  try {
+    const r = await api.post(`/api/boards/${S.boardId}/workflows/build`, { session_ids: pick.map(s => s.session_id) });
+    st.job = r.job;
+  } catch (e) {
+    clearInterval(tick);
+    prog.innerHTML = ''; prog.appendChild(el('div', 'build-summary', 'could not start the build: ' + e.message));
   }
-  prog.innerHTML = '';
-  prog.appendChild(el('div', 'build-summary', made.length
-    ? `Found ${made.length} automation${made.length === 1 ? '' : 's'} across ${pick.length} of your sessions — create the ones you want.`
-    : 'Nothing solid to automate in those sessions yet — they read as discussion more than repeatable work. Try other focus areas in ◎ Profile.'));
+}
+
+function buildTermLine(text) {
+  const st = S.build; if (!st || S.autoView !== 'build') return;
+  const line = el('div', 'build-term-line', text);
+  st.termBody.appendChild(line);
+  // keep the feed lively but bounded
+  while (st.termBody.childElementCount > 220) st.termBody.removeChild(st.termBody.firstChild);
+  st.termBody.scrollTop = st.termBody.scrollHeight;
+}
+
+function buildOnSession(msg) {
+  const st = S.build; if (!st || msg.job !== st.job || S.autoView !== 'build') return;
+  st.headTxt.textContent = ` reading ${msg.name} — distilling the procedure (${msg.i}/${msg.n})`;
+  buildTermLine(`› opening ${msg.name} …`);
+}
+
+function buildOnWorkflow(msg) {
+  const st = S.build; if (!st || msg.job !== st.job || S.autoView !== 'build') return;
+  const w = msg.workflow;
+  st.made.push(w);
+  st.results.appendChild(buildResultCard(w));
+  st.count.textContent = `${st.made.length} automation${st.made.length === 1 ? '' : 's'} found so far`;
+  buildTermLine(`✓ extracted: ${w.name}`);
+}
+
+function buildOnDone(msg) {
+  const st = S.build; if (!st || msg.job !== st.job) return;
+  clearInterval(st.tick);
+  if (S.autoView !== 'build') { S.build = null; return; }
+  const made = st.made;
+  st.prog.innerHTML = '';
+  st.term.classList.add('done');
+  st.term.querySelector('.build-term-head').textContent = '▌ agent · done';
+  st.prog.appendChild(el('div', 'build-summary', msg.error
+    ? 'the agent hit an error: ' + msg.error
+    : (made.length
+      ? `Found ${made.length} automation${made.length === 1 ? '' : 's'} across ${st.n} of your sessions — create the ones you want.`
+      : 'Nothing solid to automate in those sessions yet — they read as discussion more than repeatable work. Try other focus areas in ◎ Profile.')));
   const browse = el('button', 'btn ghost small', 'browse all sessions →'); browse.onclick = openSuggestAutomations;
-  prog.appendChild(browse);
+  st.prog.appendChild(browse);
   if (made.length) {
     const ca = el('button', 'btn primary', `Create all ${made.length}`);
     ca.onclick = async () => {
@@ -1658,8 +1722,9 @@ async function buildAutomations() {
       for (const w of made) { try { await api.post(`/api/boards/${S.boardId}/workflows/import`, { template: { name: w.name, description: w.description, agent: w.agent, cwd: w.cwd, steps: w.steps, source_tokens: w.source_tokens } }); n++; } catch (e) {} }
       toast(`created ${n} automation${n === 1 ? '' : 's'} ✓`); openWorkflowsModal();
     };
-    foot.appendChild(ca); foot.style.display = '';
+    st.foot.appendChild(ca); st.foot.style.display = '';
   }
+  S.build = null;
 }
 
 function buildResultCard(w) {
@@ -2627,28 +2692,64 @@ function openProfile() {
   else profileReveal(body, foot, sessions);
 }
 
+// Real streaming scan: walk the user's actual sessions one by one, classify each
+// against its single best domain, and stream the *evidence* (which project matched
+// which domain on which keywords) as it's computed — no canned lines.
 function profileScan(body, sessions, done) {
   body.innerHTML = '';
   const wrap = el('div', 'ob-scan');
   const head = el('div', 'ob-scan-head');
   head.appendChild(el('span', 'ob-prompt', '❯'));
   head.appendChild(document.createTextNode(' scanning your agent sessions '));
-  head.appendChild(el('span', 'boot-caret', '▮'));
+  const caret = el('span', 'boot-caret', '▮'); head.appendChild(caret);
   wrap.appendChild(head);
   const log = el('div', 'ob-scan-log'); wrap.appendChild(log); body.appendChild(wrap);
   const projects = new Set(sessions.map(s => s.name || s.cwd).filter(Boolean));
-  const lines = [
-    'reading ~/.claude/projects · ~/.codex/sessions …',
-    `found ${sessions.length} session${sessions.length === 1 ? '' : 's'} across ${projects.size} project${projects.size === 1 ? '' : 's'}`,
-    'parsing transcripts for intent …',
-    'classifying your work by domain …',
-  ];
-  let i = 0;
-  const tick = () => {
-    if (i < lines.length) { const ln = el('div', 'ob-log-line'); ln.textContent = '  ' + lines[i]; log.appendChild(ln); i++; setTimeout(tick, 340 + Math.random() * 220); }
-    else setTimeout(() => { if (S.autoView === 'profile') done(); }, 420);
+
+  const emit = (txt, cls) => {
+    const ln = el('div', 'ob-log-line' + (cls ? ' ' + cls : ''));
+    ln.textContent = '  ' + txt; log.appendChild(ln);
+    log.scrollTop = log.scrollHeight; return ln;
   };
-  setTimeout(tick, 260);
+  // tally as we go so the closing line is the *real* argmax of what we saw
+  const tally = {};
+  const classify = (s) => {
+    const blob = (' ' + (s.name || '') + ' ' + (s.cwd || '') + ' ' + (s.title || '') + ' '
+      + (s.recap || '') + ' ' + (s.tail || []).map(m => m.text || '').join(' ') + ' ').toLowerCase();
+    let best = null, hits = [];
+    for (const d of WORK_DOMAINS) {
+      const h = d.kw.filter(k => blob.includes(k));
+      if (h.length > hits.length) { hits = h; best = d; }
+    }
+    return best && hits.length ? { d: best, hits } : null;
+  };
+
+  const queue = sessions.slice(0, 40);
+  let i = 0, scanned = 0;
+  emit(`reading ~/.claude/projects · ~/.codex/sessions … ${sessions.length} session${sessions.length === 1 ? '' : 's'}, ${projects.size} project${projects.size === 1 ? '' : 's'}`);
+
+  const step = () => {
+    if (S.autoView !== 'profile') return;
+    if (i >= queue.length) {
+      const ranked = Object.entries(tally).sort((a, b) => b[1] - a[1]).map(([k]) => k);
+      const top = ranked.slice(0, 4).map(k => (WORK_DOMAINS.find(d => d.key === k) || {}).label).filter(Boolean);
+      emit(`classified ${scanned} session${scanned === 1 ? '' : 's'} ✓`);
+      if (top.length) emit(`you look like a ${top.join(' · ')} person.`, 'ob-log-hit');
+      caret.remove();
+      setTimeout(() => { if (S.autoView === 'profile') done(); }, 620);
+      return;
+    }
+    const s = queue[i++];
+    const r = classify(s);
+    if (r) {
+      tally[r.d.key] = (tally[r.d.key] || 0) + 1; scanned++;
+      const name = (s.name || s.cwd || 'session').split('/').pop();
+      emit(`${r.d.icon} ${name} → ${r.d.label}  ·  ${r.hits.slice(0, 3).map(k => k.trim()).join(', ')}`, 'ob-log-hit');
+    }
+    // pace it so the feed reads as live work, faster as it warms up
+    setTimeout(step, r ? 120 + Math.random() * 130 : 18);
+  };
+  setTimeout(step, 240);
 }
 
 function profileReveal(body, foot, sessions) {
