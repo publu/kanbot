@@ -1540,7 +1540,7 @@ function autoBtn(label, fn, cls) { const b = el('button', 'btn ' + (cls || ''), 
 function openWorkflowsModal() {
   if (S.demo) { toast('Automations run on your local Deckhand — connect first'); return; }
   const actions = [
-    autoBtn('✨ Suggest from my sessions', openSuggestAutomations, 'primary'),
+    autoBtn('✨ Build from my sessions', buildAutomations, 'primary'),
     autoBtn('＋ New', () => openWorkflowBuilder(null)),
     autoBtn('◇ Template', openTemplatePicker, 'ghost'),
     autoBtn('⬇ Import', importWorkflowModal, 'ghost'),
@@ -1555,8 +1555,8 @@ function openWorkflowsModal() {
     empty.appendChild(el('div', 'wf-empty-title', 'Turn your repeated work into automations'));
     empty.appendChild(el('div', 'wf-empty-sub',
       'Deckhand can read your Claude & Codex sessions and propose multi-step automations — hand one a task and it runs for hours unattended.'));
-    const cta = el('button', 'btn primary', '✨ Analyze my sessions');
-    cta.onclick = openSuggestAutomations;
+    const cta = el('button', 'btn primary', '✨ Build from my sessions');
+    cta.onclick = buildAutomations;
     empty.appendChild(cta);
     body.appendChild(empty);
   } else {
@@ -1602,8 +1602,93 @@ function workflowRow(wf) {
   return row;
 }
 
-// "Let me go through your sessions and propose automations." Analyzes every
-// discovered session server-side and presents ready-to-save automations.
+// The post-profile experience: DON'T make the user analyze sessions one by one.
+// Auto-deep-read the top sessions in their focus domains and present the
+// extracted automations as results — "here's what we found you can build."
+async function buildAutomations() {
+  if (S.demo) { toast('Connect your local KanBot to analyze your real sessions'); showConnectPanel(); return; }
+  const focusLabel = (S.domains && S.domains.length) ? S.domains.join(', ') : 'recent';
+  const { body, foot } = autoFrame('build', '✨ Your automations',
+    { back: true, sub: `Deep-reading your ${focusLabel} sessions and extracting the workflows worth automating.` });
+  setHash('#/automations/build');
+
+  // one substantial session per project, in the chosen focus domains
+  const inFocus = (S.agentSessions || []).filter(s =>
+    !(S.domains && S.domains.length) || S.domains.includes(sessionDomain(s)));
+  const ranked = inFocus.filter(s => (s.turns || 0) >= 3).sort((a, b) => (b.turns || 0) - (a.turns || 0));
+  const seen = new Set(); const pick = [];
+  for (const s of ranked) { const p = s.name || s.cwd; if (seen.has(p)) continue; seen.add(p); pick.push(s); if (pick.length >= 4) break; }
+
+  if (!pick.length) {
+    autoEmptyState(body, '∅', 'No sessions in your focus yet',
+      'Pick more areas in ◎ Profile, or run a few real coding sessions, then come back.');
+    return;
+  }
+
+  const prog = el('div', 'build-prog'); body.appendChild(prog);
+  const results = el('div', 'wf-list'); body.appendChild(results);
+  const made = [];
+  for (let i = 0; i < pick.length; i++) {
+    const s = pick[i];
+    prog.innerHTML = '';
+    const line = el('div', 'build-line');
+    line.appendChild(el('span', 'spinner'));
+    line.appendChild(el('span', null, ` analyzing ${s.name || 'session'} … (${i + 1}/${pick.length})`));
+    prog.appendChild(line);
+    if (made.length) prog.appendChild(el('div', 'build-count', `${made.length} automation${made.length === 1 ? '' : 's'} found so far`));
+    let wfs = [];
+    try {
+      const r = await api.post(`/api/boards/${S.boardId}/workflows/from-session`, { session_ids: [s.session_id] });
+      wfs = r.workflows || [];
+    } catch (e) { /* skip a failed session */ }
+    if (S.autoView !== 'build') return;   // user navigated away mid-run
+    for (const w of wfs) { w._from = s.name; made.push(w); results.appendChild(buildResultCard(w)); }
+  }
+  prog.innerHTML = '';
+  prog.appendChild(el('div', 'build-summary', made.length
+    ? `Found ${made.length} automation${made.length === 1 ? '' : 's'} across ${pick.length} of your sessions — create the ones you want.`
+    : 'Nothing solid to automate in those sessions yet — they read as discussion more than repeatable work. Try other focus areas in ◎ Profile.'));
+  const browse = el('button', 'btn ghost small', 'browse all sessions →'); browse.onclick = openSuggestAutomations;
+  prog.appendChild(browse);
+  if (made.length) {
+    const ca = el('button', 'btn primary', `Create all ${made.length}`);
+    ca.onclick = async () => {
+      ca.disabled = true; ca.textContent = 'creating…';
+      let n = 0;
+      for (const w of made) { try { await api.post(`/api/boards/${S.boardId}/workflows/import`, { template: { name: w.name, description: w.description, agent: w.agent, cwd: w.cwd, steps: w.steps, source_tokens: w.source_tokens } }); n++; } catch (e) {} }
+      toast(`created ${n} automation${n === 1 ? '' : 's'} ✓`); openWorkflowsModal();
+    };
+    foot.appendChild(ca); foot.style.display = '';
+  }
+}
+
+function buildResultCard(w) {
+  const row = el('div', 'wf-row');
+  const info = el('div', 'wf-info');
+  const t = el('div', 'wf-title');
+  t.appendChild(el('span', 'wf-name', w.name));
+  if (w._from) t.appendChild(el('span', 'wf-stepcount', 'from ' + w._from));
+  info.appendChild(t);
+  if (w.description) info.appendChild(el('div', 'wf-desc', w.description));
+  const chain = el('div', 'wf-chain');
+  (w.steps || []).forEach((st, i) => { if (i) chain.appendChild(el('span', 'wf-arrow', '→')); chain.appendChild(el('span', 'wf-step-pill', st.name)); });
+  info.appendChild(chain);
+  const red = promptingReduction(w.source_tokens); if (red) info.appendChild(el('div', 'wf-reduction', red));
+  row.appendChild(info);
+  const ctrls = el('div', 'wf-ctrls');
+  const edit = el('button', 'btn ghost small', '✎ Edit'); edit.onclick = () => openWorkflowBuilder(null, w);
+  const create = el('button', 'btn primary small', '＋ Create');
+  create.onclick = async () => {
+    create.disabled = true; create.textContent = 'creating…';
+    try { await api.post(`/api/boards/${S.boardId}/workflows/import`, { template: { name: w.name, description: w.description, agent: w.agent, cwd: w.cwd, steps: w.steps, source_tokens: w.source_tokens } }); create.textContent = '✓ created'; toast('automation created ✓'); }
+    catch (e) { toast(e.message); create.disabled = false; create.textContent = '＋ Create'; }
+  };
+  ctrls.appendChild(edit); ctrls.appendChild(create);
+  row.appendChild(ctrls);
+  return row;
+}
+
+// Manual browse: every session with an Analyze button (secondary path).
 async function openSuggestAutomations() {
   if (S.demo) { toast('Connect your local Deckhand to analyze sessions'); return; }
   const { body, foot } = autoFrame('suggest', '✨ Automations from your sessions',
@@ -2469,6 +2554,7 @@ function route() {
     if (!sub) openWorkflowsModal();
     else if (sub === 'new') openWorkflowBuilder(null);
     else if (sub === 'suggest') openSuggestAutomations();
+    else if (sub === 'build') buildAutomations();
     else if (sub === 'templates') openTemplatePicker();
     else if (sub === 'import') importWorkflowModal();
     else if (sub === 'training') openTraining();
@@ -2607,7 +2693,7 @@ function profileReveal(body, foot, sessions) {
     foot.appendChild(explore); foot.appendChild(conn);
   } else {
     const done = el('button', 'btn ghost', 'Done'); done.onclick = () => { save(); closeAutomations(); };
-    const go = el('button', 'btn primary', 'Suggest automations →'); go.onclick = () => { save(); openSuggestAutomations(); };
+    const go = el('button', 'btn primary', 'Build my automations →'); go.onclick = () => { save(); buildAutomations(); };
     foot.appendChild(done); foot.appendChild(go);
   }
   foot.style.display = '';
@@ -2675,7 +2761,8 @@ function paletteCommands() {
   add('Profile · what KanBot learned about you', 'your work domains (p)', () => openProfile());
   add('New task', 'one-off agent task (n)', () => openComposer());
   add('Automations', 'multi-step runs (w)', () => openAutomations());
-  add('Suggest automations from my sessions', 'analyze & distill', () => openSuggestAutomations());
+  add('Build automations from my focus', 'auto-analyze & extract', () => buildAutomations());
+  add('Browse all sessions', 'analyze any one manually', () => openSuggestAutomations());
   add('Training', 'exemplars + improvement pass', () => openTraining());
   add('Browse templates', '', () => openTemplatePicker());
   add('Import automation', 'paste JSON', () => importWorkflowModal());

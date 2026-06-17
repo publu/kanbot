@@ -939,3 +939,9 @@ body.demo .board { padding-bottom: 0; }
 
 .sb-learn { color: var(--brand); white-space: nowrap; }
 @media (max-width: 640px) { .ob-grid { grid-template-columns: 1fr; } }
+
+/* ---- build (auto-analyze focus -> automations) ----------------------- */
+.build-prog { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; padding: 6px 2px 4px; font-family: var(--mono); font-size: 13px; color: var(--text-dim); }
+.build-line { display: flex; align-items: center; gap: 9px; color: var(--cyan); }
+.build-count { color: var(--brand); }
+.build-summary { color: var(--text); font-weight: 500; }
