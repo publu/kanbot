@@ -335,6 +335,69 @@ def _exemplar_block(exemplars: Optional[List[dict]]) -> str:
     return "\n".join(out) + "\n"
 
 
+DRAFT_PROMPT = """You are AUTHORING a reusable PLAYBOOK from a short description — \
+NOT from a past session. A playbook is a 3-6 step procedure a fresh agent can \
+follow to accomplish a CLASS of task with almost no extra prompting.
+
+%s
+
+Design the playbook:
+- Break the work into 3-6 ordered steps. Each step's `prompt` is a self-contained \
+instruction for a fresh agent: what to do, the method, the gotchas, how to verify.
+- Climb the abstraction ladder: write for the CLASS of task, not one instance. \
+Where a specific subject is needed per run, make the first step a fill-in \
+("TARGET: <what to apply this to — fill in before running>").
+- Bake in method + gotchas as "Method: …" / "Watch out for: …" guidance inside the \
+step prompts; lead the `description` with the single most useful takeaway.
+- Steps hand off via files (PLAN.md / NOTES.md) since each runs with fresh context.
+- For iterative work set `loop_max` (e.g. 20) and a `loop_until` shell predicate \
+(e.g. `pytest -q`). Set `carry_context` true when a step needs the previous \
+step's output.
+%s
+Return ONLY a JSON object as the very last thing you output, no markdown fences:
+{"workflows": [{"name": str, "description": str, "steps": [{"name": str, \
+"prompt": str, "loop_max": int, "loop_until": str, "carry_context": bool, \
+"continue_on_fail": bool}]}]}
+
+THE PLAYBOOK TO AUTHOR:
+%s
+"""
+
+
+def draft_workflows_stream(description: str, cwd: str, available: Optional[List[str]],
+                           on_line, timeout: int = 300) -> List[Dict[str, Any]]:
+    """Author a brand-new playbook from a freeform description (not a session),
+    streaming the agent's real work via on_line. If cwd is a real repo, the agent
+    is grounded in it (read-only) so the steps fit the actual code."""
+    desc = (description or "").strip()
+    if not desc:
+        return []
+    grounded = bool(cwd and os.path.isdir(cwd))
+    intro = ("You are running READ-ONLY inside the actual repository this playbook "
+             "will operate on — explore it (read/grep/glob) to ground every step in "
+             "real files, conventions, and tooling. Do not edit anything."
+             if grounded else
+             "No repository is attached — write the playbook to be broadly reusable "
+             "for this class of task.")
+    exem = ""
+    prompt = DRAFT_PROMPT % (intro, exem, desc[:4000])
+    base = {"agent": "auto", "cwd": cwd or "", "name": "", "description": ""}
+    text, by = stream_agent(prompt, available, cwd if grounded else "", on_line, timeout)
+    data = _extract_json(text)
+    if not data:
+        return []
+    raw = data.get("workflows") if isinstance(data.get("workflows"), list) else [data]
+    out: List[Dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        norm = _normalize(item, base)
+        if norm:
+            norm["_distilled_by"] = by
+            out.append(norm)
+    return out
+
+
 def distill_workflows(template: Dict[str, Any], available: Optional[List[str]] = None,
                       timeout: int = 300, exemplars: Optional[List[dict]] = None) -> List[Dict[str, Any]]:
     """Extract one OR MORE clean, GROUNDED workflows from a session draft using

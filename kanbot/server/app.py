@@ -17,7 +17,8 @@ from fastapi.staticfiles import StaticFiles
 from .. import __version__
 from ..agents import catalog
 from ..profiles import list_profiles
-from ..distill import distill_available, distill_workflows, distill_workflows_stream
+from ..distill import (distill_available, distill_workflows, distill_workflows_stream,
+                       draft_workflows_stream)
 from ..runner.discovery import all_user_turns
 from ..training.evaluator import evaluate_workflow
 from ..training.optimizer import run_improvement_pass
@@ -29,9 +30,9 @@ from .db import DB, gen_id, now
 from .hub import Hub, RunnerConn
 from .insights import PROVIDER_META, compute
 from .schemas import (BoardCreate, BuildRequest, CardCreate, CardMove, CardPatch,
-                      FromSession, ImproveRequest, ReviveRequest, SpreeRequest, TagAttach,
-                      TagCreate, UploadRequest, WorkflowClone, WorkflowEval, WorkflowExtract,
-                      WorkflowImport, WorkflowRun, WorkflowSave)
+                      DraftRequest, FromSession, ImproveRequest, ReviveRequest, SpreeRequest,
+                      TagAttach, TagCreate, UploadRequest, WorkflowClone, WorkflowEval,
+                      WorkflowExtract, WorkflowImport, WorkflowRun, WorkflowSave)
 
 STATIC_DIR = Path(__file__).parent / "static"
 SERVER_TOKEN = os.environ.get("KANBOT_TOKEN") or os.environ.get("DECKHAND_TOKEN", "")
@@ -447,6 +448,46 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                         w["source_tokens"] = src
                         w["_from"] = s.get("name")
                         await hub.broadcast({"type": "build.workflow", "job": job, "workflow": w})
+                await hub.broadcast({"type": "build.done", "job": job})
+            except Exception as e:
+                await hub.broadcast({"type": "build.done", "job": job, "error": str(e)})
+
+        asyncio.create_task(run_job())
+        return {"job": job}
+
+    @app.post("/api/boards/{board_id}/workflows/draft")
+    async def draft_workflow_stream(board_id: str, body: DraftRequest):
+        """Author a NEW playbook from a freeform description (not a session),
+        streaming the agent's real work over /ws/web with the same build.* events
+        the auto-build view consumes — so the live terminal + result cards are
+        reused. Grounds read-only in cwd when it's a real repo."""
+        if not db.get_board(board_id):
+            raise HTTPException(404, "board not found")
+        desc = (body.description or "").strip()
+        if not desc:
+            raise HTTPException(422, "a description is required")
+        avail = hub.available_agents()
+        if not distill_available(avail):
+            raise HTTPException(503, "no reasoning agent available")
+        cwd = (body.cwd or "").strip()
+        job = gen_id()
+        loop = asyncio.get_running_loop()
+
+        async def run_job():
+            try:
+                repo = os.path.basename(cwd.rstrip("/")) if cwd and os.path.isdir(cwd) else ""
+                await hub.broadcast({"type": "build.session", "job": job,
+                                     "name": desc[:48] + ("…" if len(desc) > 48 else ""),
+                                     "repo": repo, "i": 1, "n": 1})
+
+                def on_line(line, _job=job):
+                    if line.strip():
+                        asyncio.run_coroutine_threadsafe(
+                            hub.broadcast({"type": "build.log", "job": _job, "line": line}), loop)
+
+                wfs = await asyncio.to_thread(draft_workflows_stream, desc, cwd, avail, on_line, 300)
+                for w in wfs:
+                    await hub.broadcast({"type": "build.workflow", "job": job, "workflow": w})
                 await hub.broadcast({"type": "build.done", "job": job})
             except Exception as e:
                 await hub.broadcast({"type": "build.done", "job": job, "error": str(e)})

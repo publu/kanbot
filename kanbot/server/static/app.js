@@ -1564,8 +1564,9 @@ function openWorkflowsModal() {
   const n = S.workflows.length;
   const actions = [
     autoBtn('⚡ Set off a goal spree', openSpreeLauncher, 'primary'),
+    autoBtn('✎ Draft from an idea', draftPlaybook),
     autoBtn(n ? '✨ Build more from my sessions' : '✨ Build from my sessions', buildAutomations),
-    autoBtn('＋ New', () => openWorkflowBuilder(null)),
+    autoBtn('＋ New (manual)', () => openWorkflowBuilder(null), 'ghost'),
     autoBtn('◇ Template', openTemplatePicker, 'ghost'),
     autoBtn('⬇ Import', importWorkflowModal, 'ghost'),
     autoBtn('🧠 Training', openTraining, 'ghost'),
@@ -1585,9 +1586,11 @@ function openWorkflowsModal() {
     const ctas = el('div', 'wf-empty-ctas');
     const cta = el('button', 'btn primary', '✨ Build from my sessions');
     cta.onclick = buildAutomations;
+    const draft = el('button', 'btn', '✎ Draft from an idea');
+    draft.onclick = draftPlaybook;
     const spree = el('button', 'btn', '⚡ Set off a goal spree');
     spree.onclick = openSpreeLauncher;
-    ctas.appendChild(cta); ctas.appendChild(spree);
+    ctas.appendChild(cta); ctas.appendChild(draft); ctas.appendChild(spree);
     empty.appendChild(ctas);
     body.appendChild(empty);
   } else {
@@ -1773,15 +1776,20 @@ function finishBuildView() {
   d.prog.innerHTML = '';
   d.term.classList.add('done');
   d.term.querySelector('.build-term-head').textContent = '■ agent · done';
+  const isDraft = st.kind === 'draft';
   d.prog.appendChild(el('div', 'build-summary', st.error
     ? 'the agent hit an error: ' + st.error
     : (made.length
-      ? `✓ Done — ${made.length} playbook${made.length === 1 ? '' : 's'} distilled across ${st.n} of your sessions. Create the ones you want.`
-      : 'Nothing solid to distill in those sessions yet — they read as discussion more than repeatable work. Try other focus areas in ◎ Profile.')));
-  const rb = el('button', 'btn ghost small', '↻ Rebuild'); rb.onclick = () => { S.build = null; buildAutomations(); };
+      ? (isDraft
+        ? `✓ Drafted ${made.length} playbook${made.length === 1 ? '' : 's'} from your idea — edit and create.`
+        : `✓ Done — ${made.length} playbook${made.length === 1 ? '' : 's'} distilled across ${st.n} of your sessions. Create the ones you want.`)
+      : (isDraft
+        ? 'The agent couldn’t turn that into a solid playbook — try a more concrete description, or point it at a repo to ground in.'
+        : 'Nothing solid to distill in those sessions yet — they read as discussion more than repeatable work. Try other focus areas in ◎ Profile.'))));
+  const rb = el('button', 'btn ghost small', isDraft ? '↻ Draft again' : '↻ Rebuild');
+  rb.onclick = () => { const dr = st._draft; S.build = null; if (isDraft) dr ? startDraft(dr.description, dr.cwd) : draftPlaybook(); else buildAutomations(); };
   d.prog.appendChild(rb);
-  const browse = el('button', 'btn ghost small', 'browse all sessions →'); browse.onclick = openSuggestAutomations;
-  d.prog.appendChild(browse);
+  if (!isDraft) { const browse = el('button', 'btn ghost small', 'browse all sessions →'); browse.onclick = openSuggestAutomations; d.prog.appendChild(browse); }
   d.foot.innerHTML = '';
   if (made.length) {
     const ca = el('button', 'btn primary', `Create all ${made.length}`);
@@ -1792,6 +1800,49 @@ function finishBuildView() {
       toast(`created ${n} playbook${n === 1 ? '' : 's'} ✓`); openWorkflowsModal();
     };
     d.foot.appendChild(ca); d.foot.style.display = '';
+  }
+}
+
+// ---- author a playbook from an idea (not from sessions) ----------------
+function draftPlaybook() {
+  if (S.demo) { toast('Drafting runs on your local Deckhand — connect first'); showConnectPanel(); return; }
+  const { body, foot } = autoFrame('draft-form', '✎ Draft a playbook from an idea',
+    { back: true, sub: 'Describe what the playbook should do and an agent writes the steps for you — grounded in a repo if you point at one. No past session needed.' });
+  setHash('#/automations/draft');
+
+  const desc = textareaField('What should this playbook do?',
+    'e.g. "Audit a Python repo for missing type hints and add them module by module, keeping mypy clean." or "Turn a rough spec into a tested REST endpoint."');
+  desc.input.classList.add('spree-goal');
+  const repo = inputField('Repo to ground in (optional)', '/path/to/repo — leave blank for a generic, reusable playbook');
+  repo.input.value = '';
+  const grid = el('div', 'spree-form');
+  grid.appendChild(desc.wrap); grid.appendChild(repo.wrap);
+  grid.appendChild(el('div', 'spree-note', '› the agent reads the repo (if given) read-only, then writes a 3–6 step playbook you can edit and save.'));
+  body.appendChild(grid);
+
+  const go = el('button', 'btn primary', '✎ Draft it');
+  go.onclick = () => { const d = desc.input.value.trim(); if (!d) { toast('describe the playbook first'); desc.input.focus(); return; } startDraft(d, repo.input.value.trim()); };
+  foot.appendChild(go); foot.style.display = '';
+  setTimeout(() => desc.input.focus(), 30);
+}
+
+// Stream the draft into the same live build view (terminal + result cards).
+async function startDraft(description, cwd) {
+  const { body, foot } = autoFrame('build', '✎ Drafting your playbook',
+    { back: true, sub: cwd ? 'grounding in ' + cwd : 'authoring from your description' });
+  setHash('#/automations/draft/run');
+  S.build = {
+    job: null, made: [], log: [], n: 1, t0: Date.now(), lastLog: Date.now(),
+    cur: 'warming up the agent…', done: false, error: null, dom: null,
+    kind: 'draft', _draft: { description, cwd },
+  };
+  renderBuildView(body, foot);
+  try {
+    const r = await api.post(`/api/boards/${S.boardId}/workflows/draft`, { description, cwd });
+    S.build.job = r.job;
+  } catch (e) {
+    S.build.done = true; S.build.error = e.message;
+    if (S.build.dom) finishBuildView();
   }
 }
 
@@ -2845,6 +2896,10 @@ function route() {
     else if (sub === 'suggest') openSuggestAutomations();
     else if (sub === 'build') buildAutomations();
     else if (sub === 'spree') { if (parts[2] === 'run' && S.spreeCard) openSpreeRun(S.spreeCard); else openSpreeLauncher(); }
+    else if (sub === 'draft') {
+      if (parts[2] === 'run' && S.build) { const { body, foot } = autoFrame('build', '✎ Drafting your playbook', { back: true }); renderBuildView(body, foot); }
+      else draftPlaybook();
+    }
     else if (sub === 'templates') openTemplatePicker();
     else if (sub === 'import') importWorkflowModal();
     else if (sub === 'training') openTraining();
@@ -3088,6 +3143,8 @@ function paletteCommands() {
   add('Profile · what KanBot learned about you', 'your work domains (p)', () => openProfile());
   add('New task', 'one-off agent task (n)', () => openComposer());
   add('Set off a goal spree', 'long unattended run toward one goal', () => openSpreeLauncher());
+  add('Draft a playbook from an idea', 'describe it, an agent writes the steps', () => draftPlaybook());
+  add('New playbook (manual)', 'author steps by hand', () => openWorkflowBuilder(null));
   add('Playbooks', 'your distilled, reusable prompts (w)', () => openAutomations());
   add('Build playbooks from my focus', 'auto-analyze & distill', () => buildAutomations());
   add('Browse all sessions', 'analyze any one manually', () => openSuggestAutomations());

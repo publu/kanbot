@@ -132,6 +132,12 @@ class BuildRequest(BaseModel):
     session_ids: List[str] = []  # focus sessions to auto-analyze + stream
 
 
+class DraftRequest(BaseModel):
+    """Author a brand-new playbook from a freeform description (not a session)."""
+    description: str
+    cwd: str = ""                # optional repo to ground the steps in (read-only)
+
+
 class SpreeRequest(BaseModel):
     """Set off a long, unattended 'goal spree' — decompose + grind + verify."""
     goal: str                    # the whole objective to drive to completion
