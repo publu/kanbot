@@ -177,11 +177,22 @@ _SPREE_FINALIZE = (
 
 def goal_spree_template(goal: str, cwd: str = "", verify_cmd: str = "",
                         loop_max: int = 200, max_seconds: int = 0,
-                        name: str = "") -> Dict[str, Any]:
-    """A long-horizon, anti-skittish spree as a 3-step workflow template."""
+                        name: str = "", profile: str = "",
+                        method: str = "") -> Dict[str, Any]:
+    """A long-horizon, anti-skittish spree as a 3-step workflow template.
+
+    profile: a prompt mode (e.g. 'lean') applied to every step.
+    method:  an optional proven-method block (e.g. distilled from one of the
+             user's playbooks) folded into the decompose step so the run follows
+             an approach they already trust."""
     pred = spree_predicate(verify_cmd)
     goal = (goal or "").strip()
     nm = name or (("Spree · " + goal[:48]) if goal else "Goal spree")
+    decompose = _SPREE_DECOMPOSE + goal
+    if (method or "").strip():
+        decompose += ("\n\nPROVEN METHOD — fold this approach (from a playbook the "
+                      "user trusts) into your PROGRESS.md plan where it fits:\n"
+                      + method.strip())
     return {
         "name": nm,
         "description": "Long unattended run: decompose the goal into a verifiable "
@@ -191,12 +202,14 @@ def goal_spree_template(goal: str, cwd: str = "", verify_cmd: str = "",
         "agent": "auto",
         "cwd": cwd or "",
         "steps": [
-            _step("Decompose the goal", _SPREE_DECOMPOSE + goal, loop_max=1),
+            _step("Decompose the goal", decompose, loop_max=1, profile=profile),
             _step("Grind the checklist", _SPREE_GRIND,
                   loop_max=max(1, int(loop_max)), loop_until=pred,
-                  carry_context=False, max_seconds=int(max_seconds or 0)),
+                  carry_context=False, max_seconds=int(max_seconds or 0),
+                  profile=profile),
             _step("Verify & summarize", _SPREE_FINALIZE,
-                  loop_max=2, carry_context=False, continue_on_fail=True),
+                  loop_max=2, carry_context=False, continue_on_fail=True,
+                  profile=profile),
         ],
     }
 

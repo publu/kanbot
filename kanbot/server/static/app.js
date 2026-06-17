@@ -1810,9 +1810,24 @@ function openSpreeLauncher() {
   const hours = inputField('Budget (hours)', '10'); hours.input.type = 'number'; hours.input.value = '10'; hours.input.min = '0.1'; hours.input.step = '0.5';
   const cap = inputField('Max iterations (advanced)', '200'); cap.input.type = 'number'; cap.input.value = '200'; cap.input.min = '1';
 
+  // stand on what you've already built: a saved playbook seeds the method, and a
+  // prompt mode (lean, …) shapes how every step works.
+  const pb = selectField('Base on a playbook (optional)',
+    [{ value: '', label: 'none — plan from scratch' }].concat(
+      (S.workflows || []).map(w => ({ value: w.id, label: w.name }))));
+  const prof = profileSelectField('');
+  // if a playbook carries a cwd and the repo box is empty, borrow it
+  pb.select.onchange = () => {
+    const w = S.workflowById[pb.select.value];
+    if (w && w.cwd && !repo.input.value.trim()) repo.input.value = w.cwd;
+  };
+
   const grid = el('div', 'spree-form');
   grid.appendChild(goal.wrap);
   grid.appendChild(repo.wrap);
+  const row1 = el('div', 'spree-row2');
+  row1.appendChild(pb.wrap); row1.appendChild(prof.wrap);
+  grid.appendChild(row1);
   const row2 = el('div', 'spree-row');
   row2.appendChild(verify.wrap); row2.appendChild(hours.wrap); row2.appendChild(cap.wrap);
   grid.appendChild(row2);
@@ -1829,7 +1844,8 @@ function openSpreeLauncher() {
     try {
       const r = await api.post(`/api/boards/${S.boardId}/spree`, {
         goal: g, cwd: repo.input.value.trim(), verify_cmd: verify.input.value.trim(),
-        hours: parseFloat(hours.input.value) || 10, loop_max: parseInt(cap.input.value) || 200, run: true,
+        hours: parseFloat(hours.input.value) || 10, loop_max: parseInt(cap.input.value) || 200,
+        profile: prof.select.value, playbook_id: pb.select.value, run: true,
       });
       toast('spree launched — grinding'); openSpreeRun(r.card);
     } catch (e) { toast(e.message); go.disabled = false; go.textContent = '⚡ Launch spree'; }
@@ -2669,6 +2685,18 @@ function textareaField(label, ph) {
   const input = el('textarea', 'textarea'); input.placeholder = ph || '';
   wrap.appendChild(input);
   return { wrap, input };
+}
+// Generic labeled <select> from [{value,label}] options.
+function selectField(label, options, value) {
+  const wrap = el('div', 'field');
+  wrap.appendChild(el('div', 'label', label));
+  const select = el('select', 'select');
+  for (const o of (options || [])) {
+    const opt = el('option', null, o.label); opt.value = o.value; select.appendChild(opt);
+  }
+  select.value = value || '';
+  wrap.appendChild(select);
+  return { wrap, select };
 }
 
 // Paste or drag an image into a prompt textarea -> upload -> inject a file

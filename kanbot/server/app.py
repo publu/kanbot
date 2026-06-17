@@ -470,10 +470,22 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         if cwd and not os.path.isdir(cwd):
             raise HTTPException(422, f"not a directory: {cwd}")
         max_seconds = max(60, int(float(body.hours or 0) * 3600)) if body.hours else 0
+        # optionally seed the run with a saved playbook's proven method
+        method = ""
+        if body.playbook_id:
+            pb = db.get_workflow(body.playbook_id)
+            if pb:
+                parts = [f"Playbook: {pb.get('name', '')}"]
+                if pb.get("description"):
+                    parts.append(pb["description"])
+                for i, st in enumerate(pb.get("steps") or [], 1):
+                    parts.append(f"{i}. {st.get('name', '')}: {(st.get('prompt') or '')[:400]}")
+                method = "\n".join(parts)
         tpl = goal_spree_template(
             goal=goal, cwd=cwd, verify_cmd=(body.verify_cmd or "").strip(),
             loop_max=max(1, int(body.loop_max or 200)), max_seconds=max_seconds,
-            name=(body.title or "").strip())
+            name=(body.title or "").strip(), profile=(body.profile or "").strip(),
+            method=method)
         wf = db.save_workflow(board_id, tpl["name"], tpl["description"], tpl["agent"],
                               cwd, tpl["steps"])
         await hub.broadcast({"type": "workflow.saved", "board_id": board_id, "workflow": wf})

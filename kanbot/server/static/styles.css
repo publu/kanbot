@@ -1004,6 +1004,7 @@ body.demo .board { padding-bottom: 0; }
 /* ---- goal spree ------------------------------------------------------- */
 .spree-form { display: flex; flex-direction: column; gap: 14px; max-width: 760px; }
 .spree-row { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 12px; }
+.spree-row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .spree-goal { min-height: 96px; }
 .spree-note { font-family: var(--mono); font-size: 12px; color: var(--text-faint); }
 .spree-bar { height: 8px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 2px; overflow: hidden; margin: 12px 0; }

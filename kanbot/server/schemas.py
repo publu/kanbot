@@ -139,5 +139,7 @@ class SpreeRequest(BaseModel):
     verify_cmd: str = ""         # optional shell predicate that must pass to finish
     hours: float = 10.0          # wall-clock budget
     loop_max: int = 200          # max fresh-context grind iterations
+    profile: str = ""            # prompt mode (e.g. 'lean') applied to every step
+    playbook_id: str = ""        # optional saved playbook whose method seeds the run
     title: str = ""              # run card title (defaults from the goal)
     run: bool = True             # dispatch now (vs park in backlog)
