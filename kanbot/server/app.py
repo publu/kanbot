@@ -21,15 +21,16 @@ from ..distill import distill_available, distill_workflows, distill_workflows_st
 from ..runner.discovery import all_user_turns
 from ..training.evaluator import evaluate_workflow
 from ..training.optimizer import run_improvement_pass
-from ..workflows import extract_workflows, starter_templates, suggest_automations
+from ..workflows import (extract_workflows, goal_spree_template, starter_templates,
+                         suggest_automations)
 
 EXEMPLAR_BAR = 75   # eval score at/above which a workflow becomes a few-shot exemplar
 from .db import DB, gen_id, now
 from .hub import Hub, RunnerConn
 from .insights import PROVIDER_META, compute
 from .schemas import (BoardCreate, BuildRequest, CardCreate, CardMove, CardPatch,
-                      FromSession, ImproveRequest, ReviveRequest, TagAttach, TagCreate,
-                      UploadRequest, WorkflowClone, WorkflowEval, WorkflowExtract,
+                      FromSession, ImproveRequest, ReviveRequest, SpreeRequest, TagAttach,
+                      TagCreate, UploadRequest, WorkflowClone, WorkflowEval, WorkflowExtract,
                       WorkflowImport, WorkflowRun, WorkflowSave)
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -452,6 +453,51 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
 
         asyncio.create_task(run_job())
         return {"job": job}
+
+    @app.post("/api/boards/{board_id}/spree")
+    async def start_spree(board_id: str, body: SpreeRequest):
+        """Set off a long, unattended GOAL SPREE: a 3-step playbook (decompose ->
+        grind-with-real-loop_until -> verify) bounded by a wall-clock budget. The
+        grind step keeps relaunching the agent with fresh context until the
+        PROGRESS.md checklist is empty AND the verify command passes — defeating an
+        agent that quits early. Saved to the library and dispatched immediately."""
+        if not db.get_board(board_id):
+            raise HTTPException(404, "board not found")
+        goal = (body.goal or "").strip()
+        if not goal:
+            raise HTTPException(422, "a goal is required")
+        cwd = (body.cwd or "").strip()
+        if cwd and not os.path.isdir(cwd):
+            raise HTTPException(422, f"not a directory: {cwd}")
+        max_seconds = max(60, int(float(body.hours or 0) * 3600)) if body.hours else 0
+        tpl = goal_spree_template(
+            goal=goal, cwd=cwd, verify_cmd=(body.verify_cmd or "").strip(),
+            loop_max=max(1, int(body.loop_max or 200)), max_seconds=max_seconds,
+            name=(body.title or "").strip())
+        wf = db.save_workflow(board_id, tpl["name"], tpl["description"], tpl["agent"],
+                              cwd, tpl["steps"])
+        await hub.broadcast({"type": "workflow.saved", "board_id": board_id, "workflow": wf})
+        card = await hub.start_workflow(wf, cwd=cwd, title=body.title or tpl["name"],
+                                        run=body.run)
+        return {"card": card, "workflow": wf, "max_seconds": max_seconds}
+
+    @app.get("/api/spree/progress")
+    async def spree_progress(cwd: str):
+        """Read-only peek at PROGRESS.md / SUMMARY.md in a spree's working dir, so
+        the UI can render a live checklist. Only ever reads those two exact names
+        directly inside the given directory (no traversal)."""
+        if not cwd or not os.path.isdir(cwd):
+            raise HTTPException(404, "no such directory")
+        out: dict = {"cwd": cwd, "progress": None, "summary": None}
+        for key, fname in (("progress", "PROGRESS.md"), ("summary", "SUMMARY.md")):
+            p = os.path.join(cwd, fname)
+            if os.path.isfile(p) and os.path.dirname(os.path.realpath(p)) == os.path.realpath(cwd):
+                try:
+                    with open(p, "r", encoding="utf-8", errors="replace") as fh:
+                        out[key] = fh.read()[:20000]
+                except OSError:
+                    pass
+        return out
 
     @app.post("/api/boards/{board_id}/workflows/eval")
     async def eval_workflow(board_id: str, body: WorkflowEval):

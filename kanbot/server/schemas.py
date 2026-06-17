@@ -130,3 +130,14 @@ class ImproveRequest(BaseModel):
 
 class BuildRequest(BaseModel):
     session_ids: List[str] = []  # focus sessions to auto-analyze + stream
+
+
+class SpreeRequest(BaseModel):
+    """Set off a long, unattended 'goal spree' — decompose + grind + verify."""
+    goal: str                    # the whole objective to drive to completion
+    cwd: str = ""                # repo to work in (where PROGRESS.md lands)
+    verify_cmd: str = ""         # optional shell predicate that must pass to finish
+    hours: float = 10.0          # wall-clock budget
+    loop_max: int = 200          # max fresh-context grind iterations
+    title: str = ""              # run card title (defaults from the goal)
+    run: bool = True             # dispatch now (vs park in backlog)

@@ -29,6 +29,7 @@ def _step(name: str, prompt: str, **kw) -> Dict[str, Any]:
         "loop_until": kw.get("loop_until", ""),
         "carry_context": kw.get("carry_context", True),
         "continue_on_fail": kw.get("continue_on_fail", False),
+        "max_seconds": int(kw.get("max_seconds", 0) or 0),
     }
 
 
@@ -104,8 +105,108 @@ STARTER_TEMPLATES: List[Dict[str, Any]] = [
 ]
 
 
+# --- goal spree: a long-horizon, anti-skittish autonomous run --------------
+# CLI agents stop early and invent reasons ("good stopping point", "the rest is
+# straightforward"). A spree defeats that with three things: (1) a durable
+# PROGRESS.md ledger of small verifiable tasks so fresh-context loop iterations
+# always know what's left; (2) a grind step whose loop_until is a REAL predicate
+# (all checkboxes done AND the verify command passes) so the agent can SAY it's
+# done but the runner only stops when it actually is; (3) wall-clock + iteration
+# budgets enforced by the runner. It runs on the normal workflow machinery.
+
+def spree_predicate(verify_cmd: str = "") -> str:
+    """loop_until for the grind step: no unchecked boxes remain AND (if given) the
+    user's verify command exits 0. Shell, run by the runner in cwd."""
+    checklist = "! grep -qE '^[[:space:]]*- \\[ \\]' PROGRESS.md"
+    vc = (verify_cmd or "").strip()
+    return f"{checklist} && ( {vc} )" if vc else checklist
+
+
+_SPREE_DECOMPOSE = (
+    "You are about to start a LONG, UNATTENDED autonomous run toward the GOAL "
+    "below, working inside this repository. This first pass is PLANNING ONLY — do "
+    "not write any feature code yet.\n\n"
+    "1. Read the parts of the codebase relevant to the goal.\n"
+    "2. Write a file named PROGRESS.md at the repo root with EXACTLY these "
+    "sections:\n"
+    "   ## GOAL — one-line restatement of the goal.\n"
+    "   ## TASKS — a markdown checklist (`- [ ] ...`) of small, concrete, "
+    "INDEPENDENTLY-VERIFIABLE subtasks, each doable in ~5–15 minutes. Order them. "
+    "Be thorough: a 10-hour run needs many small steps, not 4 big ones.\n"
+    "   ## DONE WHEN — the concrete, observable criteria that mean the whole goal "
+    "is complete (e.g. a command that passes, a behavior that works).\n"
+    "   ## BLOCKERS — leave empty.\n"
+    "   ## LOG — leave empty.\n"
+    "Keep every checklist item independently checkable. Do not start the work.\n\n"
+    "GOAL:\n"
+)
+
+_SPREE_GRIND = (
+    "You are one iteration of a LONG, UNATTENDED autonomous push. Your whole job "
+    "this turn is to advance PROGRESS.md by exactly ONE task, well.\n\n"
+    "STEPS:\n"
+    "1. Open PROGRESS.md. Find the FIRST unchecked `- [ ]` item under ## TASKS.\n"
+    "2. Do ONLY that item. Implement it properly.\n"
+    "3. VERIFY it actually works (run it / test it) — don't assume.\n"
+    "4. Mark it `- [x]`, append a one-line result to ## LOG, and commit your work "
+    "(git add -A && git commit) so progress is durable.\n\n"
+    "HARD RULES — you are running unattended as part of a multi-hour effort:\n"
+    "• You are NOT finished until EVERY box under ## TASKS is checked AND the "
+    "## DONE WHEN criteria hold. \n"
+    "• These are NOT acceptable reasons to stop and will be rejected by an "
+    "automated check that simply restarts you: \"this is a good stopping point\", "
+    "\"the remaining work is straightforward\", \"I'll let you take it from here\", "
+    "\"the rest is left as an exercise\", \"further work requires human input\" "
+    "(unless you are genuinely, concretely blocked).\n"
+    "• If you are truly blocked on the current item, append it to ## BLOCKERS with "
+    "the specific reason, leave it unchecked, and move to the NEXT item instead.\n"
+    "• If all boxes are checked but ## DONE WHEN is not actually satisfied, ADD the "
+    "missing tasks to ## TASKS and keep going.\n"
+    "• Make small, frequent commits. Never leave the tree broken.\n"
+    "End your turn after completing one task — a fresh iteration will pick up the "
+    "next one from PROGRESS.md."
+)
+
+_SPREE_FINALIZE = (
+    "The task loop has converged. Confirm the ## DONE WHEN criteria in PROGRESS.md "
+    "actually hold (run the verification). Then write SUMMARY.md: what was "
+    "accomplished, anything still under ## BLOCKERS, and what a human should "
+    "double-check. Commit."
+)
+
+
+def goal_spree_template(goal: str, cwd: str = "", verify_cmd: str = "",
+                        loop_max: int = 200, max_seconds: int = 0,
+                        name: str = "") -> Dict[str, Any]:
+    """A long-horizon, anti-skittish spree as a 3-step workflow template."""
+    pred = spree_predicate(verify_cmd)
+    goal = (goal or "").strip()
+    nm = name or (("Spree · " + goal[:48]) if goal else "Goal spree")
+    return {
+        "name": nm,
+        "description": "Long unattended run: decompose the goal into a verifiable "
+                       "PROGRESS.md checklist, grind it one task per fresh-context "
+                       "iteration, and only stop when the checklist is done"
+                       + (" and the verify command passes." if verify_cmd else "."),
+        "agent": "auto",
+        "cwd": cwd or "",
+        "steps": [
+            _step("Decompose the goal", _SPREE_DECOMPOSE + goal, loop_max=1),
+            _step("Grind the checklist", _SPREE_GRIND,
+                  loop_max=max(1, int(loop_max)), loop_until=pred,
+                  carry_context=False, max_seconds=int(max_seconds or 0)),
+            _step("Verify & summarize", _SPREE_FINALIZE,
+                  loop_max=2, carry_context=False, continue_on_fail=True),
+        ],
+    }
+
+
 def starter_templates() -> List[Dict[str, Any]]:
-    return STARTER_TEMPLATES
+    # include a fill-in spree variant in the starter library
+    spree = goal_spree_template(
+        goal="<TARGET: describe the whole goal to drive to completion>",
+        verify_cmd="", loop_max=200, name="Goal spree (10h run)")
+    return STARTER_TEMPLATES + [spree]
 
 
 def _step_name_from(text: str, fallback: str) -> str:

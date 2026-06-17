@@ -1563,7 +1563,8 @@ function openWorkflowsModal() {
   if (S.demo) { toast('Playbooks run on your local Deckhand — connect first'); return; }
   const n = S.workflows.length;
   const actions = [
-    autoBtn(n ? '✨ Build more from my sessions' : '✨ Build from my sessions', buildAutomations, 'primary'),
+    autoBtn('⚡ Set off a goal spree', openSpreeLauncher, 'primary'),
+    autoBtn(n ? '✨ Build more from my sessions' : '✨ Build from my sessions', buildAutomations),
     autoBtn('＋ New', () => openWorkflowBuilder(null)),
     autoBtn('◇ Template', openTemplatePicker, 'ghost'),
     autoBtn('⬇ Import', importWorkflowModal, 'ghost'),
@@ -1581,9 +1582,13 @@ function openWorkflowsModal() {
     empty.appendChild(el('div', 'wf-empty-title', 'Turn your repeated work into playbooks'));
     empty.appendChild(el('div', 'wf-empty-sub',
       'Deckhand reads your Claude & Codex sessions and distills each into a reusable playbook — the method, the gotchas, and your standards baked in — so next time you prompt once and get the same result.'));
+    const ctas = el('div', 'wf-empty-ctas');
     const cta = el('button', 'btn primary', '✨ Build from my sessions');
     cta.onclick = buildAutomations;
-    empty.appendChild(cta);
+    const spree = el('button', 'btn', '⚡ Set off a goal spree');
+    spree.onclick = openSpreeLauncher;
+    ctas.appendChild(cta); ctas.appendChild(spree);
+    empty.appendChild(ctas);
     body.appendChild(empty);
   } else {
     const list = el('div', 'wf-list');
@@ -1788,6 +1793,134 @@ function finishBuildView() {
     };
     d.foot.appendChild(ca); d.foot.style.display = '';
   }
+}
+
+// ---- goal spree: set off a 10h unattended run --------------------------
+function openSpreeLauncher() {
+  if (S.demo) { toast('Goal sprees run on your local Deckhand — connect first'); showConnectPanel(); return; }
+  const { body, foot } = autoFrame('spree', '⚡ Set off a goal spree',
+    { back: true, sub: 'Hand the agents one big goal and walk away. It splits the goal into a verifiable checklist, grinds it one task per fresh-context pass, and only stops when the checklist is done — so a skittish agent can’t quit early.' });
+  setHash('#/automations/spree');
+
+  const goal = textareaField('Goal', 'Describe the whole objective to drive to completion. e.g. "Migrate the API off Flask to FastAPI, keep all tests green, update the docs."');
+  goal.input.classList.add('spree-goal');
+  const repo = inputField('Repo (working directory)', '/path/to/repo');
+  repo.input.value = bestSpreeCwd();
+  const verify = inputField('Verify command (optional)', 'pytest -q   ·   npm test   ·   leave blank to use the checklist only');
+  const hours = inputField('Budget (hours)', '10'); hours.input.type = 'number'; hours.input.value = '10'; hours.input.min = '0.1'; hours.input.step = '0.5';
+  const cap = inputField('Max iterations (advanced)', '200'); cap.input.type = 'number'; cap.input.value = '200'; cap.input.min = '1';
+
+  const grid = el('div', 'spree-form');
+  grid.appendChild(goal.wrap);
+  grid.appendChild(repo.wrap);
+  const row2 = el('div', 'spree-row');
+  row2.appendChild(verify.wrap); row2.appendChild(hours.wrap); row2.appendChild(cap.wrap);
+  grid.appendChild(row2);
+  const note = el('div', 'spree-note',
+    '› the loop stops when PROGRESS.md has no unchecked boxes' + ' and your verify command passes. wall-clock + iteration budgets bound it. the run writes real changes to the repo.');
+  grid.appendChild(note);
+  body.appendChild(grid);
+
+  const go = el('button', 'btn primary', '⚡ Launch spree');
+  go.onclick = async () => {
+    const g = goal.input.value.trim();
+    if (!g) { toast('describe the goal first'); goal.input.focus(); return; }
+    go.disabled = true; go.textContent = 'launching…';
+    try {
+      const r = await api.post(`/api/boards/${S.boardId}/spree`, {
+        goal: g, cwd: repo.input.value.trim(), verify_cmd: verify.input.value.trim(),
+        hours: parseFloat(hours.input.value) || 10, loop_max: parseInt(cap.input.value) || 200, run: true,
+      });
+      toast('spree launched — grinding'); openSpreeRun(r.card);
+    } catch (e) { toast(e.message); go.disabled = false; go.textContent = '⚡ Launch spree'; }
+  };
+  foot.appendChild(go); foot.style.display = '';
+  setTimeout(() => goal.input.focus(), 30);
+}
+
+// best guess at a repo to prefill — board repo, else the most active session's cwd
+function bestSpreeCwd() {
+  if (S.board && S.board.repo_path) return S.board.repo_path;
+  const withCwd = (S.agentSessions || []).filter(s => s.cwd).sort((a, b) => (b.turns || 0) - (a.turns || 0));
+  return withCwd.length ? withCwd[0].cwd : '';
+}
+
+// Live spree dashboard: parse PROGRESS.md into a checklist, poll while running.
+function openSpreeRun(card) {
+  S.spreeCard = card;
+  const { body, foot } = autoFrame('spree-run', '⚡ ' + (card.title || 'Goal spree'),
+    { back: true, sub: card.cwd || '' });
+  setHash('#/automations/spree/run');
+
+  const status = el('div', 'build-line');
+  const pulse = el('span', 'build-pulse'); status.appendChild(pulse);
+  const work = el('span', 'build-working', 'GRINDING'); status.appendChild(work);
+  const stxt = el('span', null, ' starting…'); status.appendChild(stxt);
+  body.appendChild(status);
+
+  const bar = el('div', 'spree-bar'); const fill = el('div', 'spree-bar-fill'); bar.appendChild(fill);
+  body.appendChild(bar);
+  const tasksWrap = el('div', 'spree-tasks'); body.appendChild(tasksWrap);
+  const blockWrap = el('div', 'spree-blockers'); body.appendChild(blockWrap);
+
+  const transcript = el('button', 'btn ghost small', 'open live transcript →');
+  transcript.onclick = () => openDrawer(card.id);
+  foot.appendChild(transcript); foot.style.display = '';
+
+  const render = (text, done) => {
+    const parsed = parseProgress(text || '');
+    fill.style.width = parsed.total ? Math.round(100 * parsed.checked / parsed.total) + '%' : '0%';
+    work.textContent = done ? 'DONE' : 'GRINDING';
+    if (done) { status.classList.add('spree-done'); pulse.classList.add('off'); }
+    stxt.textContent = parsed.total
+      ? ` ${parsed.checked}/${parsed.total} tasks${parsed.cur ? ' · now: ' + parsed.cur : ''}`
+      : ' decomposing the goal into a checklist…';
+    tasksWrap.innerHTML = '';
+    for (const t of parsed.tasks) {
+      const row = el('div', 'spree-task' + (t.done ? ' done' : ''));
+      row.appendChild(el('span', 'spree-box', t.done ? '[x]' : '[ ]'));
+      row.appendChild(el('span', 'spree-task-t', t.text));
+      tasksWrap.appendChild(row);
+    }
+    blockWrap.innerHTML = '';
+    if (parsed.blockers.length) {
+      blockWrap.appendChild(el('div', 'spree-blockers-h', '⚠ blockers'));
+      for (const b of parsed.blockers) blockWrap.appendChild(el('div', 'spree-block', b));
+    }
+  };
+
+  let stopped = false;
+  const poll = async () => {
+    if (stopped || S.autoView !== 'spree-run' || !S.spreeCard) return;
+    const c = S.cards.find(x => x.id === card.id) || card;
+    const done = ['done', 'failed', 'cancelled'].includes(c.status);
+    try {
+      const r = await api.get(`/api/spree/progress?cwd=${encodeURIComponent(card.cwd || '')}`);
+      render(r.progress, done);
+    } catch (e) { /* dir may not have PROGRESS.md yet */ render('', done); }
+    if (done) { stopped = true; return; }
+    S.spreePoll = setTimeout(poll, 4000);
+  };
+  if (S.spreePoll) clearTimeout(S.spreePoll);
+  render('', false);
+  poll();
+}
+
+// Parse a PROGRESS.md into { tasks[], checked, total, cur, blockers[] }.
+function parseProgress(text) {
+  const lines = text.split('\n');
+  const tasks = []; const blockers = []; let section = '';
+  for (const raw of lines) {
+    const line = raw.trim();
+    const h = line.match(/^##\s+(.+)/);
+    if (h) { section = h[1].toUpperCase(); continue; }
+    const m = line.match(/^- \[( |x|X)\]\s*(.+)/);
+    if (m && section.startsWith('TASKS')) tasks.push({ done: m[1].toLowerCase() === 'x', text: m[2] });
+    else if (section.startsWith('BLOCKERS') && line && !line.startsWith('##')) blockers.push(line.replace(/^[-*]\s*/, ''));
+  }
+  const checked = tasks.filter(t => t.done).length;
+  const cur = (tasks.find(t => !t.done) || {}).text || '';
+  return { tasks, checked, total: tasks.length, cur, blockers };
 }
 
 function buildResultCard(w) {
@@ -2683,6 +2816,7 @@ function route() {
     else if (sub === 'new') openWorkflowBuilder(null);
     else if (sub === 'suggest') openSuggestAutomations();
     else if (sub === 'build') buildAutomations();
+    else if (sub === 'spree') { if (parts[2] === 'run' && S.spreeCard) openSpreeRun(S.spreeCard); else openSpreeLauncher(); }
     else if (sub === 'templates') openTemplatePicker();
     else if (sub === 'import') importWorkflowModal();
     else if (sub === 'training') openTraining();
@@ -2925,6 +3059,7 @@ function paletteCommands() {
   if (S.demo) add('Connect local backend', 'run kanbot up & link', showConnectPanel);
   add('Profile · what KanBot learned about you', 'your work domains (p)', () => openProfile());
   add('New task', 'one-off agent task (n)', () => openComposer());
+  add('Set off a goal spree', 'long unattended run toward one goal', () => openSpreeLauncher());
   add('Playbooks', 'your distilled, reusable prompts (w)', () => openAutomations());
   add('Build playbooks from my focus', 'auto-analyze & distill', () => buildAutomations());
   add('Browse all sessions', 'analyze any one manually', () => openSuggestAutomations());

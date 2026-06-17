@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS cards (
     command     TEXT DEFAULT '',   -- raw command override (argv template, {prompt}); empty = use agent default
     workflow_id TEXT DEFAULT '',   -- if set, this card is a run of that workflow
     step_index  INTEGER DEFAULT 0, -- workflow runs: 0-based index of the active step
+    max_seconds INTEGER DEFAULT 0, -- wall-clock budget for the Ralph loop (0 = unbounded)
     created_at  REAL NOT NULL,
     updated_at  REAL NOT NULL,
     FOREIGN KEY (board_id) REFERENCES boards(id) ON DELETE CASCADE
@@ -138,6 +139,7 @@ CREATE TABLE IF NOT EXISTS workflow_steps (
     loop_until      TEXT DEFAULT '',
     carry_context   INTEGER DEFAULT 1,  -- inject prior step's final output into this prompt
     continue_on_fail INTEGER DEFAULT 0, -- advance to the next step even if this one fails
+    max_seconds     INTEGER DEFAULT 0,  -- wall-clock budget for this step's loop (0 = unbounded)
     FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE
 );
 
@@ -233,7 +235,8 @@ class DB:
                           ("profile", "TEXT DEFAULT ''"),
                           ("command", "TEXT DEFAULT ''"),
                           ("workflow_id", "TEXT DEFAULT ''"),
-                          ("step_index", "INTEGER DEFAULT 0")):
+                          ("step_index", "INTEGER DEFAULT 0"),
+                          ("max_seconds", "INTEGER DEFAULT 0")):
             if name not in cols:
                 self.conn.execute(f"ALTER TABLE cards ADD COLUMN {name} {ddl}")
         rcols = {r["name"] for r in self.q("PRAGMA table_info(runners)")}
@@ -242,6 +245,9 @@ class DB:
         wfcols = {r["name"] for r in self.q("PRAGMA table_info(workflows)")}
         if wfcols and "source_tokens" not in wfcols:
             self.conn.execute("ALTER TABLE workflows ADD COLUMN source_tokens INTEGER DEFAULT 0")
+        stepcols = {r["name"] for r in self.q("PRAGMA table_info(workflow_steps)")}
+        if stepcols and "max_seconds" not in stepcols:
+            self.conn.execute("ALTER TABLE workflow_steps ADD COLUMN max_seconds INTEGER DEFAULT 0")
         # Drop deprecated columns from older boards, relocating any stray cards:
         #   info  -> backlog (sessions now live inline by recency)
         #   queued -> running (a card is queued via status, not a column)
@@ -318,18 +324,18 @@ class DB:
                      agent: str = "auto", cwd: str = "", resume_of: str = "",
                      pin_runner: str = "", loop_max: int = 1, loop_until: str = "",
                      profile: str = "", command: str = "", workflow_id: str = "",
-                     step_index: int = 0) -> Dict[str, Any]:
+                     step_index: int = 0, max_seconds: int = 0) -> Dict[str, Any]:
         cid = gen_id()
         pos = self._next_position(column_id)
         ts = now()
         self.exec(
             """INSERT INTO cards (id, board_id, column_id, title, prompt, agent, cwd,
                status, position, resume_of, pin_runner, loop_max, loop_until, profile,
-               command, workflow_id, step_index, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               command, workflow_id, step_index, max_seconds, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (cid, board_id, column_id, title, prompt, agent, cwd, "idle", pos,
              resume_of, pin_runner, max(1, int(loop_max or 1)), loop_until, profile,
-             command, workflow_id, step_index, ts, ts),
+             command, workflow_id, step_index, max(0, int(max_seconds or 0)), ts, ts),
         )
         return self.get_card(cid)
 
@@ -388,7 +394,8 @@ class DB:
     # self-describing, so the same dict shape doubles as an export/import
     # template — that's what makes extracting and sharing workflows trivial.
     STEP_FIELDS = ("name", "prompt", "agent", "profile", "command",
-                   "loop_max", "loop_until", "carry_context", "continue_on_fail")
+                   "loop_max", "loop_until", "carry_context", "continue_on_fail",
+                   "max_seconds")
 
     @staticmethod
     def _normalize_step(raw: Dict[str, Any], position: int) -> Dict[str, Any]:
@@ -402,6 +409,7 @@ class DB:
             "loop_until": str(raw.get("loop_until") or ""),
             "carry_context": 1 if raw.get("carry_context", True) else 0,
             "continue_on_fail": 1 if raw.get("continue_on_fail", False) else 0,
+            "max_seconds": max(0, int(raw.get("max_seconds") or 0)),
         }
 
     def save_workflow(self, board_id: str, name: str, description: str = "",
@@ -437,10 +445,10 @@ class DB:
             self.conn.execute(
                 """INSERT INTO workflow_steps (id, workflow_id, position, name, prompt,
                    agent, profile, command, loop_max, loop_until, carry_context,
-                   continue_on_fail) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   continue_on_fail, max_seconds) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (gen_id(), workflow_id, i, s["name"], s["prompt"], s["agent"],
                  s["profile"], s["command"], s["loop_max"], s["loop_until"],
-                 s["carry_context"], s["continue_on_fail"]),
+                 s["carry_context"], s["continue_on_fail"], s["max_seconds"]),
             )
         self.conn.commit()
 

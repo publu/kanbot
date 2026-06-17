@@ -205,6 +205,7 @@ class Hub:
             "resume_of": card.get("resume_of", "") or "",
             "loop_max": int(card.get("loop_max", 1) or 1),
             "loop_until": card.get("loop_until", "") or "",
+            "max_seconds": int(card.get("max_seconds", 0) or 0),
             "command": card.get("command", "") or "",
         }
         try:
@@ -295,6 +296,7 @@ class Hub:
             "command": step.get("command", "") or "",
             "loop_max": max(1, int(step.get("loop_max") or 1)),
             "loop_until": step.get("loop_until", "") or "",
+            "max_seconds": max(0, int(step.get("max_seconds") or 0)),
             "step_index": step_index,
         }
 
@@ -312,7 +314,7 @@ class Hub:
             board_id, col["id"], title or workflow["name"], prompt=f["prompt"],
             agent=f["agent"], cwd=cwd or workflow.get("cwd", ""), loop_max=f["loop_max"],
             loop_until=f["loop_until"], profile=f["profile"], command=f["command"],
-            workflow_id=workflow["id"], step_index=0,
+            workflow_id=workflow["id"], step_index=0, max_seconds=f.get("max_seconds", 0),
         )
         await self.broadcast({"type": "card.created", "card": card})
         if run:
@@ -357,5 +359,6 @@ class Hub:
             card["id"], status="queued", step_index=nxt, prompt=f["prompt"],
             agent=f["agent"], profile=f["profile"], command=f["command"],
             loop_max=f["loop_max"], loop_until=f["loop_until"],
+            max_seconds=f.get("max_seconds", 0),
         )
         return True

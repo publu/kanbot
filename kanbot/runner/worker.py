@@ -7,6 +7,7 @@ import asyncio
 import json
 import os
 import platform
+import time
 from typing import Dict, Optional
 
 import websockets
@@ -15,8 +16,10 @@ from ..config import Config
 from .agents import Execution, ResolvedAgent, detect_agents, run_agent
 from .discovery import discover_all
 
-# Safety cap so a Ralph loop can't run away on its own.
-MAX_LOOP_ITERATIONS = 100
+# Safety cap so a Ralph loop can't run away on its own. High enough for a true
+# multi-hour "goal spree" (one task per iteration) — a wall-clock budget
+# (max_seconds, per-assignment) is the primary bound for long runs.
+MAX_LOOP_ITERATIONS = 1000
 
 
 class Runner:
@@ -133,6 +136,7 @@ class Runner:
         command = msg.get("command", "") or ""
         loop_max = min(MAX_LOOP_ITERATIONS, max(1, int(msg.get("loop_max", 1) or 1)))
         loop_until = msg.get("loop_until", "") or ""
+        max_seconds = max(0, int(msg.get("max_seconds", 0) or 0))  # 0 = unbounded
         agent = self.agents.get(agent_name)
         await self.send({"type": "session.start", "session_id": sid})
         self.log(f"running session {sid} with '{agent_name}'")
@@ -157,11 +161,20 @@ class Runner:
 
         try:
             # Ralph loop: run the agent with fresh context up to loop_max times,
-            # stopping early when loop_until (a shell predicate) exits 0 in cwd.
+            # stopping early when loop_until (a shell predicate) exits 0 in cwd, or
+            # when the wall-clock budget (max_seconds) is spent — the bound that
+            # makes a multi-hour "goal spree" safe to leave unattended.
             rc = 0
+            started = time.monotonic()
             for i in range(1, loop_max + 1):
+                if max_seconds and (time.monotonic() - started) > max_seconds:
+                    mins = round(max_seconds / 60)
+                    await on_log("system", f"⏱ wall-clock budget reached (~{mins} min) — stopping after {i - 1} iteration(s)")
+                    break
                 if loop_max > 1:
-                    await on_log("system", f"━━━━━ iteration {i}/{loop_max} ━━━━━")
+                    elapsed = int(time.monotonic() - started)
+                    budget = f" · {elapsed // 60}m/{max_seconds // 60}m" if max_seconds else ""
+                    await on_log("system", f"━━━━━ iteration {i}/{loop_max}{budget} ━━━━━")
                 rc = await run_agent(agent, prompt, cwd, on_log, register,
                                      resume_of=resume_of if i == 1 else "",
                                      auto_approve=self.cfg.auto_approve,
