@@ -1569,7 +1569,6 @@ function openWorkflowsModal() {
     autoBtn('＋ New (manual)', () => openWorkflowBuilder(null), 'ghost'),
     autoBtn('◇ Template', openTemplatePicker, 'ghost'),
     autoBtn('⬇ Import', importWorkflowModal, 'ghost'),
-    autoBtn('🧠 Training', openTraining, 'ghost'),
   ];
   const { body } = autoFrame('list', '▤ Playbooks',
     { sub: n
@@ -2932,7 +2931,6 @@ function route() {
     }
     else if (sub === 'templates') openTemplatePicker();
     else if (sub === 'import') importWorkflowModal();
-    else if (sub === 'training') openTraining();
     else { const wf = S.workflowById[sub]; wf ? openWorkflowBuilder(wf) : openWorkflowsModal(); }
   } else if (parts[0] === 'card') {
     closeAutomations();
@@ -3178,7 +3176,6 @@ function paletteCommands() {
   add('Playbooks', 'your distilled, reusable prompts (w)', () => openAutomations());
   add('Build playbooks from my focus', 'auto-analyze & distill', () => buildAutomations());
   add('Browse all sessions', 'analyze any one manually', () => openSuggestAutomations());
-  add('Training', 'exemplars + improvement pass', () => openTraining());
   add('Browse templates', '', () => openTemplatePicker());
   add('Import playbook', 'paste JSON', () => importWorkflowModal());
   add('Sessions', 'recent agent sessions', () => { S.extractPick.clear(); openSessionsModal(); });
