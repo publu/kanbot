@@ -381,6 +381,8 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         else:
             wfs = extract_workflows(sessions, split=True)   # heuristic fallback
         hub.distill_cache[key] = wfs
+        if len(hub.distill_cache) > 128:        # bound memory on a long run
+            hub.distill_cache.pop(next(iter(hub.distill_cache)))
         return {"workflows": wfs, "by": (wfs[0].get("_distilled_by") if wfs else None)}
 
     @app.post("/api/workflows/distill")
