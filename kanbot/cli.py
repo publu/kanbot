@@ -263,7 +263,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    # Bare `kanbot` (or `uvx kanbot`) just launches the one-command demo — that's
+    # the intended first-run experience. Use a subcommand for anything else.
+    raw = sys.argv[1:] if argv is None else argv
+    if not raw:
+        raw = ["up"]
+    args = parser.parse_args(raw)
     if not getattr(args, "cmd", None):
         parser.print_help()
         return 0
