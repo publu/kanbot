@@ -166,6 +166,9 @@ class Runner:
             # makes a multi-hour "goal spree" safe to leave unattended.
             rc = 0
             started = time.monotonic()
+            last_fp = await self._progress_fingerprint(cwd) if loop_max > 1 else ""
+            stale = 0
+            STALL_LIMIT = 4   # consecutive no-progress iterations before we bail
             for i in range(1, loop_max + 1):
                 if max_seconds and (time.monotonic() - started) > max_seconds:
                     mins = round(max_seconds / 60)
@@ -186,8 +189,20 @@ class Runner:
                     if done:
                         await on_log("system", f"✓ stop condition met after iteration {i}")
                         break
-                    if i < loop_max:
-                        await on_log("system", "stop condition not met — looping with fresh context")
+                    # Checkpoint the iteration's work and check it actually moved.
+                    fp = await self._progress_fingerprint(cwd)
+                    if fp and fp == last_fp:
+                        stale += 1
+                        if stale >= STALL_LIMIT:
+                            await on_log("system", f"⚠ no progress for {STALL_LIMIT} iterations (no commit, no PROGRESS.md change) — stopping so the run doesn't spin. Check ## BLOCKERS in PROGRESS.md.")
+                            rc = 1
+                            break
+                        await on_log("system", f"stop condition not met, and no progress this pass ({stale}/{STALL_LIMIT}) — looping with fresh context")
+                    else:
+                        stale = 0
+                        last_fp = fp
+                        if i < loop_max:
+                            await on_log("system", "stop condition not met — looping with fresh context")
                 if i >= loop_max:
                     await on_log("system", f"reached max iterations ({loop_max})")
             status = "success" if rc == 0 else "failed"
@@ -222,6 +237,46 @@ class Runner:
         except OSError as e:
             await on_log("stderr", f"stop-check failed: {e}")
             return False
+
+    async def _sh(self, cmd: str, cwd: str) -> tuple:
+        """Run a shell command in cwd, return (rc, stdout)."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "bash", "-lc", cmd, cwd=cwd, stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+            out, _ = await proc.communicate()
+            return proc.returncode, out.decode("utf-8", "replace")
+        except OSError:
+            return 1, ""
+
+    async def _progress_fingerprint(self, cwd: str) -> str:
+        """A signature of real progress in a repo: HEAD commit + a hash of any
+        tracked-file changes + the PROGRESS.md contents. Used to (a) checkpoint
+        uncommitted work so a fresh-context loop never loses it, and (b) detect a
+        genuinely stuck run before it burns the whole budget."""
+        if not (cwd and os.path.isdir(cwd)):
+            return ""
+        rc, _ = await self._sh("git rev-parse --git-dir", cwd)
+        if rc != 0:
+            return ""
+        # Safety net: if the agent left work uncommitted, commit it so the next
+        # fresh iteration (and any crash) keeps it.
+        _, dirty = await self._sh("git status --porcelain", cwd)
+        if dirty.strip():
+            await self._sh("git add -A && git -c user.email=kanbot@local "
+                           "-c user.name=kanbot commit -q -m "
+                           "'kanbot: checkpoint (agent left work uncommitted)'", cwd)
+        _, head = await self._sh("git rev-parse HEAD 2>/dev/null", cwd)
+        prog = ""
+        p = os.path.join(cwd, "PROGRESS.md")
+        if os.path.isfile(p):
+            try:
+                with open(p, "r", encoding="utf-8", errors="replace") as fh:
+                    prog = fh.read()
+            except OSError:
+                pass
+        import hashlib
+        return hashlib.sha1((head.strip() + "\n" + prog).encode("utf-8", "replace")).hexdigest()
 
     async def _cancel(self, sid: str) -> None:
         ex = self.executions.get(sid)

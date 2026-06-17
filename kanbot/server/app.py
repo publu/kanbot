@@ -526,6 +526,12 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         if cwd and not os.path.isdir(cwd):
             raise HTTPException(422, f"not a directory: {cwd}")
         max_seconds = max(60, int(float(body.hours or 0) * 3600)) if body.hours else 0
+        # Give a long run enough iterations to actually fill its hours: assume a
+        # task takes a couple of minutes, so ~25 iterations per hour. The wall-clock
+        # budget is still the real bound; this just stops loop_max from cutting a
+        # 10h spree short. Capped to the runner's hard ceiling.
+        iters_for_hours = int(float(body.hours or 0) * 25)
+        loop_max = min(1000, max(int(body.loop_max or 200), iters_for_hours))
         # optionally seed the run with a saved playbook's proven method
         method = ""
         if body.playbook_id:
@@ -539,7 +545,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                 method = "\n".join(parts)
         tpl = goal_spree_template(
             goal=goal, cwd=cwd, verify_cmd=(body.verify_cmd or "").strip(),
-            loop_max=max(1, int(body.loop_max or 200)), max_seconds=max_seconds,
+            loop_max=loop_max, max_seconds=max_seconds,
             name=(body.title or "").strip(), profile=(body.profile or "").strip(),
             method=method)
         wf = db.save_workflow(board_id, tpl["name"], tpl["description"], tpl["agent"],
