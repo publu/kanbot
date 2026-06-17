@@ -1948,13 +1948,27 @@ function openSpreeRun(card) {
 
   const transcript = el('button', 'btn ghost small', 'open live transcript →');
   transcript.onclick = () => openDrawer(card.id);
-  foot.appendChild(transcript); foot.style.display = '';
+  // Continue an interrupted spree: re-running the saved playbook resumes against
+  // the existing PROGRESS.md (decompose is resume-safe), so a 10h run that hit its
+  // budget / crashed / stalled picks up exactly where it left off.
+  const cont = el('button', 'btn primary small', '⚡ Continue spree'); cont.style.display = 'none';
+  cont.onclick = async () => {
+    if (!card.workflow_id) { toast('no playbook to resume'); return; }
+    cont.disabled = true; cont.textContent = 'resuming…';
+    try {
+      const c = await api.post(`/api/workflows/${card.workflow_id}/run`, { cwd: card.cwd, title: card.title, run: true });
+      toast('spree resumed'); openSpreeRun(c);
+    } catch (e) { toast(e.message); cont.disabled = false; cont.textContent = '⚡ Continue spree'; }
+  };
+  foot.appendChild(cont); foot.appendChild(transcript); foot.style.display = '';
 
   const render = (text, done) => {
     const parsed = parseProgress(text || '');
     fill.style.width = parsed.total ? Math.round(100 * parsed.checked / parsed.total) + '%' : '0%';
     work.textContent = done ? 'DONE' : 'GRINDING';
     if (done) { status.classList.add('spree-done'); pulse.classList.add('off'); }
+    // offer Continue when the run stopped with tasks still unchecked
+    cont.style.display = (done && parsed.total && parsed.checked < parsed.total) ? '' : 'none';
     stxt.textContent = parsed.total
       ? ` ${parsed.checked}/${parsed.total} tasks${parsed.cur ? ' · now: ' + parsed.cur : ''}`
       : ' decomposing the goal into a checklist…';
