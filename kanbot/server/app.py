@@ -377,7 +377,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         }
         avail = hub.available_agents()
         if distill_available(avail):
-            wfs = await asyncio.to_thread(distill_workflows, draft, avail, 240)
+            wfs = await asyncio.to_thread(distill_workflows, draft, avail, 300)
         else:
             wfs = extract_workflows(sessions, split=True)   # heuristic fallback
         hub.distill_cache[key] = wfs

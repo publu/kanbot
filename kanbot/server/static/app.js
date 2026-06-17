@@ -1922,8 +1922,8 @@ async function extractFromSession(sessionIds, name) {
   const { body } = autoFrame('extract', 'Analyzing' + (name ? ` ${name}` : ' session'), { back: true });
   const load = el('div', 'auto-state');
   load.appendChild(el('span', 'spinner big'));
-  load.appendChild(el('div', 'auto-state-title', 'Reading the full transcript'));
-  load.appendChild(el('div', 'auto-state-sub', 'Distilling the session into clean, generalized workflows. A real agent is doing this — it takes about a minute.'));
+  load.appendChild(el('div', 'auto-state-title', 'Grounding in the actual repo'));
+  load.appendChild(el('div', 'auto-state-sub', 'A real agent is reading the session AND the real code it touched, verifying each workflow against what actually exists, and dropping anything it can’t ground. This is the slow, honest path — a couple of minutes.'));
   body.appendChild(load);
   let wfs, err;
   try {

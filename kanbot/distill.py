@@ -27,49 +27,56 @@ from .agents import BUILTIN_BY_NAME, builtin_names
 # the others have unknown output shapes so they sit at the back.
 _PREFERENCE = ["claude", "codex", "glm", "gemini", "cursor-agent", "opencode"]
 
-META_PROMPT = """You are mining a developer's past coding-agent session for \
-REUSABLE PLAYBOOKS. The point is NOT to replay this one task with the names \
-swapped out — it's to capture the GENERALIZABLE METHOD and the hard-won \
-TAKEAWAYS so the workflow makes the NEXT, different-but-similar task go better.
+META_PROMPT = """You are extracting REUSABLE, GROUNDED workflows from a \
+developer's past coding session. You are running INSIDE the actual repository \
+that session worked in — USE IT. Read the real code to ground every workflow in \
+what actually exists. Do not invent.
 
-The text below is a TRANSCRIPT: messy, conversational, full of dead ends and \
-meta-commentary aimed at the assistant ("stop telling me what to do", "GIVE ME \
-THE LAST PART", "ok that's good i guess"). IGNORE the noise. Mine the substance: \
-what was actually built/fixed, HOW it was approached, and what was LEARNED.
+READ-ONLY: you may explore (read, grep, glob, list) to verify your understanding, \
+but you MUST NOT edit, create, or delete files, or run commands that change \
+anything. This is analysis, not work.
 
-STEP 1 — FIND THE OBJECTIVES. One session often mixes several unrelated goals. \
-Split on real topic shifts; keep short follow-ups ("make sure it has tests") with \
-the objective they belong to. If the material is just discussion/brainstorming \
-with no real engineering method to extract, return an empty workflows array.
+The text below is the human side of the session — messy, conversational, full of \
+dead ends and meta-commentary aimed at the assistant ("stop telling me what to \
+do", "GIVE ME THE LAST PART", "ok that's good i guess"). IGNORE the noise. Mine \
+the substance: what was actually built/fixed, HOW, and what was LEARNED.
 
-STEP 2 — CLIMB THE ABSTRACTION LADDER. For each objective ask: "what CLASS of \
-task is this an instance of?" Write the workflow for the CLASS, not the instance.
-- "sort this $ balances table"        -> a method for "add correct typed/numeric-aware sorting to any data table"
-- "fix the veAERO rewards widget"     -> "diagnose & repair a data-fetching component by diffing it against a working one"
-- "wire Hermes to Claude via my plan" -> "route a runner to a CLI agent through subscription auth instead of API keys"
-Generalized does NOT mean vague — keep it concrete and runnable. When the pattern \
-needs a specific target each run, make the FIRST step state it as a fill-in, e.g. \
-"TARGET: <the table/component/feature to apply this to — fill in before running>".
+Work in four phases:
 
-STEP 3 — BAKE IN THE TAKEAWAYS. The session learned things: the gotcha that \
-wasted time, the approach that finally worked, why a choice was made. Carry those \
-forward so the next run doesn't rediscover them. Put them as concrete guidance \
-INSIDE the step prompts ("Method: …", "Watch out for: …", "Prefer X over Y \
-because …"), and lead the workflow `description` with the single most important \
-takeaway.
+PHASE 1 — TRIAGE. From the transcript and a quick look at the repo, decide what \
+real engineering work happened and of what kind (feature / bug fix / refactor / \
+infra / research). If it was just discussion or there is no real, reusable method \
+to extract, return {"workflows": []}. Do not manufacture a workflow.
 
-STEP 4 — STRUCTURE each workflow as 3-6 ordered steps. Each step's `prompt` is a \
-self-contained instruction for a FRESH agent with no memory of this chat — say \
-what to do, the method, the gotchas, and how to verify. Steps hand off via files \
-(PLAN.md / NOTES.md). For iterative work set `loop_max` (e.g. 20) and a \
-`loop_until` shell predicate (e.g. `pytest -q`). `carry_context` true when a step \
-needs the previous step's output.
+PHASE 2 — GROUND IN THE CODE. For each candidate objective, open the actual files \
+involved. Confirm the components, modules, patterns, and conventions referenced \
+really exist in THIS repo. A workflow you cannot tie to real code is a \
+hallucination — drop it.
 
-NAMING: `name` is the PATTERN (the class of task), short and imperative — not the \
-one-off and not "automation 1". `description` is one line that leads with the key \
-takeaway.
+PHASE 3 — EXTRACT THE PATTERN + TAKEAWAYS. Climb the abstraction ladder: write \
+each workflow for the CLASS of task ("sort this $ table" -> "add correct \
+typed/numeric sorting to any data table"), grounded in the concrete reality you \
+just verified. Bake in the takeaways: the gotcha that wasted time, the approach \
+that worked, why a choice was made — as "Method: …" / "Watch out for: …" guidance \
+inside the step prompts, with the key lesson leading the `description`. When the \
+pattern needs a specific subject each run, make the FIRST step a fill-in: \
+"TARGET: <what to apply this to — fill in before running>".
 
-Return ONLY a JSON object, no prose and no markdown fences:
+PHASE 4 — FALSIFY. Before emitting, try to INVALIDATE each workflow: Is this the \
+method the code/transcript actually shows, or a guess? Is it genuinely reusable, \
+or a one-off? Could a fresh agent with no memory of this chat follow it against \
+this repo? Drop every workflow that fails. Returning FEWER real, grounded \
+workflows (even zero) is the goal — never pad with plausible slop.
+
+STRUCTURE each surviving workflow as 3-6 ordered steps. Each step's `prompt` is a \
+self-contained instruction for a fresh agent: what to do, the method, the \
+gotchas, how to verify. Steps hand off via files (PLAN.md / NOTES.md). For \
+iterative work set `loop_max` (e.g. 20) and a `loop_until` shell predicate (e.g. \
+`pytest -q`). `carry_context` true when a step needs the previous step's output. \
+`name` is the PATTERN (class of task), short and imperative. `description` leads \
+with the key takeaway.
+
+Return ONLY a JSON object as the very last thing you output, no markdown fences:
 {"workflows": [{"name": str, "description": str, "steps": [{"name": str, \
 "prompt": str, "loop_max": int, "loop_until": str, "carry_context": bool, \
 "continue_on_fail": bool}]}]}
@@ -149,17 +156,21 @@ def _normalize(data: Dict[str, Any], base: Dict[str, Any]) -> Optional[Dict[str,
 
 
 def _argv_for(spec, prompt: str) -> List[str]:
+    # Prefer the agent's SAFE (read-only) invocation — distillation only inspects
+    # the repo to ground its findings; it must never modify the user's code.
+    template = spec.safe_argv or spec.argv
     out = []
-    for tok in spec.argv:                       # the agent's headless/auto template
+    for tok in template:
         out.append(tok.replace("{prompt}", prompt).replace("{session_id}", ""))
     return out
 
 
 def distill_workflows(template: Dict[str, Any], available: Optional[List[str]] = None,
-                      timeout: int = 180) -> List[Dict[str, Any]]:
-    """Turn a raw draft into one OR MORE clean reusable workflows using any
-    available agent. A messy session covering several objectives comes back as
-    several clearly-named workflows. Returns [] if no agent / it failed."""
+                      timeout: int = 300) -> List[Dict[str, Any]]:
+    """Extract one OR MORE clean, GROUNDED workflows from a session draft using
+    any available agent — run read-only INSIDE the session's repo so the agent
+    can verify its findings against real code (pruning hallucinations). Returns
+    [] if no agent / nothing grounded."""
     spec = pick_agent(available)
     if not spec:
         return []
@@ -176,10 +187,13 @@ def distill_workflows(template: Dict[str, Any], available: Optional[List[str]] =
     prompt = META_PROMPT % body[:6500]
     env = os.environ.copy()
     env.update(spec.env)
+    # Ground in the session's actual repo when it still exists; else neutral dir.
+    cwd = str(template.get("cwd") or "").strip()
+    workdir = cwd if cwd and os.path.isdir(cwd) else tempfile.gettempdir()
     try:
         proc = subprocess.run(
             _argv_for(spec, prompt),
-            cwd=tempfile.gettempdir(),
+            cwd=workdir,
             stdin=subprocess.DEVNULL,
             env=env,
             capture_output=True, text=True, timeout=timeout,
