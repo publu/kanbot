@@ -165,42 +165,63 @@ def _argv_for(spec, prompt: str) -> List[str]:
     return out
 
 
-def distill_workflows(template: Dict[str, Any], available: Optional[List[str]] = None,
-                      timeout: int = 300) -> List[Dict[str, Any]]:
-    """Extract one OR MORE clean, GROUNDED workflows from a session draft using
-    any available agent — run read-only INSIDE the session's repo so the agent
-    can verify its findings against real code (pruning hallucinations). Returns
-    [] if no agent / nothing grounded."""
+def _run_agent(spec, prompt: str, cwd: Optional[str], timeout: int) -> str:
+    """Run one agent (read-only) on a prompt in cwd; return stdout ('' on failure)."""
+    env = os.environ.copy()
+    env.update(spec.env)
+    workdir = cwd if cwd and os.path.isdir(cwd) else tempfile.gettempdir()
+    try:
+        proc = subprocess.run(
+            _argv_for(spec, prompt), cwd=workdir, stdin=subprocess.DEVNULL,
+            env=env, capture_output=True, text=True, timeout=timeout,
+        )
+        return proc.stdout or ""
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def run_agent_json(prompt: str, available: Optional[List[str]] = None,
+                   cwd: Optional[str] = None, timeout: int = 300):
+    """Run any available reasoning agent and return (parsed_json|None, agent_name).
+    Shared by distillation and the evaluator (Part 2)."""
     spec = pick_agent(available)
     if not spec:
-        return []
+        return None, None
+    return _extract_json(_run_agent(spec, prompt, cwd, timeout)), spec.name
+
+
+def _exemplar_block(exemplars: Optional[List[dict]]) -> str:
+    """A few proven workflows, shown as the bar to match (Part 2 bootstrapping)."""
+    if not exemplars:
+        return ""
+    out = ["\nPROVEN EXEMPLARS — workflows that scored well before. Match this "
+           "level of grounding, generalization, and baked-in takeaways (do not "
+           "copy their subject matter):"]
+    for ex in exemplars[:3]:
+        steps = " → ".join(s.get("name", "") for s in (ex.get("steps") or []))
+        out.append(f'  • {ex.get("name","")}: {ex.get("description","")[:140]}  [{steps}]')
+    return "\n".join(out) + "\n"
+
+
+def distill_workflows(template: Dict[str, Any], available: Optional[List[str]] = None,
+                      timeout: int = 300, exemplars: Optional[List[dict]] = None) -> List[Dict[str, Any]]:
+    """Extract one OR MORE clean, GROUNDED workflows from a session draft using
+    any available agent — run read-only INSIDE the session's repo so the agent
+    can verify its findings against real code (pruning hallucinations). Optionally
+    steered by proven `exemplars`. Returns [] if no agent / nothing grounded."""
     turns = [str(s.get("prompt") or "").strip() for s in template.get("steps", [])]
     turns = [t for t in turns if t]
     if not turns:
         return []
     ctx = str(template.get("_context") or "").strip()
-    body = ""
+    body = _exemplar_block(exemplars)
     if ctx:
-        body += f"THE SESSION'S OPENING REQUEST (the real goal): {ctx[:800]}\n\n"
+        body += f"\nTHE SESSION'S OPENING REQUEST (the real goal): {ctx[:800]}\n\n"
     body += "LATER LINES FROM THE TRANSCRIPT (mostly noise — mine for intent):\n"
     body += "\n".join(f"- {t}" for t in turns)
-    prompt = META_PROMPT % body[:6500]
-    env = os.environ.copy()
-    env.update(spec.env)
-    # Ground in the session's actual repo when it still exists; else neutral dir.
+    prompt = META_PROMPT % body[:7000]
     cwd = str(template.get("cwd") or "").strip()
-    workdir = cwd if cwd and os.path.isdir(cwd) else tempfile.gettempdir()
-    try:
-        proc = subprocess.run(
-            _argv_for(spec, prompt),
-            cwd=workdir,
-            stdin=subprocess.DEVNULL,
-            env=env,
-            capture_output=True, text=True, timeout=timeout,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return []
-    data = _extract_json(proc.stdout or "")
+    data, by = run_agent_json(prompt, available, cwd, timeout)
     if not data:
         return []
     raw = data.get("workflows") if isinstance(data.get("workflows"), list) else [data]
@@ -210,7 +231,7 @@ def distill_workflows(template: Dict[str, Any], available: Optional[List[str]] =
             continue
         norm = _normalize(item, template)
         if norm:
-            norm["_distilled_by"] = spec.name
+            norm["_distilled_by"] = by
             out.append(norm)
     return out
 

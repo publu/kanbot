@@ -141,11 +141,37 @@ CREATE TABLE IF NOT EXISTS workflow_steps (
     FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE
 );
 
+-- Self-improvement (Part 2): proven workflows become few-shot exemplars that
+-- steer future distillation; evals log how each scored so the loop can learn.
+CREATE TABLE IF NOT EXISTS workflow_exemplars (
+    id          TEXT PRIMARY KEY,
+    board_id    TEXT DEFAULT '',
+    name        TEXT NOT NULL,
+    template    TEXT NOT NULL,      -- JSON workflow template (id-free)
+    score       REAL DEFAULT 0,     -- 0-100 eval score that earned its place
+    source_tokens INTEGER DEFAULT 0,
+    metrics     TEXT DEFAULT '{}',  -- JSON breakdown
+    created_at  REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS workflow_evals (
+    id          TEXT PRIMARY KEY,
+    board_id    TEXT DEFAULT '',
+    session_id  TEXT DEFAULT '',
+    name        TEXT DEFAULT '',
+    score       REAL DEFAULT 0,
+    breakdown   TEXT DEFAULT '{}',  -- JSON: fidelity, reusability, prompting_reduction, verdict
+    critique    TEXT DEFAULT '',
+    critic      TEXT DEFAULT '',    -- which agent judged
+    created_at  REAL NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_cards_board ON cards(board_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_card ON sessions(card_id);
 CREATE INDEX IF NOT EXISTS idx_events_session ON session_events(session_id);
 CREATE INDEX IF NOT EXISTS idx_workflows_board ON workflows(board_id);
 CREATE INDEX IF NOT EXISTS idx_steps_workflow ON workflow_steps(workflow_id);
+CREATE INDEX IF NOT EXISTS idx_exemplars_score ON workflow_exemplars(score);
 """
 
 DEFAULT_COLUMNS = [
@@ -458,6 +484,57 @@ class DB:
         tpl = self.workflow_template(workflow_id)
         return self.save_workflow(wf["board_id"], name or f"{wf['name']} copy",
                                   tpl["description"], tpl["agent"], tpl["cwd"], tpl["steps"])
+
+    # -- self-improvement: exemplars + evals -------------------------------
+    def add_exemplar(self, board_id: str, name: str, template: dict, score: float,
+                     source_tokens: int = 0, metrics: Optional[dict] = None) -> Dict[str, Any]:
+        eid = gen_id()
+        self.exec(
+            """INSERT INTO workflow_exemplars (id, board_id, name, template, score,
+               source_tokens, metrics, created_at) VALUES (?,?,?,?,?,?,?,?)""",
+            (eid, board_id, name, json.dumps(template), float(score),
+             int(source_tokens or 0), json.dumps(metrics or {}), now()),
+        )
+        return self.get_exemplar(eid)
+
+    def get_exemplar(self, eid: str) -> Optional[Dict[str, Any]]:
+        r = self.one("SELECT * FROM workflow_exemplars WHERE id=?", (eid,))
+        if r:
+            r["template"] = json.loads(r.get("template") or "{}")
+            r["metrics"] = json.loads(r.get("metrics") or "{}")
+        return r
+
+    def list_exemplars(self, board_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        rows = (self.q("SELECT * FROM workflow_exemplars WHERE board_id=? ORDER BY score DESC", (board_id,))
+                if board_id else self.q("SELECT * FROM workflow_exemplars ORDER BY score DESC"))
+        for r in rows:
+            r["template"] = json.loads(r.get("template") or "{}")
+            r["metrics"] = json.loads(r.get("metrics") or "{}")
+        return rows
+
+    def top_exemplars(self, k: int = 3, board_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        return self.list_exemplars(board_id)[:max(0, k)]
+
+    def delete_exemplar(self, eid: str) -> None:
+        self.exec("DELETE FROM workflow_exemplars WHERE id=?", (eid,))
+
+    def log_eval(self, board_id: str, session_id: str, name: str, score: float,
+                 breakdown: dict, critique: str = "", critic: str = "") -> Dict[str, Any]:
+        eid = gen_id()
+        self.exec(
+            """INSERT INTO workflow_evals (id, board_id, session_id, name, score,
+               breakdown, critique, critic, created_at) VALUES (?,?,?,?,?,?,?,?,?)""",
+            (eid, board_id, session_id, name, float(score), json.dumps(breakdown or {}),
+             critique, critic, now()),
+        )
+        return {"id": eid}
+
+    def list_evals(self, board_id: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
+        rows = (self.q("SELECT * FROM workflow_evals WHERE board_id=? ORDER BY created_at DESC LIMIT ?", (board_id, limit))
+                if board_id else self.q("SELECT * FROM workflow_evals ORDER BY created_at DESC LIMIT ?", (limit,)))
+        for r in rows:
+            r["breakdown"] = json.loads(r.get("breakdown") or "{}")
+        return rows
 
     # -- tags --------------------------------------------------------------
     def create_tag(self, board_id: str, name: str, color: str = "#6b7280",

@@ -19,13 +19,16 @@ from ..agents import catalog
 from ..profiles import list_profiles
 from ..distill import distill_available, distill_workflows
 from ..runner.discovery import all_user_turns
+from ..training.evaluator import evaluate_workflow
 from ..workflows import extract_workflows, starter_templates, suggest_automations
+
+EXEMPLAR_BAR = 75   # eval score at/above which a workflow becomes a few-shot exemplar
 from .db import DB, now
 from .hub import Hub, RunnerConn
 from .insights import PROVIDER_META, compute
 from .schemas import (BoardCreate, CardCreate, CardMove, CardPatch, FromSession,
                       ReviveRequest, TagAttach, TagCreate, UploadRequest, WorkflowClone,
-                      WorkflowExtract, WorkflowImport, WorkflowRun, WorkflowSave)
+                      WorkflowEval, WorkflowExtract, WorkflowImport, WorkflowRun, WorkflowSave)
 
 STATIC_DIR = Path(__file__).parent / "static"
 SERVER_TOKEN = os.environ.get("KANBOT_TOKEN") or os.environ.get("DECKHAND_TOKEN", "")
@@ -378,7 +381,8 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         }
         avail = hub.available_agents()
         if distill_available(avail):
-            wfs = await asyncio.to_thread(distill_workflows, draft, avail, 300)
+            exemplars = [e["template"] for e in db.top_exemplars(3, board_id)]
+            wfs = await asyncio.to_thread(distill_workflows, draft, avail, 300, exemplars)
         else:
             wfs = extract_workflows(sessions, split=True)   # heuristic fallback
         # Part 3 metric: how much conversation each workflow compresses. ~4 chars/token.
@@ -389,6 +393,46 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         if len(hub.distill_cache) > 128:        # bound memory on a long run
             hub.distill_cache.pop(next(iter(hub.distill_cache)))
         return {"workflows": wfs, "by": (wfs[0].get("_distilled_by") if wfs else None)}
+
+    @app.post("/api/boards/{board_id}/workflows/eval")
+    async def eval_workflow(board_id: str, body: WorkflowEval):
+        """Judge a distilled workflow against its source session (grounded in the
+        repo). Logs the eval; if it clears the bar, banks it as a few-shot
+        exemplar that steers future distillation (Part 2 self-improvement)."""
+        if not db.get_board(board_id):
+            raise HTTPException(404, "board not found")
+        t = body.template or {}
+        if not isinstance(t.get("steps"), list) or not t["steps"]:
+            raise HTTPException(400, "template needs steps to evaluate")
+        session = next((s for s in hub.all_agent_sessions()
+                        if s.get("session_id") == body.session_id), {})
+        reduction = int((t.get("source_tokens") or 0) / 25)
+        avail = hub.available_agents()
+        if not distill_available(avail):
+            raise HTTPException(503, "no reasoning agent available to evaluate with")
+        res = await asyncio.to_thread(evaluate_workflow, t, session, avail, reduction)
+        if not res:
+            raise HTTPException(502, "evaluation failed (agent returned nothing usable)")
+        db.log_eval(board_id, body.session_id, t.get("name", ""), res["score"],
+                    res["breakdown"], res["critique"], res["critic"])
+        banked = False
+        if body.keep and res["score"] >= EXEMPLAR_BAR and res["breakdown"].get("verdict") != "reject":
+            db.add_exemplar(board_id, t.get("name", ""), {
+                "name": t.get("name"), "description": t.get("description"),
+                "agent": t.get("agent", "auto"), "cwd": t.get("cwd", ""),
+                "steps": t.get("steps"),
+            }, res["score"], int(t.get("source_tokens") or 0), res["breakdown"])
+            banked = True
+        return {**res, "banked_as_exemplar": banked, "bar": EXEMPLAR_BAR}
+
+    @app.get("/api/boards/{board_id}/exemplars")
+    async def list_exemplars(board_id: str):
+        return {"exemplars": db.list_exemplars(board_id), "evals": db.list_evals(board_id, 30)}
+
+    @app.delete("/api/exemplars/{exemplar_id}")
+    async def delete_exemplar(exemplar_id: str):
+        db.delete_exemplar(exemplar_id)
+        return {"ok": True}
 
     @app.post("/api/workflows/distill")
     async def distill_workflow(body: WorkflowImport):

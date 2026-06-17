@@ -114,3 +114,9 @@ class FromSession(BaseModel):
     session_id: str = ""
     session_ids: List[str] = []
     refresh: bool = False        # ignore the cache and re-extract
+
+
+class WorkflowEval(BaseModel):
+    template: dict               # the workflow template to judge
+    session_id: str = ""         # the session it was distilled from (ground truth)
+    keep: bool = True            # save as an exemplar if it scores above the bar
