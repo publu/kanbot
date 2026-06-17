@@ -27,47 +27,47 @@ from .agents import BUILTIN_BY_NAME, builtin_names
 # the others have unknown output shapes so they sit at the back.
 _PREFERENCE = ["claude", "codex", "glm", "gemini", "cursor-agent", "opencode"]
 
-META_PROMPT = """You are converting a developer's past coding-agent session into \
-clean, REUSABLE automations (workflows) they can run again on similar tasks.
+META_PROMPT = """You are mining a developer's past coding-agent session for \
+REUSABLE PLAYBOOKS. The point is NOT to replay this one task with the names \
+swapped out — it's to capture the GENERALIZABLE METHOD and the hard-won \
+TAKEAWAYS so the workflow makes the NEXT, different-but-similar task go better.
 
-Below are the human instructions from the session, in order. They are messy, \
-conversational, full of dead ends, and specific to that moment.
+The text below is a TRANSCRIPT: messy, conversational, full of dead ends and \
+meta-commentary aimed at the assistant ("stop telling me what to do", "GIVE ME \
+THE LAST PART", "ok that's good i guess"). IGNORE the noise. Mine the substance: \
+what was actually built/fixed, HOW it was approached, and what was LEARNED.
 
-The instructions are a TRANSCRIPT, not a spec. Much of it is noise: meta-\
-commentary aimed at the assistant ("stop telling me what to do", "you should be \
-helping me", "GIVE ME THE LAST PART", "check the fucking folder"), reactions \
-("ok that's good i guess"), and half-formed musings ("so you're saying basically \
-a platform where…"). IGNORE all of that. Infer the underlying ENGINEERING goal \
-from the substance of the work — what was actually being built or fixed — not \
-from the literal words. Never copy a raw chat line into a step name or prompt.
+STEP 1 — FIND THE OBJECTIVES. One session often mixes several unrelated goals. \
+Split on real topic shifts; keep short follow-ups ("make sure it has tests") with \
+the objective they belong to. If the material is just discussion/brainstorming \
+with no real engineering method to extract, return an empty workflows array.
 
-STEP 1 — FIND THE OBJECTIVES. A single session often mixes SEVERAL unrelated \
-goals (e.g. "add a rate limiter" … later … "now rewrite the docs" … later … \
-"set up CI"). Identify each distinct objective. Treat a clear topic shift, a new \
-unrelated noun/feature, or a "now/next/also/different thing" as a boundary. Short \
-follow-ups ("make sure it has tests", "now fix the lint") belong to the objective \
-they refer to — keep them attached. If the material is too thin or vague to form \
-a real engineering task, return an empty workflows array.
+STEP 2 — CLIMB THE ABSTRACTION LADDER. For each objective ask: "what CLASS of \
+task is this an instance of?" Write the workflow for the CLASS, not the instance.
+- "sort this $ balances table"        -> a method for "add correct typed/numeric-aware sorting to any data table"
+- "fix the veAERO rewards widget"     -> "diagnose & repair a data-fetching component by diffing it against a working one"
+- "wire Hermes to Claude via my plan" -> "route a runner to a CLI agent through subscription auth instead of API keys"
+Generalized does NOT mean vague — keep it concrete and runnable. When the pattern \
+needs a specific target each run, make the FIRST step state it as a fill-in, e.g. \
+"TARGET: <the table/component/feature to apply this to — fill in before running>".
 
-STEP 2 — EMIT ONE WORKFLOW PER OBJECTIVE so they're easy to tell apart:
-- If the session pursued multiple distinct objectives, output MULTIPLE workflows.
-- If it was one coherent task, output a single workflow.
-- Each workflow's `name` (short, imperative, specific — NOT "automation 1") and \
-one-line `description` must make it obvious at a glance what it does and how it \
-differs from the others.
+STEP 3 — BAKE IN THE TAKEAWAYS. The session learned things: the gotcha that \
+wasted time, the approach that finally worked, why a choice was made. Carry those \
+forward so the next run doesn't rediscover them. Put them as concrete guidance \
+INSIDE the step prompts ("Method: …", "Watch out for: …", "Prefer X over Y \
+because …"), and lead the workflow `description` with the single most important \
+takeaway.
 
-STEP 3 — For EACH workflow, write a clean GENERALIZED pipeline:
-- Distill the real intent. Drop chatter, profanity, dead ends, and details that \
-won't transfer (specific names/ids/"the thing we discussed").
-- 3-6 ordered STEPS. Each step's `prompt` is a crisp, self-contained instruction \
-that works on its own for a fresh agent with NO memory of this chat. Say what to \
-do AND how to verify it.
-- Steps run top-to-bottom, each a fresh agent run, handing off via files \
-(PLAN.md / NOTES.md) in the repo.
-- For work that iterates until done (e.g. "make the tests pass"), set `loop_max` \
-to a sensible cap (e.g. 20) and optionally `loop_until` to a shell predicate that \
-exits 0 when finished (e.g. `pytest -q`).
-- `carry_context` true when a step needs the previous step's output.
+STEP 4 — STRUCTURE each workflow as 3-6 ordered steps. Each step's `prompt` is a \
+self-contained instruction for a FRESH agent with no memory of this chat — say \
+what to do, the method, the gotchas, and how to verify. Steps hand off via files \
+(PLAN.md / NOTES.md). For iterative work set `loop_max` (e.g. 20) and a \
+`loop_until` shell predicate (e.g. `pytest -q`). `carry_context` true when a step \
+needs the previous step's output.
+
+NAMING: `name` is the PATTERN (the class of task), short and imperative — not the \
+one-off and not "automation 1". `description` is one line that leads with the key \
+takeaway.
 
 Return ONLY a JSON object, no prose and no markdown fences:
 {"workflows": [{"name": str, "description": str, "steps": [{"name": str, \
