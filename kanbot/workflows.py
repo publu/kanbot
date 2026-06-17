@@ -285,55 +285,49 @@ def _pattern_suggestions(sessions: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     return out
 
 
-def suggest_automations(sessions: List[Dict[str, Any]], limit: int = 6) -> List[Dict[str, Any]]:
-    """Analyze discovered sessions and propose automations (workflows).
+def suggest_automations(sessions: List[Dict[str, Any]], limit: int = 12) -> List[Dict[str, Any]]:
+    """Propose automations. One card PER SESSION (by session_id, most recent
+    first) — each is deep-analyzed on demand into the workflows it contains —
+    plus a couple of cross-cutting pattern templates. No folder grouping: every
+    session is its own distinct piece of work."""
+    usable = [s for s in sessions if len(_user_texts(s)) >= 2]
 
-    Two lenses: per-project (the recurring flow inside one repo) and
-    cross-cutting patterns (test-hardening, refactors, feature builds you do
-    everywhere). Returns previews ranked by how strong the signal is."""
-    usable = [s for s in sessions if _user_texts(s)]
-    groups: Dict[str, List[Dict[str, Any]]] = {}
+    # Group by project only to ROUND-ROBIN for variety — each card is still one
+    # session (by id). Within a project, richest session first (real turn count,
+    # not the capped tail). Round-robin surfaces the best session of each project,
+    # so one busy repo doesn't flood the list.
+    by_proj: Dict[str, List[Dict[str, Any]]] = {}
     for s in usable:
-        groups.setdefault(s.get("cwd") or s.get("name") or "misc", []).append(s)
+        by_proj.setdefault(_project_name(s), []).append(s)
+    for lst in by_proj.values():
+        lst.sort(key=lambda s: (int(s.get("turns", 0)), s.get("mtime", 0)), reverse=True)
+    proj_order = sorted(by_proj, key=lambda p: -int(by_proj[p][0].get("turns", 0)))
 
-    projects: List[Dict[str, Any]] = []
-    for grp in groups.values():
-        if not grp:
-            continue
-        # An automation is a tight, repeatable pipeline — so base it on the one
-        # most substantial session in the project (most turns, then most recent),
-        # not a pile-up of every session. The confidence comes from the count.
-        rep = max(grp, key=lambda s: (len(_user_texts(s)), s.get("mtime", 0)))
-        if len(_user_texts(rep)) < 2:
-            continue
-        proj = _project_name(rep)
-        tpl = extract_workflows(rep, split=False)[0]
-        tpl["steps"] = tpl["steps"][:8]
-        # the session's first prompt is the real objective; later turns are noise
-        tpl["_context"] = rep.get("title") or rep.get("recap") or ""
-        tpl["name"] = f"{proj} automation"
-        tpl["description"] = (f"A repeatable run based on your work in {proj} "
-                              f"({len(grp)} session(s) seen).")
-        n = len(grp)
-        projects.append({
-            "title": proj,
-            "kind": "project",
-            # raw drafts are never shown/saved — the project card runs a real
-            # deep distillation of this session on demand.
-            "session_id": rep.get("session_id"),
-            "turns": len(_user_texts(rep)),
-            "rationale": (f"{n} session{'s' if n != 1 else ''} in {proj}. "
-                          "Analyze the most substantial one to extract clean, "
-                          "generalized workflows from it."),
-            "sources": [s.get("name") or proj for s in grp][:6],
-            "template": tpl,
-            "score": n,
+    ordered: List[Dict[str, Any]] = []
+    i = 0
+    while True:
+        added = False
+        for p in proj_order:
+            if i < len(by_proj[p]):
+                ordered.append(by_proj[p][i]); added = True
+        if not added:
+            break
+        i += 1
+
+    sess: List[Dict[str, Any]] = []
+    for s in ordered:
+        hint = " ".join((s.get("title") or s.get("recap") or "").split())
+        sess.append({
+            "title": _project_name(s),
+            "kind": "session",
+            "session_id": s.get("session_id"),
+            "turns": int(s.get("turns", 0)),
+            "mtime": s.get("mtime"),
+            "agent": s.get("agent", "auto"),
+            "hint": hint[:160],
         })
-    projects.sort(key=lambda x: -x["score"])
 
     patterns = _pattern_suggestions(usable)
-    # Lead with up to 2 reusable pattern automations, then the busiest projects.
-    out = patterns[:2] + projects[:max(0, limit - min(2, len(patterns)))]
-    for s in out:
-        s.pop("score", None)
-    return out[:limit]
+    for p in patterns:
+        p.pop("score", None)
+    return patterns[:2] + sess[:max(0, limit - 2)]

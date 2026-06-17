@@ -1605,7 +1605,7 @@ async function openSuggestAutomations() {
   }
   const patterns = suggestions.filter(s => s.kind === 'pattern');
   if (note) note.textContent =
-    `Pattern automations are ready to run. For each project, hit ✨ Analyze — it deep-reads that session and extracts clean, generalized workflows (raw transcript is never saved).`;
+    `Each card is one session (your most substantial first) — hit ✨ Analyze to deep-read it and extract its workflows. Pattern automations at top are ready-made.`;
   for (const sug of suggestions) list.appendChild(suggestionCard(sug));
 
   if (patterns.length) {
@@ -1621,10 +1621,10 @@ async function openSuggestAutomations() {
 }
 
 function suggestionCard(sug) {
-  // PROJECT cards never show or save raw transcript. They run a real, deep
-  // distillation of the session on demand (the only path that yields good
-  // workflows). PATTERN cards are hand-written templates — clean and instant.
-  if (sug.kind === 'project') return projectSuggestionCard(sug);
+  // SESSION cards never show or save raw transcript. They deep-analyze that one
+  // session on demand (the only path that yields good workflows). PATTERN cards
+  // are hand-written templates — clean and instant.
+  if (sug.kind === 'session' || sug.kind === 'project') return sessionSuggestionCard(sug);
 
   const row = el('div', 'wf-row sug-row');
   const info = el('div', 'wf-info');
@@ -1651,19 +1651,20 @@ function suggestionCard(sug) {
   return row;
 }
 
-function projectSuggestionCard(sug) {
+function sessionSuggestionCard(sug) {
   const row = el('div', 'wf-row sug-row');
   const info = el('div', 'wf-info');
   const title = el('div', 'wf-title');
-  title.appendChild(el('span', 'sug-kind proj', '📁 project'));
+  title.appendChild(agentBadge(sug.agent || 'auto'));
   title.appendChild(el('span', 'wf-name', sug.title));
   if (sug.turns) title.appendChild(el('span', 'wf-stepcount', `${sug.turns} turns`));
+  if (sug.mtime) title.appendChild(el('span', 'wf-stepcount', timeAgo(sug.mtime)));
   info.appendChild(title);
-  info.appendChild(el('div', 'wf-desc', sug.rationale));
+  if (sug.hint) info.appendChild(el('div', 'wf-desc', sug.hint));
   row.appendChild(info);
   const ctrls = el('div', 'wf-ctrls');
   const analyze = el('button', 'btn primary small', '✨ Analyze');
-  analyze.title = 'Deep-read this session and extract clean, generalized workflows (~1 min)';
+  analyze.title = 'Deep-read this session and extract its workflows (~1 min)';
   analyze.disabled = !sug.session_id;
   analyze.onclick = () => extractFromSession([sug.session_id], sug.title);
   ctrls.appendChild(analyze);
