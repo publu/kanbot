@@ -168,6 +168,15 @@ CREATE TABLE IF NOT EXISTS workflow_evals (
     created_at  REAL NOT NULL
 );
 
+-- Distilled playbooks cache: generated workflows keyed by the session(s) +
+-- mtime they came from, so we NEVER re-run the agent on work already distilled
+-- (survives restarts — this is the local store for generated-but-not-saved work).
+CREATE TABLE IF NOT EXISTS distill_cache (
+    k           TEXT PRIMARY KEY,      -- JSON of [[session_id, mtime], ...]
+    workflows   TEXT NOT NULL,         -- JSON list of distilled workflow dicts
+    created_at  REAL NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_cards_board ON cards(board_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_card ON sessions(card_id);
 CREATE INDEX IF NOT EXISTS idx_events_session ON session_events(session_id);
@@ -525,6 +534,32 @@ class DB:
 
     def delete_exemplar(self, eid: str) -> None:
         self.exec("DELETE FROM workflow_exemplars WHERE id=?", (eid,))
+
+    # -- distill cache (durable; survives restarts) -----------------------
+    @staticmethod
+    def _ckey(key) -> str:
+        return json.dumps(key, sort_keys=True)
+
+    def distill_cache_all(self) -> List[tuple]:
+        """Load every cached entry as (tuple_key, workflows) for in-memory use."""
+        def tuplify(x):
+            return tuple(tuplify(i) for i in x) if isinstance(x, list) else x
+        out = []
+        for r in self.q("SELECT k, workflows FROM distill_cache"):
+            try:
+                out.append((tuplify(json.loads(r["k"])), json.loads(r["workflows"])))
+            except Exception:
+                continue
+        return out
+
+    def distill_cache_put(self, key, workflows: List[dict]) -> None:
+        self.exec(
+            "INSERT OR REPLACE INTO distill_cache (k, workflows, created_at) VALUES (?,?,?)",
+            (self._ckey(key), json.dumps(workflows or []), now()),
+        )
+
+    def distill_cache_del(self, key) -> None:
+        self.exec("DELETE FROM distill_cache WHERE k=?", (self._ckey(key),))
 
     def log_eval(self, board_id: str, session_id: str, name: str, score: float,
                  breakdown: dict, critique: str = "", critic: str = "") -> Dict[str, Any]:

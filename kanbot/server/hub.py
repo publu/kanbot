@@ -18,6 +18,33 @@ from ..profiles import compose_prompt
 from .db import DB
 
 
+class _DistillCache(dict):
+    """An in-memory dict of (session_id, mtime) -> [workflows] that WRITE-THROUGHS
+    to the local SQLite DB, and loads from it on startup. So distilled playbooks
+    are stored locally and survive restarts — we never re-run the agent on work we
+    already did. Keeps the plain-dict interface its callers already use."""
+
+    def __init__(self, db: DB):
+        super().__init__()
+        self._db = db
+        try:
+            for k, wfs in db.distill_cache_all():
+                super().__setitem__(k, wfs)
+        except Exception:
+            pass
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        try: self._db.distill_cache_put(key, value)
+        except Exception: pass
+
+    def pop(self, key, *default):
+        v = super().pop(key, *default)
+        try: self._db.distill_cache_del(key)
+        except Exception: pass
+        return v
+
+
 class RunnerConn:
     def __init__(self, runner_id: str, ws):
         self.runner_id = runner_id
@@ -56,7 +83,7 @@ class Hub:
         self.web: Set[Any] = set()
         self.runners: Dict[str, RunnerConn] = {}
         self.agent_sessions: Dict[str, List[dict]] = {}  # runner_id -> discovered sessions
-        self.distill_cache: Dict[Any, List[dict]] = {}   # (session_id, mtime) -> distilled workflows
+        self.distill_cache = _DistillCache(db)           # (session_id, mtime) -> workflows, DB-backed
         self._lock = asyncio.Lock()
 
     # -- web clients -------------------------------------------------------
