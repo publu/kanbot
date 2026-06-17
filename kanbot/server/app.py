@@ -307,6 +307,12 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         t = body.template or {}
         if not t.get("name") or not isinstance(t.get("steps"), list):
             raise HTTPException(400, "template needs a name and a steps list")
+        # Dedupe: importing the same playbook (same name) into a board returns the
+        # existing one instead of stacking duplicates (Create + Create-all, re-runs).
+        existing = next((w for w in db.list_workflows(board_id)
+                         if w.get("name") == t["name"]), None)
+        if existing:
+            return existing
         wf = db.save_workflow(board_id, t["name"], t.get("description", ""),
                               t.get("agent", "auto"), t.get("cwd", ""), t["steps"],
                               source_tokens=int(t.get("source_tokens") or 0))

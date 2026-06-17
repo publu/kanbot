@@ -1631,6 +1631,16 @@ function openWorkflowsModal() {
   setHash('#/automations');
 }
 
+// First sentence (or ~130 chars) of a description — keeps the playbook list
+// scannable instead of a wall of distilled jargon.
+function shortDesc(text) {
+  const t = (text || '').trim();
+  if (!t) return '';
+  let s = t.split(/(?<=[.!?])\s/)[0];          // first sentence
+  if (s.length > 150) s = s.slice(0, 130).replace(/\s+\S*$/, '') + '…';
+  return s;
+}
+
 function workflowRow(wf) {
   const row = el('div', 'wf-row');
   const info = el('div', 'wf-info');
@@ -1639,7 +1649,14 @@ function workflowRow(wf) {
   title.appendChild(el('span', 'wf-name', wf.name));
   title.appendChild(el('span', 'wf-stepcount', `${wf.steps.length} step${wf.steps.length === 1 ? '' : 's'}`));
   info.appendChild(title);
-  if (wf.description) info.appendChild(el('div', 'wf-desc', wf.description));
+  if (wf.description) {
+    // Show a readable one-liner, not the whole distilled paragraph. The full
+    // description lives in ✎ Edit. (Distillation tends to dump session archaeology.)
+    const short = shortDesc(wf.description);
+    const d = el('div', 'wf-desc', short);
+    if (short !== wf.description.trim()) d.title = wf.description;
+    info.appendChild(d);
+  }
   const chain = el('div', 'wf-chain');
   wf.steps.forEach((s, i) => {
     if (i) chain.appendChild(el('span', 'wf-arrow', '→'));

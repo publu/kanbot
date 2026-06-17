@@ -73,8 +73,13 @@ self-contained instruction for a fresh agent: what to do, the method, the \
 gotchas, how to verify. Steps hand off via files (PLAN.md / NOTES.md). For \
 iterative work set `loop_max` (e.g. 20) and a `loop_until` shell predicate (e.g. \
 `pytest -q`). `carry_context` true when a step needs the previous step's output. \
-`name` is the PATTERN (class of task), short and imperative. `description` leads \
-with the key takeaway.
+`name` is the PATTERN (class of task), short and imperative. \
+`description` is ONE short, plain-English sentence a busy person can read at a \
+glance: what running this playbook DOES for them and when to reach for it \
+(present tense, like "Add a CRUD endpoint with tests and wire it into the \
+dashboard."). Do NOT recap what happened in the original session, do NOT dump \
+implementation archaeology or a jargon list, do NOT write a paragraph — save the \
+detailed method and gotchas for the step prompts.
 
 Return ONLY a JSON object as the very last thing you output, no markdown fences:
 {"workflows": [{"name": str, "description": str, "steps": [{"name": str, \
