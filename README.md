@@ -157,6 +157,49 @@ API: `GET /api/workflow-templates`, `…/workflows` (CRUD), `…/workflows/impor
 `…/workflows/extract`, `…/workflows/{id}/export`, `…/workflows/{id}/run`. The full
 spec is under **`</> API`** in the app.
 
+## Goal Spree — hand it one goal, walk away for 10+ hours
+
+Playbooks are first-class now (the **▤ playbooks** button). The headline is the
+**⚡ Set off a goal spree**: give it one big goal, a repo, a budget (hours) and an
+optional verify command, and it runs unattended — engineered so a *skittish* agent
+that wants to quit after five minutes can't end the run.
+
+How it beats the early-stop problem:
+
+- **It splits the goal.** A first pass writes `PROGRESS.md` — a checklist of small,
+  independently-verifiable tasks plus a concrete `## DONE WHEN`. The agent never
+  faces "do the whole thing", only "do the next box".
+- **One task per fresh context.** Each iteration does exactly one unchecked item,
+  verifies it, checks it off, and commits — then ends. The next iteration re-reads
+  `PROGRESS.md`, so a 10-hour run survives context resets.
+- **It can't talk its way out.** The loop's stop condition is a real shell
+  predicate — *no unchecked boxes **and** your verify command passes*. When the
+  agent says "good stopping point", the runner re-checks and relaunches with fresh
+  context until it's actually done. The prompt also explicitly rejects "the rest is
+  straightforward" / "I'll let you take it from here".
+- **Bounded + safe to leave.** A wall-clock budget and an iteration cap bound the
+  run; between iterations the runner **auto-commits** any work the agent left
+  uncommitted (so nothing is ever lost), and **stops if there's no progress** for
+  several passes instead of spinning.
+- **Resumable.** If a run hits its budget or is interrupted, **⚡ Continue spree**
+  picks up against the existing `PROGRESS.md` exactly where it left off.
+
+You can seed a spree with a **saved playbook** (its method is folded into the plan)
+and apply a **prompt mode** (e.g. *lean*) to every step.
+
+### Creating playbooks (not just from sessions)
+
+- **✎ Draft from an idea** — describe what the playbook should do (optionally point
+  it at a repo to ground in) and an agent writes the 3–6 steps for you, live.
+- **✨ Build from my sessions** — distill your real Claude/Codex transcripts into
+  reusable playbooks (results are cached in the local DB, never re-generated).
+- **＋ New (manual)** — author steps by hand, with a **✨ Distill** button to clean
+  them up.
+- **◇ Template / ⬇ Import** — starter library and portable JSON.
+
+API: `POST /api/boards/{id}/spree`, `…/workflows/draft`, `…/workflows/build`,
+`GET /api/spree/progress?cwd=…`.
+
 ## Self-improving (Training)
 
 A workflow's job is to **distill a whole conversation into a procedure that
