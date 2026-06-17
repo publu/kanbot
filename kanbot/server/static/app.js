@@ -1918,19 +1918,42 @@ function extractWorkflowFromSession(s) { closeModal(); extractFromSession([s.ses
 // Deep extraction: read the FULL transcript on the server, split it into the
 // distinct workflows it contains, and present them to pick from.
 async function extractFromSession(sessionIds, name) {
-  const { body } = autoFrame('extract', 'Extracting automations' + (name ? ` from ${name}` : ''),
-    { back: true, sub: 'reading the full transcript and splitting it into workflows…' });
-  const load = el('div', 'sug-loading');
-  load.appendChild(el('span', 'spinner')); load.appendChild(el('span', null, 'analyzing the session (this can take a minute)…'));
+  const { body } = autoFrame('extract', 'Analyzing' + (name ? ` ${name}` : ' session'), { back: true });
+  const load = el('div', 'auto-state');
+  load.appendChild(el('span', 'spinner big'));
+  load.appendChild(el('div', 'auto-state-title', 'Reading the full transcript'));
+  load.appendChild(el('div', 'auto-state-sub', 'Distilling the session into clean, generalized workflows. A real agent is doing this — it takes about a minute.'));
   body.appendChild(load);
-  let wfs;
+  let wfs, err;
   try {
     const r = await api.post(`/api/boards/${S.boardId}/workflows/from-session`, { session_ids: sessionIds });
     wfs = r.workflows || [];
-  } catch (e) { toast('extract failed: ' + e.message); openWorkflowsModal(); return; }
+  } catch (e) { err = e.message; }
   if (S.autoView !== 'extract') return;
-  if (!wfs.length) { toast('nothing worth automating in that session'); openWorkflowsModal(); return; }
+  if (err) {
+    autoEmptyState(body, '✕', 'Couldn’t analyze that session', err);
+    return;
+  }
+  if (!wfs.length) {
+    autoEmptyState(body, '∅', 'No automatable work found' + (name ? ` in ${name}` : ''),
+      'That session reads as discussion or one-off exploration — not a repeatable engineering task — so there’s nothing solid to turn into a workflow. Try a session where you actually built or fixed something.');
+    return;
+  }
   reviewDistilled(wfs);
+}
+
+// A centered, explained state inside the automations surface (loading / empty /
+// error) — instead of a disappearing toast on a blank screen.
+function autoEmptyState(body, mark, title, sub) {
+  body.innerHTML = '';
+  const wrap = el('div', 'auto-state');
+  wrap.appendChild(el('div', 'auto-state-mark', mark));
+  wrap.appendChild(el('div', 'auto-state-title', title));
+  if (sub) wrap.appendChild(el('div', 'auto-state-sub', sub));
+  const back = el('button', 'btn primary', '← Back to automations');
+  back.onclick = openWorkflowsModal;
+  wrap.appendChild(back);
+  body.appendChild(wrap);
 }
 
 // A session is not always one workflow. Extraction segments it by topic; this

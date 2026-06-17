@@ -682,5 +682,16 @@ input, textarea, select { font-family: var(--ui); }
 /* distillation */
 .sug-refined { font-size: 10px; color: var(--violet); margin-top: 3px; font-weight: 500; }
 .sug-raw { font-size: 10px; color: var(--text-faint); margin-top: 3px; }
+
+/* centered loading / empty / error state inside the automations surface */
+.auto-state {
+  display: flex; flex-direction: column; align-items: center; text-align: center;
+  gap: 12px; padding: 64px 24px; margin: auto; max-width: 460px;
+}
+.auto-state-mark { font-size: 30px; color: var(--text-faint); line-height: 1; }
+.auto-state-title { font-size: 16px; font-weight: 600; color: var(--text); }
+.auto-state-sub { font-size: 13px; color: var(--text-dim); line-height: 1.6; }
+.auto-state .btn { margin-top: 8px; }
+.spinner.big { width: 26px; height: 26px; border-width: 3px; }
 .wf-distill { align-self: flex-start; color: var(--violet); border-color: rgba(180,145,245,.35); }
 .wf-distill:hover { border-color: var(--violet); }
