@@ -164,100 +164,103 @@ function enterDemo(showModal = true) {
   S.boards = [DEMO.board]; S.boardId = DEMO.board.id; S.board = DEMO.board;
   S.columns = DEMO.columns; S.cards = DEMO.cards; S.tags = [];
   S.agentSessions = DEMO.sessions;
-  // demo banner
-  const pill = el('div', 'demo-pill');
-  pill.innerHTML = 'DEMO · <b>pipx install kanbot</b> · <b>kanbot up</b> to run locally';
-  $('#runners').before(pill);
+  // persistent TUI status bar — always offers the path to a real backend
+  if (!$('.demo-bar')) {
+    const bar = el('div', 'demo-bar');
+    const left = el('div', 'demo-bar-left');
+    left.appendChild(el('span', 'demo-dot'));
+    const txt = el('span', null);
+    txt.innerHTML = '<b>DEMO</b> — sample data · your agents run on your machine, nothing leaves it';
+    left.appendChild(txt);
+    bar.appendChild(left);
+    const cbtn = el('button', 'btn primary small', '⚡ Connect local backend');
+    cbtn.onclick = showConnectPanel;
+    bar.appendChild(cbtn);
+    $('#app').appendChild(bar);
+  }
   updateLiveBadge();
   renderColumns();
   wireGlobalUI();
-  if (showModal) showOnboarding();
+  if (showModal) showConnectPanel();
 }
 
-function cmdRow(cmd) {
-  const row = el('div', 'cmd-row');
-  row.appendChild(el('code', 'cmd-text', cmd));
-  const btn = el('button', 'cmd-copy', 'copy');
-  btn.onclick = async () => {
-    try { await navigator.clipboard.writeText(cmd); btn.textContent = 'copied ✓'; setTimeout(() => btn.textContent = 'copy', 1200); }
+// A polished, terminal-styled "bring your own backend" panel: one command, a
+// live connection probe, and a plain explanation of the local-only model.
+function termLine(cmd) {
+  const r = el('div', 'connect-cmd');
+  r.appendChild(el('span', 'connect-prompt', '❯'));
+  r.appendChild(el('span', 'connect-cmd-text', cmd));
+  const cp = el('button', 'connect-copy', 'copy');
+  cp.onclick = async () => {
+    try { await navigator.clipboard.writeText(cmd); cp.textContent = 'copied ✓'; setTimeout(() => cp.textContent = 'copy', 1200); }
     catch (e) { toast('copy failed — select & copy manually'); }
   };
-  row.appendChild(btn);
+  r.appendChild(cp);
+  return r;
+}
+function connectStep(n, title, sub) {
+  const row = el('div', 'connect-step');
+  row.appendChild(el('span', 'connect-step-n', n));
+  const b = el('div', 'connect-step-b');
+  b.appendChild(el('div', 'connect-step-t', title));
+  b.appendChild(el('div', 'connect-step-s', sub));
+  row.appendChild(b);
   return row;
 }
 
-function showConnectModal() {
+function showConnectPanel() {
   const m = $('#modal'); m.innerHTML = '';
-  m.appendChild(el('h3', null, 'Connect to your local KanBot'));
+  const head = el('div', 'connect-head');
+  head.appendChild(el('h3', null, 'Run KanBot on your machine'));
+  head.appendChild(el('div', 'connect-sub',
+    "You're viewing a demo with sample data. The real thing runs locally and drives YOUR coding agents — the page only ever talks to 127.0.0.1, nothing leaves your computer."));
+  m.appendChild(head);
 
-  const warn = el('div', 'lna-warn');
-  warn.innerHTML =
-    '⚠ This website needs <b>Local Network access</b> so it can read the agent ' +
-    'sessions on your computer. It connects to KanBot running locally at ' +
-    '<code>http://127.0.0.1:8787</code> — your browser will ask permission next. ' +
-    '<b>Nothing leaves your machine</b>; the page talks only to your own computer.';
-  m.appendChild(warn);
+  // a "terminal window" with the one command
+  const term = el('div', 'terminal-card connect-term');
+  const bar = el('div', 'term-bar');
+  const dots = el('div', 'term-dots'); dots.appendChild(el('i')); dots.appendChild(el('i')); dots.appendChild(el('i'));
+  bar.appendChild(dots); bar.appendChild(el('span', 'term-title', 'your terminal'));
+  term.appendChild(bar);
+  const body = el('div', 'term-body connect-term-body');
+  body.appendChild(el('div', 'connect-hint', '# zero-install (needs uv):'));
+  body.appendChild(termLine('uvx kanbot up'));
+  body.appendChild(el('div', 'connect-hint', '# or with pipx:'));
+  body.appendChild(termLine('pipx install kanbot && kanbot up'));
+  term.appendChild(body);
+  m.appendChild(term);
 
-  m.appendChild(el('div', 'label', "Don't have KanBot yet? Copy & run this:"));
-  m.appendChild(cmdRow('pipx install kanbot && kanbot up'));
-  m.appendChild(el('div', 'label', 'no pipx? install it · or zero-install:'));
-  m.appendChild(cmdRow('brew install pipx'));
-  m.appendChild(cmdRow('uvx kanbot up'));
+  const steps = el('div', 'connect-steps');
+  steps.appendChild(connectStep('1', 'Run the command', 'KanBot serves at http://127.0.0.1:8787'));
+  steps.appendChild(connectStep('2', 'Allow Local Network access', 'your browser asks once — it only reaches your own machine'));
+  steps.appendChild(connectStep('3', 'Connect', 'this page flips to your live sessions + the automations engine'));
+  m.appendChild(steps);
+
+  const status = el('div', 'connect-status'); status.id = 'connectStatus';
+  m.appendChild(status);
 
   const actions = el('div', 'modal-actions');
-  const demo = el('button', 'btn ghost', 'Explore the demo');
-  demo.onclick = closeModal;
-  const connect = el('button', 'btn primary', 'Allow & connect');
-  connect.onclick = async () => {
-    connect.textContent = 'Connecting…'; connect.disabled = true;
-    const ok = await attemptLocal();
-    if (!ok) {
-      connect.textContent = 'Allow & connect'; connect.disabled = false;
-      toast('No local KanBot reachable — run `kanbot up`, then retry');
-    }
-  };
+  const demo = el('button', 'btn ghost', 'Keep exploring the demo'); demo.onclick = closeModal;
+  const connect = el('button', 'btn primary', '⚡ Connect');
+  connect.onclick = () => probeConnect(connect);
   actions.appendChild(demo); actions.appendChild(connect);
   m.appendChild(actions);
-  openModal();
+  openModal(); m.classList.add('wide');
 }
 
-function showOnboarding() {
-  const m = $('#modal'); m.innerHTML = '';
-  m.appendChild(el('h3', null, 'Welcome to KanBot 👋'));
-  const intro = el('div', null,
-    "This is a live demo with sample data — no local KanBot detected on this machine.");
-  intro.style.cssText = 'font-size:13.5px;line-height:1.5;color:var(--text-dim);';
-  m.appendChild(intro);
-
-  const what = el('div', null,
-    "KanBot runs on your machine and shows what your coding-agent TUIs (Claude Code, Codex, …) are doing in real time — and lets you resume any of them from one board.");
-  what.style.cssText = 'font-size:13px;line-height:1.55;color:var(--text-dim);';
-  m.appendChild(what);
-
-  m.appendChild(el('div', 'label', 'Get your real sessions here — copy & run:'));
-  m.appendChild(cmdRow('pipx install kanbot && kanbot up'));
-  const tip = el('div', null, 'then reload this page — it auto-connects to your local KanBot.');
-  tip.style.cssText = 'font-size:12px;color:var(--text-dim);line-height:1.5;';
-  m.appendChild(tip);
-
-  const note = el('div', 'label',
-    'This page auto-connects to a local KanBot at http://127.0.0.1:8787 — or open that URL directly.');
-  m.appendChild(note);
-
-  const actions = el('div', 'modal-actions');
-  const explore = el('button', 'btn ghost', 'Explore the demo');
-  explore.onclick = closeModal;
-  const connect = el('button', 'btn primary', 'Connect to local');
-  connect.onclick = async () => {
-    try {
-      const r = await fetch(LOCAL_KANBOT + '/api/health', { cache: 'no-store' });
-      if (r.ok) { location.reload(); return; }
-    } catch (e) {}
-    toast('No local KanBot found — run `kanbot up` first, then retry');
-  };
-  actions.appendChild(explore); actions.appendChild(connect);
-  m.appendChild(actions);
-  openModal();
+async function probeConnect(btn) {
+  const status = $('#connectStatus');
+  btn.disabled = true; btn.textContent = 'searching…';
+  if (status) { status.className = 'connect-status searching'; status.textContent = '● probing http://127.0.0.1:8787 …'; }
+  const ok = await attemptLocal();
+  if (!ok && status) {
+    btn.disabled = false; btn.textContent = '⚡ Connect';
+    status.className = 'connect-status fail';
+    status.textContent = '✕ nothing on 127.0.0.1:8787 — run `uvx kanbot up`, allow access, then Connect';
+  } else if (ok && status) {
+    status.className = 'connect-status ok';
+    status.textContent = '● connected — loading your sessions';
+  }
 }
 
 // ---- boot ---------------------------------------------------------------
@@ -287,7 +290,7 @@ async function boot() {
     if (await attemptLocal()) return;          // previously allowed: connect quietly
     localStorage.removeItem('kanbot_connect_local');
   }
-  showConnectModal();
+  showConnectPanel();
 }
 
 async function liveSetup() {
@@ -325,6 +328,7 @@ async function attemptLocal() {
     S.demo = false; S.apiBase = LOCAL_KANBOT;
     document.body.classList.remove('demo');
     const pill = $('.demo-pill'); if (pill) pill.remove();
+    const bar = $('.demo-bar'); if (bar) bar.remove();
     $('#version').textContent = 'local · v' + h.version;
     closeModal();
     await liveSetup();

@@ -762,3 +762,43 @@ body {
 .runner-pill.online .dot { box-shadow: 0 0 8px var(--green); }
 #workflowsBtn { box-shadow: none; }
 .spinner { border-top-color: var(--brand); }
+
+/* ---- demo status bar + connect panel (hosted/no-backend) -------------- */
+.demo-bar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
+  display: flex; align-items: center; gap: 14px;
+  padding: 8px 16px; font-size: 12px; color: var(--text-dim);
+  background: #0a0c0f; border-top: 1px solid var(--line);
+}
+.demo-bar-left { display: flex; align-items: center; gap: 9px; flex: 1; }
+.demo-bar b { color: var(--brand); }
+.demo-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--brand);
+  box-shadow: 0 0 8px var(--brand); animation: pulse 1.6s infinite; }
+body.demo .board { padding-bottom: 52px; }   /* clear the fixed bar */
+
+.connect-head { display: flex; flex-direction: column; gap: 6px; }
+.connect-sub { font-size: 12.5px; color: var(--text-dim); line-height: 1.55; }
+.connect-term { margin: 2px 0; }
+.connect-term-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; max-height: none; min-height: auto; }
+.connect-hint { font-family: var(--mono); font-size: 11px; color: var(--text-faint); margin-top: 4px; }
+.connect-cmd { display: flex; align-items: center; gap: 9px; }
+.connect-prompt { color: var(--brand); font-family: var(--mono); }
+.connect-cmd-text { flex: 1; font-family: var(--mono); font-size: 13px; color: var(--text); }
+.connect-copy {
+  font-family: var(--mono); font-size: 10px; color: var(--text-dim);
+  border: 1px solid var(--line); border-radius: 4px; padding: 2px 8px; background: var(--surface-2);
+}
+.connect-copy:hover { color: var(--brand); border-color: var(--brand-dim); }
+.connect-steps { display: flex; flex-direction: column; gap: 10px; }
+.connect-step { display: flex; align-items: flex-start; gap: 11px; }
+.connect-step-n {
+  font-family: var(--mono); font-size: 11px; font-weight: 700; color: var(--brand);
+  border: 1px solid var(--brand-dim); border-radius: 4px; width: 22px; height: 22px;
+  display: grid; place-items: center; flex: 0 0 auto;
+}
+.connect-step-t { font-size: 13px; color: var(--text); font-weight: 500; }
+.connect-step-s { font-size: 12px; color: var(--text-dim); margin-top: 1px; }
+.connect-status { font-family: var(--mono); font-size: 12px; min-height: 18px; }
+.connect-status.searching { color: var(--cyan); }
+.connect-status.ok { color: var(--brand); }
+.connect-status.fail { color: var(--red); }
