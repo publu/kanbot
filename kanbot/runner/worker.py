@@ -13,8 +13,25 @@ from typing import Dict, Optional
 import websockets
 
 from ..config import Config
-from .agents import Execution, ResolvedAgent, detect_agents, run_agent
+from .agents import Execution, ResolvedAgent, build_argv, detect_agents, run_agent
 from .discovery import discover_all
+
+# The DRIVER: a second, read-only agent that keeps the working agent moving. After
+# a grind pass it inspects the real repo and hands back concrete, grounded next
+# actions — so the worker never coasts to a stop on "the rest is straightforward".
+DRIVER_PROMPT = (
+    "You are the DRIVER for an autonomous coding run — a second agent whose only "
+    "job is to keep the working agent MOVING with real, concrete next steps.\n\n"
+    "Inspect the actual state RIGHT NOW: read PROGRESS.md, run `git log --oneline "
+    "-10` and `git status`, and open the files that matter. Then output the 3-6 "
+    "MOST important concrete next actions toward the goal stated in PROGRESS.md's "
+    "## DONE WHEN — name specific files, functions, tests, or commands. If the "
+    "working agent has been claiming it's done or stalling, find the SPECIFIC "
+    "unfinished work that proves it is NOT done and lead with that.\n"
+    "Rules: be concrete and grounded in what you actually see — no platitudes, no "
+    "'keep up the good work'. If everything genuinely looks complete, name the "
+    "exact command that would prove it. Output ONLY a short bullet list."
+)
 
 # Safety cap so a Ralph loop can't run away on its own. High enough for a true
 # multi-hour "goal spree" (one task per iteration) — a wall-clock budget
@@ -168,7 +185,10 @@ class Runner:
             started = time.monotonic()
             last_fp = await self._progress_fingerprint(cwd) if loop_max > 1 else ""
             stale = 0
-            STALL_LIMIT = 4   # consecutive no-progress iterations before we bail
+            STALL_LIMIT = 4   # consecutive no-progress iterations (even with a driver) before we bail
+            # The driver only makes sense for a grind loop with a durable ledger.
+            drive = bool(loop_until) and loop_max > 1
+            driver_block = ""
             for i in range(1, loop_max + 1):
                 if max_seconds and (time.monotonic() - started) > max_seconds:
                     mins = round(max_seconds / 60)
@@ -178,7 +198,7 @@ class Runner:
                     elapsed = int(time.monotonic() - started)
                     budget = f" · {elapsed // 60}m/{max_seconds // 60}m" if max_seconds else ""
                     await on_log("system", f"━━━━━ iteration {i}/{loop_max}{budget} ━━━━━")
-                rc = await run_agent(agent, prompt, cwd, on_log, register,
+                rc = await run_agent(agent, prompt + driver_block, cwd, on_log, register,
                                      resume_of=resume_of if i == 1 else "",
                                      auto_approve=self.cfg.auto_approve,
                                      command=command)
@@ -191,19 +211,40 @@ class Runner:
                         break
                     # Checkpoint the iteration's work and check it actually moved.
                     fp = await self._progress_fingerprint(cwd)
-                    if fp and fp == last_fp:
-                        stale += 1
-                        if stale >= STALL_LIMIT:
-                            await on_log("system", f"⚠ no progress for {STALL_LIMIT} iterations (no commit, no PROGRESS.md change) — stopping so the run doesn't spin. Check ## BLOCKERS in PROGRESS.md.")
-                            rc = 1
-                            break
-                        await on_log("system", f"stop condition not met, and no progress this pass ({stale}/{STALL_LIMIT}) — looping with fresh context")
+                    progressed = not (fp and fp == last_fp)
+                    if progressed:
+                        stale = 0; last_fp = fp
                     else:
-                        stale = 0
-                        last_fp = fp
-                        if i < loop_max:
-                            await on_log("system", "stop condition not met — looping with fresh context")
-                if i >= loop_max:
+                        stale += 1
+                    if i >= loop_max:
+                        await on_log("system", f"reached max iterations ({loop_max})")
+                        break
+                    # DRIVER: a second read-only agent inspects the repo and hands the
+                    # worker concrete, grounded next actions for the next pass — so it
+                    # never coasts to a stop. Run it when stalled, or periodically to
+                    # keep momentum. Backstop: if even the driver can't move it for
+                    # STALL_LIMIT passes, stop instead of spinning.
+                    if not progressed and stale >= STALL_LIMIT:
+                        await on_log("system", f"⚠ no progress for {STALL_LIMIT} passes even with the driver — stopping so the run doesn't spin. See ## BLOCKERS in PROGRESS.md.")
+                        rc = 1
+                        break
+                    if drive and (not progressed or i % 2 == 0):
+                        await on_log("system", "🫱 driver: inspecting the repo for concrete next actions…")
+                        tips = await self._drive(agent, cwd, on_log)
+                        if tips:
+                            driver_block = ("\n\n--- DRIVER (a second agent inspected the "
+                                            "repo just now and found concrete next work; do "
+                                            "the first item that isn't done) ---\n" + tips
+                                            + "\n--- end driver ---")
+                            head = " ".join(tips.split())[:150]
+                            await on_log("system", f"driver → {head}")
+                        else:
+                            driver_block = ""
+                    msg = ("stop condition not met — looping with fresh context"
+                           if progressed else
+                           f"no progress this pass ({stale}/{STALL_LIMIT}) — driver re-aiming the next pass")
+                    await on_log("system", msg)
+                elif i >= loop_max:
                     await on_log("system", f"reached max iterations ({loop_max})")
             status = "success" if rc == 0 else "failed"
             await self.send({"type": "session.end", "session_id": sid,
@@ -237,6 +278,28 @@ class Runner:
         except OSError as e:
             await on_log("stderr", f"stop-check failed: {e}")
             return False
+
+    async def _drive(self, agent: ResolvedAgent, cwd: str, on_log) -> str:
+        """Run the read-only DRIVER agent in cwd and return its concrete next-action
+        notes (capped). Empty string on any failure — the loop must never depend on
+        the driver succeeding."""
+        if not (cwd and os.path.isdir(cwd)):
+            return ""
+        try:
+            argv = build_argv(agent, DRIVER_PROMPT, auto_approve=False)  # safe/read-only
+            env = os.environ.copy(); env.update(agent.env)
+            proc = await asyncio.create_subprocess_exec(
+                *argv, cwd=cwd, env=env, stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        except OSError:
+            return ""
+        try:
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=150)
+        except asyncio.TimeoutError:
+            try: proc.kill()
+            except Exception: pass
+            return ""
+        return (out or b"").decode("utf-8", "replace").strip()[-2000:]
 
     async def _sh(self, cmd: str, cwd: str) -> tuple:
         """Run a shell command in cwd, return (rc, stdout)."""
