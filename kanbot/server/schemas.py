@@ -120,7 +120,9 @@ class WorkflowEval(BaseModel):
     template: dict               # the workflow template to judge
     session_id: str = ""         # the session it was distilled from (ground truth)
     keep: bool = True            # save as an exemplar if it scores above the bar
+    sandbox: bool = False        # Phase B: replay in a worktree + judge the real diff
 
 
 class ImproveRequest(BaseModel):
     limit: int = 2               # how many sessions to run in this pass (cost cap)
+    sandbox: bool = False        # Phase B execution-grounded reward (slow)

@@ -32,7 +32,7 @@ def pick_sessions(sessions: List[Dict[str, Any]], k: int = 3) -> List[Dict[str, 
 
 def run_improvement_pass(db, board_id: str, sessions: List[Dict[str, Any]],
                          available: Optional[List[str]], bar: float = 75.0,
-                         limit: int = 3) -> List[Dict[str, Any]]:
+                         limit: int = 3, sandbox: bool = False) -> List[Dict[str, Any]]:
     """One pass. Returns a per-(session,workflow) summary of scores + banks."""
     exemplars = [e["template"] for e in db.top_exemplars(3, board_id)]
     summary: List[Dict[str, Any]] = []
@@ -50,7 +50,7 @@ def run_improvement_pass(db, board_id: str, sessions: List[Dict[str, Any]],
         wfs = distill_workflows(draft, available, 300, exemplars)
         for w in wfs:
             w["source_tokens"] = src
-            res = evaluate_workflow(w, s, available, src // 25)
+            res = evaluate_workflow(w, s, available, src // 25, sandbox=sandbox)
             if not res:
                 continue
             db.log_eval(board_id, s.get("session_id", ""), w.get("name", ""),

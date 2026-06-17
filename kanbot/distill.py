@@ -155,29 +155,38 @@ def _normalize(data: Dict[str, Any], base: Dict[str, Any]) -> Optional[Dict[str,
     }
 
 
-def _argv_for(spec, prompt: str) -> List[str]:
-    # Prefer the agent's SAFE (read-only) invocation — distillation only inspects
-    # the repo to ground its findings; it must never modify the user's code.
-    template = spec.safe_argv or spec.argv
+def _argv_for(spec, prompt: str, write: bool = False) -> List[str]:
+    # Default to the agent's SAFE (read-only) invocation — distillation/judging
+    # only inspect. write=True uses the full (write) argv, ONLY ever pointed at a
+    # throwaway sandbox worktree (Part 2B replay), never the user's real repo.
+    template = (spec.argv if write else (spec.safe_argv or spec.argv))
     out = []
     for tok in template:
         out.append(tok.replace("{prompt}", prompt).replace("{session_id}", ""))
     return out
 
 
-def _run_agent(spec, prompt: str, cwd: Optional[str], timeout: int) -> str:
-    """Run one agent (read-only) on a prompt in cwd; return stdout ('' on failure)."""
+def _run_agent(spec, prompt: str, cwd: Optional[str], timeout: int, write: bool = False) -> str:
+    """Run one agent on a prompt in cwd; return stdout ('' on failure)."""
     env = os.environ.copy()
     env.update(spec.env)
     workdir = cwd if cwd and os.path.isdir(cwd) else tempfile.gettempdir()
     try:
         proc = subprocess.run(
-            _argv_for(spec, prompt), cwd=workdir, stdin=subprocess.DEVNULL,
+            _argv_for(spec, prompt, write), cwd=workdir, stdin=subprocess.DEVNULL,
             env=env, capture_output=True, text=True, timeout=timeout,
         )
         return proc.stdout or ""
     except (OSError, subprocess.TimeoutExpired):
         return ""
+
+
+def run_agent_text(prompt: str, available: Optional[List[str]] = None,
+                   cwd: Optional[str] = None, timeout: int = 300, write: bool = False) -> str:
+    """Run any available agent, return raw stdout. write=True allows file edits
+    (sandbox replay only)."""
+    spec = pick_agent(available)
+    return _run_agent(spec, prompt, cwd, timeout, write) if spec else ""
 
 
 def run_agent_json(prompt: str, available: Optional[List[str]] = None,

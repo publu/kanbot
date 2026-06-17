@@ -46,18 +46,37 @@ def _i(v: Any, lo: int = 0, hi: int = 100) -> int:
 
 def evaluate_workflow(template: Dict[str, Any], session: Dict[str, Any],
                       available: Optional[List[str]] = None,
-                      reduction: int = 0, timeout: int = 240) -> Optional[Dict[str, Any]]:
+                      reduction: int = 0, timeout: int = 240,
+                      sandbox: bool = False) -> Optional[Dict[str, Any]]:
     """Judge one workflow against one session. Returns a score dict or None if no
-    agent / unparseable."""
-    outcome = session_outcome(session) or \
-        "(no git ground truth — judge on the workflow's internal quality and the transcript intent only)"
+    agent / unparseable. sandbox=True replays the workflow in a throwaway worktree
+    and judges its produced diff against the session's real diff (Phase B)."""
+    mode_note = ""
+    produced = None
+    if sandbox and session.get("cwd"):
+        from .sandbox import replay_workflow, session_diff, is_git
+        if is_git(session["cwd"]):
+            produced = replay_workflow(template, session["cwd"], available,
+                                       session.get("started_at"))
+    if produced is not None:
+        real = session_diff(session["cwd"], session.get("started_at"),
+                            session.get("mtime")) or "(no recorded session diff)"
+        outcome = ("THE SESSION'S REAL DIFF:\n" + real
+                   + "\n\nTHE WORKFLOW'S PRODUCED DIFF (sandbox replay from the same pre-state):\n"
+                   + (produced or "(empty — the workflow changed nothing)"))
+        mode_note = ("\nA SANDBOX REPLAY WAS RUN. Weight fidelity heavily on how "
+                     "closely the workflow's produced diff achieves the same effect "
+                     "as the session's real diff (same files/behavior, not identical text).")
+    else:
+        outcome = session_outcome(session) or \
+            "(no git ground truth — judge on the workflow's internal quality and the transcript intent only)"
     wf = json.dumps({
         "name": template.get("name"),
         "description": template.get("description"),
         "steps": [{"name": s.get("name"), "prompt": s.get("prompt")}
                   for s in (template.get("steps") or [])],
     }, indent=2)[:5000]
-    prompt = JUDGE_PROMPT % {"wf": wf, "outcome": outcome[:4500], "reduction": reduction or "?"}
+    prompt = JUDGE_PROMPT % {"wf": wf, "outcome": outcome[:6000], "reduction": reduction or "?"} + mode_note
     data, by = run_agent_json(prompt, available, session.get("cwd", ""), timeout)
     if not isinstance(data, dict):
         return None

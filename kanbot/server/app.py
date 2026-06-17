@@ -412,7 +412,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         avail = hub.available_agents()
         if not distill_available(avail):
             raise HTTPException(503, "no reasoning agent available to evaluate with")
-        res = await asyncio.to_thread(evaluate_workflow, t, session, avail, reduction)
+        res = await asyncio.to_thread(evaluate_workflow, t, session, avail, reduction, 240, body.sandbox)
         if not res:
             raise HTTPException(502, "evaluation failed (agent returned nothing usable)")
         db.log_eval(board_id, body.session_id, t.get("name", ""), res["score"],
@@ -443,7 +443,8 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             raise HTTPException(503, "no reasoning agent available to improve with")
         limit = max(1, min(8, int(body.limit or 2)))
         summary = await asyncio.to_thread(run_improvement_pass, db, board_id,
-                                          hub.all_agent_sessions(), avail, EXEMPLAR_BAR, limit)
+                                          hub.all_agent_sessions(), avail, EXEMPLAR_BAR,
+                                          limit, body.sandbox)
         return {"results": summary, "exemplars": db.list_exemplars(board_id)}
 
     @app.delete("/api/exemplars/{exemplar_id}")
