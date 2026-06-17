@@ -201,11 +201,12 @@ def _stream_argv(spec, prompt: str):
     return base, "raw"
 
 
-def _render_claude_event(ev) -> Optional[str]:
+def _render_claude_event(ev, repo: str = "") -> Optional[str]:
     """Turn one claude NDJSON event into a short human line for the terminal feed."""
     t = ev.get("type")
     if t == "system" and ev.get("subtype") == "init":
-        return "● session started — exploring the repo"
+        return f"● grounding in {repo} — reading the real code" if repo \
+            else "● no repo for this session — reasoning from the transcript"
     if t == "assistant":
         out = []
         for b in (ev.get("message", {}) or {}).get("content", []) or []:
@@ -233,7 +234,9 @@ def stream_agent(prompt: str, available: Optional[List[str]], cwd: Optional[str]
     if not spec:
         return "", None
     env = os.environ.copy(); env.update(spec.env)
-    workdir = cwd if cwd and os.path.isdir(cwd) else tempfile.gettempdir()
+    grounded = bool(cwd and os.path.isdir(cwd))
+    workdir = cwd if grounded else tempfile.gettempdir()
+    repo = os.path.basename(cwd.rstrip("/")) if grounded else ""
     argv, mode = _stream_argv(spec, prompt)
     try:
         proc = subprocess.Popen(
@@ -264,7 +267,7 @@ def stream_agent(prompt: str, available: Optional[List[str]], cwd: Optional[str]
                     feed(line); continue
                 if ev.get("type") == "result" and isinstance(ev.get("result"), str):
                     final = ev["result"]
-                feed(_render_claude_event(ev))
+                feed(_render_claude_event(ev, repo))
             else:
                 buf.append(line)
                 feed(line.rstrip("\n"))

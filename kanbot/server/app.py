@@ -420,8 +420,11 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         async def run_job():
             try:
                 for i, s in enumerate(sessions):
+                    cwd = s.get("cwd", "") or ""
+                    repo = os.path.basename(cwd.rstrip("/")) if cwd and os.path.isdir(cwd) else ""
                     await hub.broadcast({"type": "build.session", "job": job,
-                                         "name": s.get("name") or "session", "i": i + 1, "n": len(sessions)})
+                                         "name": s.get("name") or "session", "repo": repo,
+                                         "i": i + 1, "n": len(sessions)})
                     turns = all_user_turns(s.get("path", ""), s.get("fmt", "claude")) or \
                         [m.get("text", "") for m in (s.get("tail") or []) if m.get("role") == "user"]
                     turns = [t for t in turns if t]

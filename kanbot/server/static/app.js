@@ -222,7 +222,7 @@ function showConnectPanel() {
   const steps = el('div', 'connect-steps');
   steps.appendChild(connectStep('1', 'Run the command', 'KanBot serves at http://127.0.0.1:8787'));
   steps.appendChild(connectStep('2', 'Allow Local Network access', 'your browser asks once — it only reaches your own machine'));
-  steps.appendChild(connectStep('3', 'Connect', 'this page flips to your live sessions + the automations engine'));
+  steps.appendChild(connectStep('3', 'Connect', 'this page flips to your live sessions + the playbooks engine'));
   m.appendChild(steps);
 
   const status = el('div', 'connect-status'); status.id = 'connectStatus';
@@ -391,8 +391,18 @@ async function loadWorkflows() {
     S.workflows = workflows || [];
   } catch (e) { S.workflows = []; }
   S.workflowById = Object.fromEntries(S.workflows.map(w => [w.id, w]));
+  updateWfBadge();
   renderColumns();
   if (autoIsOpen() && S.autoView === 'list') openWorkflowsModal();
+}
+
+// Saved playbooks are first-class: surface the count on the top-bar button so a
+// user who already processed their sessions sees their library at a glance.
+function updateWfBadge() {
+  const badge = $('#wfBadge'); if (!badge) return;
+  const n = (S.workflows || []).length;
+  if (n > 0) { badge.textContent = n; badge.classList.remove('hidden'); }
+  else badge.classList.add('hidden');
 }
 
 async function ensureTemplates() {
@@ -1418,7 +1428,7 @@ function openSessionsModal() {
   const m = $('#modal'); m.innerHTML = '';
   const head = el('div', 'wf-modal-head');
   head.appendChild(el('h3', null, 'Agent sessions'));
-  head.appendChild(el('div', 'label', 'Resume any session, or ⛓ turn one into a reusable automation.'));
+  head.appendChild(el('div', 'label', 'Resume any session, or ▤ turn one into a reusable playbook.'));
   m.appendChild(head);
 
   const sessions = S.agentSessions;
@@ -1516,7 +1526,7 @@ async function runWorkflow(id, cwd, title) {
 // ---- automations surface (full screen, internal navigation) ------------
 function autoIsOpen() { return $('#autoView').classList.contains('open'); }
 function openAutomations() {
-  if (S.demo) { toast('Automations run on your local Deckhand — connect first'); return; }
+  if (S.demo) { toast('Playbooks run on your local Deckhand — connect first'); return; }
   $('#autoView').classList.add('open');
   openWorkflowsModal();
 }
@@ -1531,7 +1541,7 @@ function autoFrame(view, title, opts) {
   const v = $('#autoView'); v.innerHTML = '';
   const head = el('div', 'auto-head');
   const left = el('div', 'auto-head-left');
-  if (opts.back) { const b = el('button', 'auto-back', '‹ Automations'); b.onclick = openWorkflowsModal; left.appendChild(b); }
+  if (opts.back) { const b = el('button', 'auto-back', '‹ Playbooks'); b.onclick = openWorkflowsModal; left.appendChild(b); }
   const tt = el('div', 'auto-titles');
   tt.appendChild(el('h2', 'auto-title', title));
   if (opts.sub) tt.appendChild(el('div', 'auto-sub', opts.sub));
@@ -1550,23 +1560,27 @@ function autoFrame(view, title, opts) {
 function autoBtn(label, fn, cls) { const b = el('button', 'btn ' + (cls || ''), label); b.onclick = fn; return b; }
 
 function openWorkflowsModal() {
-  if (S.demo) { toast('Automations run on your local Deckhand — connect first'); return; }
+  if (S.demo) { toast('Playbooks run on your local Deckhand — connect first'); return; }
+  const n = S.workflows.length;
   const actions = [
-    autoBtn('✨ Build from my sessions', buildAutomations, 'primary'),
+    autoBtn(n ? '✨ Build more from my sessions' : '✨ Build from my sessions', buildAutomations, 'primary'),
     autoBtn('＋ New', () => openWorkflowBuilder(null)),
     autoBtn('◇ Template', openTemplatePicker, 'ghost'),
     autoBtn('⬇ Import', importWorkflowModal, 'ghost'),
     autoBtn('🧠 Training', openTraining, 'ghost'),
   ];
-  const { body } = autoFrame('list', '⛓ Automations',
-    { sub: 'Multi-step agent runs that work unattended for hours.', actions });
+  const { body } = autoFrame('list', '▤ Playbooks',
+    { sub: n
+        ? `${n} playbook${n === 1 ? '' : 's'} distilled from your sessions — run one with a single line instead of re-explaining the whole task.`
+        : 'Your past sessions distilled into reusable, one-line prompts — run them again with far less typing.',
+      actions });
 
   if (!S.workflows.length) {
     const empty = el('div', 'wf-empty');
     empty.appendChild(el('div', 'wf-empty-mark', '✨'));
-    empty.appendChild(el('div', 'wf-empty-title', 'Turn your repeated work into automations'));
+    empty.appendChild(el('div', 'wf-empty-title', 'Turn your repeated work into playbooks'));
     empty.appendChild(el('div', 'wf-empty-sub',
-      'Deckhand can read your Claude & Codex sessions and propose multi-step automations — hand one a task and it runs for hours unattended.'));
+      'Deckhand reads your Claude & Codex sessions and distills each into a reusable playbook — the method, the gotchas, and your standards baked in — so next time you prompt once and get the same result.'));
     const cta = el('button', 'btn primary', '✨ Build from my sessions');
     cta.onclick = buildAutomations;
     empty.appendChild(cta);
@@ -1608,7 +1622,7 @@ function workflowRow(wf) {
   clone.onclick = async () => { try { await api.post(`/api/workflows/${wf.id}/clone`, {}); toast('cloned'); } catch (e) { toast(e.message); } };
   const exp = el('button', 'btn ghost small', '⬆'); exp.title = 'Export JSON'; exp.onclick = () => exportWorkflow(wf.id);
   const del = el('button', 'btn ghost small danger', '🗑'); del.title = 'Delete';
-  del.onclick = async () => { if (confirm(`Delete automation “${wf.name}”?`)) { try { await api.del(`/api/workflows/${wf.id}`); toast('deleted'); } catch (e) { toast(e.message); } } };
+  del.onclick = async () => { if (confirm(`Delete playbook “${wf.name}”?`)) { try { await api.del(`/api/workflows/${wf.id}`); toast('deleted'); } catch (e) { toast(e.message); } } };
   ctrls.appendChild(run); ctrls.appendChild(edit); ctrls.appendChild(clone); ctrls.appendChild(exp); ctrls.appendChild(del);
   row.appendChild(ctrls);
   return row;
@@ -1616,13 +1630,23 @@ function workflowRow(wf) {
 
 // The post-profile experience: DON'T make the user analyze sessions one by one.
 // Auto-deep-read the top sessions in their focus domains and present the
-// extracted automations as results — "here's what we found you can build."
+// distilled playbooks as results — "here's what we found you can build."
+//
+// The job runs on the SERVER and streams over the websocket into a PERSISTENT
+// client store (S.build) that is independent of the DOM. So you can browse away
+// and come back and everything — the live feed, the cards, the progress — is
+// still there and still updating. The view is just a re-render of that store.
 async function buildAutomations() {
   if (S.demo) { toast('Connect your local KanBot to analyze your real sessions'); showConnectPanel(); return; }
   const focusLabel = (S.domains && S.domains.length) ? S.domains.join(', ') : 'recent';
-  const { body, foot } = autoFrame('build', '✨ Your automations',
-    { back: true, sub: `Deep-reading your ${focusLabel} sessions and extracting the workflows worth automating.` });
+  const actions = [];
+  if (S.build) actions.push(autoBtn('↻ Rebuild', () => { S.build = null; buildAutomations(); }, 'ghost'));
+  const { body, foot } = autoFrame('build', '✨ Your playbooks',
+    { back: true, actions, sub: `Deep-reading your ${focusLabel} sessions and distilling the playbooks worth saving.` });
   setHash('#/automations/build');
+
+  // Resume an in-flight or finished build — replay the whole store into the view.
+  if (S.build) { renderBuildView(body, foot); return; }
 
   // one substantial session per project, in the chosen focus domains
   const inFocus = (S.agentSessions || []).filter(s =>
@@ -1637,94 +1661,133 @@ async function buildAutomations() {
     return;
   }
 
-  // --- live header: which session, elapsed heartbeat -------------------
-  const prog = el('div', 'build-prog'); body.appendChild(prog);
-  const head = el('div', 'build-line');
-  head.appendChild(el('span', 'spinner'));
-  const headTxt = el('span', null, ` warming up the agent…`);
-  head.appendChild(headTxt);
-  const clock = el('span', 'build-clock', '0s'); head.appendChild(clock);
-  prog.appendChild(head);
-  const count = el('div', 'build-count', ''); prog.appendChild(count);
-
-  // --- the cool terminal that keeps feeding the user data --------------
-  const term = el('div', 'build-term');
-  const termHead = el('div', 'build-term-head', '▌ agent · live');
-  const termBody = el('div', 'build-term-body');
-  term.appendChild(termHead); term.appendChild(termBody);
-  body.appendChild(term);
-
-  const results = el('div', 'wf-list'); body.appendChild(results);
-
-  // shared build state that handleEvent() streams into
-  const t0 = Date.now();
-  const tick = setInterval(() => {
-    if (S.autoView !== 'build') return;
-    clock.textContent = Math.round((Date.now() - t0) / 1000) + 's';
-  }, 1000);
-  const st = S.build = {
-    job: null, made: [], pick, foot, results, prog, count, headTxt, term, termBody, tick, n: pick.length,
+  // fresh persistent store
+  S.build = {
+    job: null, made: [], log: [], n: pick.length, t0: Date.now(), lastLog: Date.now(),
+    cur: 'warming up the agent…', done: false, error: null, dom: null,
   };
-
+  renderBuildView(body, foot);
   try {
     const r = await api.post(`/api/boards/${S.boardId}/workflows/build`, { session_ids: pick.map(s => s.session_id) });
-    st.job = r.job;
+    S.build.job = r.job;
   } catch (e) {
-    clearInterval(tick);
-    prog.innerHTML = ''; prog.appendChild(el('div', 'build-summary', 'could not start the build: ' + e.message));
+    S.build.done = true; S.build.error = 'could not start the build: ' + e.message;
+    if (S.build.dom) finishBuildView();
   }
 }
 
+// (Re)build the DOM for the build surface from the persistent S.build store and
+// wire up the live elements. Safe to call on every (re)entry to the view.
+function renderBuildView(body, foot) {
+  const st = S.build; if (!st) return;
+  body.innerHTML = '';
+
+  // sticky proof-of-life: pulsing dot + WORKING badge + which session + clock
+  const sticky = el('div', 'build-sticky'); body.appendChild(sticky);
+  const prog = el('div', 'build-prog'); sticky.appendChild(prog);
+  const head = el('div', 'build-line');
+  const pulse = el('span', 'build-pulse'); head.appendChild(pulse);
+  const work = el('span', 'build-working', 'WORKING'); head.appendChild(work);
+  const headTxt = el('span', null, ' ' + st.cur); head.appendChild(headTxt);
+  const clock = el('span', 'build-clock', Math.round((Date.now() - st.t0) / 1000) + 's'); head.appendChild(clock);
+  prog.appendChild(head);
+  const count = el('div', 'build-count', st.made.length ? `${st.made.length} playbook${st.made.length === 1 ? '' : 's'} found so far` : '');
+  prog.appendChild(count);
+
+  // live terminal — replay the buffered feed
+  const term = el('div', 'build-term');
+  const termHead = el('div', 'build-term-head');
+  const tdot = el('span', 'build-term-dot'); termHead.appendChild(tdot);
+  termHead.appendChild(document.createTextNode(' agent · live'));
+  const termBody = el('div', 'build-term-body');
+  term.appendChild(termHead); term.appendChild(termBody);
+  sticky.appendChild(term);
+  for (const ln of st.log) termBody.appendChild(el('div', 'build-term-line', ln));
+  termBody.scrollTop = termBody.scrollHeight;
+
+  // results — replay the cards already extracted
+  const results = el('div', 'wf-list'); body.appendChild(results);
+  for (const w of st.made) results.appendChild(buildResultCard(w));
+
+  if (st.dom && st.dom.tick) clearInterval(st.dom.tick);
+  st.dom = { sticky, prog, head, work, headTxt, clock, count, term, termBody, results, foot, tick: null };
+
+  if (st.done) { finishBuildView(); return; }
+  st.dom.tick = setInterval(() => {
+    if (S.autoView !== 'build' || !S.build || !S.build.dom) return;
+    S.build.dom.clock.textContent = Math.round((Date.now() - S.build.t0) / 1000) + 's';
+    S.build.dom.work.textContent = (Date.now() - S.build.lastLog) > 4000 ? 'STILL WORKING' : 'WORKING';
+  }, 1000);
+}
+
+// push one line into the persistent feed + (if mounted) the live terminal
 function buildTermLine(text) {
-  const st = S.build; if (!st || S.autoView !== 'build') return;
-  const line = el('div', 'build-term-line', text);
-  st.termBody.appendChild(line);
-  // keep the feed lively but bounded
-  while (st.termBody.childElementCount > 220) st.termBody.removeChild(st.termBody.firstChild);
-  st.termBody.scrollTop = st.termBody.scrollHeight;
+  const st = S.build; if (!st) return;
+  st.lastLog = Date.now();
+  st.log.push(text);
+  while (st.log.length > 250) st.log.shift();
+  if (!st.dom || S.autoView !== 'build') return;
+  const tb = st.dom.termBody;
+  tb.appendChild(el('div', 'build-term-line', text));
+  while (tb.childElementCount > 250) tb.removeChild(tb.firstChild);
+  tb.scrollTop = tb.scrollHeight;
 }
 
 function buildOnSession(msg) {
-  const st = S.build; if (!st || msg.job !== st.job || S.autoView !== 'build') return;
-  st.headTxt.textContent = ` reading ${msg.name} — distilling the procedure (${msg.i}/${msg.n})`;
-  buildTermLine(`› opening ${msg.name} …`);
+  const st = S.build; if (!st || msg.job !== st.job) return;
+  const where = msg.repo ? ` · repo: ${msg.repo}` : ' · no repo (transcript only)';
+  st.cur = `reading ${msg.name}${where} — distilling (${msg.i}/${msg.n})`;
+  if (st.dom && S.autoView === 'build') st.dom.headTxt.textContent = ' ' + st.cur;
+  buildTermLine(`› opening ${msg.name}${msg.repo ? ' in ' + msg.repo : ' (no repo — transcript only)'} …`);
 }
 
 function buildOnWorkflow(msg) {
-  const st = S.build; if (!st || msg.job !== st.job || S.autoView !== 'build') return;
+  const st = S.build; if (!st || msg.job !== st.job) return;
   const w = msg.workflow;
   st.made.push(w);
-  st.results.appendChild(buildResultCard(w));
-  st.count.textContent = `${st.made.length} automation${st.made.length === 1 ? '' : 's'} found so far`;
+  if (st.dom && S.autoView === 'build') {
+    st.dom.results.appendChild(buildResultCard(w));
+    st.dom.count.textContent = `${st.made.length} playbook${st.made.length === 1 ? '' : 's'} found so far`;
+  }
   buildTermLine(`✓ extracted: ${w.name}`);
 }
 
 function buildOnDone(msg) {
   const st = S.build; if (!st || msg.job !== st.job) return;
-  clearInterval(st.tick);
-  if (S.autoView !== 'build') { S.build = null; return; }
+  st.done = true; st.error = msg.error || null;
+  buildTermLine(msg.error ? `✗ error: ${msg.error}` : '✓ analysis complete');
+  if (st.dom && S.autoView === 'build') finishBuildView();
+}
+
+// flip the mounted view into its finished state (summary + Create-all)
+function finishBuildView() {
+  const st = S.build; if (!st || !st.dom) return;
+  const d = st.dom;
+  if (d.tick) { clearInterval(d.tick); d.tick = null; }
   const made = st.made;
-  st.prog.innerHTML = '';
-  st.term.classList.add('done');
-  st.term.querySelector('.build-term-head').textContent = '▌ agent · done';
-  st.prog.appendChild(el('div', 'build-summary', msg.error
-    ? 'the agent hit an error: ' + msg.error
+  d.prog.innerHTML = '';
+  d.term.classList.add('done');
+  d.term.querySelector('.build-term-head').textContent = '■ agent · done';
+  d.prog.appendChild(el('div', 'build-summary', st.error
+    ? 'the agent hit an error: ' + st.error
     : (made.length
-      ? `Found ${made.length} automation${made.length === 1 ? '' : 's'} across ${st.n} of your sessions — create the ones you want.`
-      : 'Nothing solid to automate in those sessions yet — they read as discussion more than repeatable work. Try other focus areas in ◎ Profile.')));
+      ? `✓ Done — ${made.length} playbook${made.length === 1 ? '' : 's'} distilled across ${st.n} of your sessions. Create the ones you want.`
+      : 'Nothing solid to distill in those sessions yet — they read as discussion more than repeatable work. Try other focus areas in ◎ Profile.')));
+  const rb = el('button', 'btn ghost small', '↻ Rebuild'); rb.onclick = () => { S.build = null; buildAutomations(); };
+  d.prog.appendChild(rb);
   const browse = el('button', 'btn ghost small', 'browse all sessions →'); browse.onclick = openSuggestAutomations;
-  st.prog.appendChild(browse);
+  d.prog.appendChild(browse);
+  d.foot.innerHTML = '';
   if (made.length) {
     const ca = el('button', 'btn primary', `Create all ${made.length}`);
     ca.onclick = async () => {
       ca.disabled = true; ca.textContent = 'creating…';
       let n = 0;
       for (const w of made) { try { await api.post(`/api/boards/${S.boardId}/workflows/import`, { template: { name: w.name, description: w.description, agent: w.agent, cwd: w.cwd, steps: w.steps, source_tokens: w.source_tokens } }); n++; } catch (e) {} }
-      toast(`created ${n} automation${n === 1 ? '' : 's'} ✓`); openWorkflowsModal();
+      toast(`created ${n} playbook${n === 1 ? '' : 's'} ✓`); openWorkflowsModal();
     };
-    st.foot.appendChild(ca); st.foot.style.display = '';
+    d.foot.appendChild(ca); d.foot.style.display = '';
   }
-  S.build = null;
 }
 
 function buildResultCard(w) {
@@ -1745,7 +1808,7 @@ function buildResultCard(w) {
   const create = el('button', 'btn primary small', '＋ Create');
   create.onclick = async () => {
     create.disabled = true; create.textContent = 'creating…';
-    try { await api.post(`/api/boards/${S.boardId}/workflows/import`, { template: { name: w.name, description: w.description, agent: w.agent, cwd: w.cwd, steps: w.steps, source_tokens: w.source_tokens } }); create.textContent = '✓ created'; toast('automation created ✓'); }
+    try { await api.post(`/api/boards/${S.boardId}/workflows/import`, { template: { name: w.name, description: w.description, agent: w.agent, cwd: w.cwd, steps: w.steps, source_tokens: w.source_tokens } }); create.textContent = '✓ created'; toast('playbook created ✓'); }
     catch (e) { toast(e.message); create.disabled = false; create.textContent = '＋ Create'; }
   };
   ctrls.appendChild(edit); ctrls.appendChild(create);
@@ -1756,7 +1819,7 @@ function buildResultCard(w) {
 // Manual browse: every session with an Analyze button (secondary path).
 async function openSuggestAutomations() {
   if (S.demo) { toast('Connect your local Deckhand to analyze sessions'); return; }
-  const { body, foot } = autoFrame('suggest', '✨ Automations from your sessions',
+  const { body, foot } = autoFrame('suggest', '✨ Playbooks from your sessions',
     { back: true, sub: `Reading ${S.agentSessions.length} sessions for repeatable work…` });
   setHash('#/automations/suggest');
   const note = $('#autoView').querySelector('.auto-sub');
@@ -1796,17 +1859,17 @@ async function openSuggestAutomations() {
     suggestions.sort((a, b) => (score(b) - score(a)) || (a._ord - b._ord));
   }
   if (note) note.textContent = (S.domains && S.domains.length)
-    ? `Sessions in your focus (${S.domains.join(', ')}) first — hit ✨ Analyze to extract workflows. Pattern automations at top are ready-made.`
-    : `Each card is one session — hit ✨ Analyze to deep-read it and extract its workflows. Pattern automations at top are ready-made.`;
+    ? `Sessions in your focus (${S.domains.join(', ')}) first — hit ✨ Analyze to distill playbooks. Ready-made patterns are at the top.`
+    : `Each card is one session — hit ✨ Analyze to deep-read it and distill its playbooks. Ready-made patterns are at the top.`;
   for (const sug of suggestions) list.appendChild(suggestionCard(sug));
 
   if (patterns.length) {
-    const all = el('button', 'btn primary', `Add ${patterns.length} pattern automation${patterns.length === 1 ? '' : 's'}`);
+    const all = el('button', 'btn primary', `Add ${patterns.length} pattern playbook${patterns.length === 1 ? '' : 's'}`);
     all.onclick = async () => {
       all.disabled = true; all.textContent = 'creating…';
       let made = 0;
       for (const sug of patterns) { try { await api.post(`/api/boards/${S.boardId}/workflows/import`, { template: sug.template }); made++; } catch (e) { /* skip */ } }
-      toast(`added ${made} automation${made === 1 ? '' : 's'} ✓`); openWorkflowsModal();
+      toast(`added ${made} playbook${made === 1 ? '' : 's'} ✓`); openWorkflowsModal();
     };
     foot.appendChild(all); foot.style.display = '';
   }
@@ -1835,7 +1898,7 @@ function suggestionCard(sug) {
   const create = el('button', 'btn primary small', '＋ Create');
   create.onclick = async () => {
     create.disabled = true; create.textContent = 'creating…';
-    try { await api.post(`/api/boards/${S.boardId}/workflows/import`, { template: sug.template }); toast('automation created ✓'); create.textContent = '✓ created'; }
+    try { await api.post(`/api/boards/${S.boardId}/workflows/import`, { template: sug.template }); toast('playbook created ✓'); create.textContent = '✓ created'; }
     catch (e) { toast(e.message); create.disabled = false; create.textContent = '＋ Create'; }
   };
   ctrls.appendChild(edit); ctrls.appendChild(create);
@@ -1879,7 +1942,7 @@ async function exportWorkflow(id) {
 }
 
 function importWorkflowModal() {
-  const { body, foot } = autoFrame('import', 'Import automation',
+  const { body, foot } = autoFrame('import', 'Import playbook',
     { back: true, sub: 'Paste a workflow template (the JSON from Export).' });
   setHash('#/automations/import');
   const ta = textareaField('Workflow JSON', '{ "name": "...", "steps": [ ... ] }');
@@ -1929,7 +1992,7 @@ function openWorkflowBuilder(wf, prefill) {
   const steps = (src.steps && src.steps.length ? src.steps : [blankStep(0)]).map(s => ({ ...s }));
   let open = steps.length - 1;   // index of the expanded step (-1 = all collapsed)
 
-  const { body, foot } = autoFrame('builder', wf ? 'Edit automation' : 'New automation',
+  const { body, foot } = autoFrame('builder', wf ? 'Edit playbook' : 'New playbook',
     { back: true, sub: 'Steps run top → bottom, each a fresh agent run.' });
   const scroll = body;
 
@@ -1988,7 +2051,7 @@ function openWorkflowBuilder(wf, prefill) {
       try {
         const r = await api.post('/api/workflows/distill', { template: payload });
         const wfs = r.workflows || (r.template ? [r.template] : []);
-        if (wfs.length > 1) { toast(`this is ${wfs.length} separate automations`); reviewDistilled(wfs); return; }
+        if (wfs.length > 1) { toast(`this is ${wfs.length} separate playbooks`); reviewDistilled(wfs); return; }
         const template = wfs[0];
         if (template) {
           if (template.name) name.input.value = template.name;
@@ -2009,7 +2072,7 @@ function openWorkflowBuilder(wf, prefill) {
       const saved = wf ? await api.put(`/api/workflows/${wf.id}`, payload)
                        : await api.post(`/api/boards/${S.boardId}/workflows`, payload);
       if (thenRun && saved && saved.id) { await runWorkflow(saved.id, saved.cwd, ''); closeAutomations(); }
-      else { toast('automation saved ✓'); openWorkflowsModal(); }
+      else { toast('playbook saved ✓'); openWorkflowsModal(); }
       return saved;
     } catch (e) { toast('save failed: ' + e.message); return null; }
   };
@@ -2143,7 +2206,7 @@ function autoEmptyState(body, mark, title, sub) {
   wrap.appendChild(el('div', 'auto-state-mark', mark));
   wrap.appendChild(el('div', 'auto-state-title', title));
   if (sub) wrap.appendChild(el('div', 'auto-state-sub', sub));
-  const back = el('button', 'btn primary', '← Back to automations');
+  const back = el('button', 'btn primary', '← Back to playbooks');
   back.onclick = openWorkflowsModal;
   wrap.appendChild(back);
   body.appendChild(wrap);
@@ -2154,8 +2217,8 @@ function autoEmptyState(body, mark, title, sub) {
 function reviewDistilled(templates, sessionId) {
   const items = templates.map(t => ({ ...t, _include: true }));
   const by = items[0] && items[0]._distilled_by;
-  const { body, foot } = autoFrame('extract', 'Distilled automations',
-    { back: true, sub: `${items.length} distinct automation${items.length === 1 ? '' : 's'} found${by ? ' (by ' + by + ')' : ''} — name, edit, and create the ones you want.` });
+  const { body, foot } = autoFrame('extract', 'Distilled playbooks',
+    { back: true, sub: `${items.length} distinct playbook${items.length === 1 ? '' : 's'} found${by ? ' (by ' + by + ')' : ''} — name, edit, and create the ones you want.` });
   const list = el('div', 'wf-list');
   items.forEach((t) => {
     const row = el('div', 'wf-row');
@@ -2195,7 +2258,7 @@ function reviewDistilled(templates, sessionId) {
     if (!mk.length) { toast('nothing selected'); return; }
     try {
       for (const t of mk) await api.post(`/api/boards/${S.boardId}/workflows/import`, { template: { name: t.name, description: t.description, agent: t.agent, cwd: t.cwd, steps: t.steps, source_tokens: t.source_tokens } });
-      toast(`created ${mk.length} automation${mk.length === 1 ? '' : 's'} ✓`); openWorkflowsModal();
+      toast(`created ${mk.length} playbook${mk.length === 1 ? '' : 's'} ✓`); openWorkflowsModal();
     } catch (e) { toast('create failed: ' + e.message); }
   };
   foot.appendChild(create); foot.style.display = '';
@@ -2762,7 +2825,7 @@ function profileReveal(body, foot, sessions) {
   }
   body.appendChild(el('div', 'ob-kicker', S.demo ? 'PROFILE · sample data' : 'PROFILE · derived from your sessions'));
   body.appendChild(el('h2', 'ob-title', "Here's what you build"));
-  body.appendChild(el('div', 'ob-sub', 'Pick the areas to have KanBot learn. It studies those sessions, grades the workflows it distills, and turns your repeated work into one-command automations. Change this anytime.'));
+  body.appendChild(el('div', 'ob-sub', 'Pick the areas to have KanBot learn. It studies those sessions, grades the workflows it distills, and turns your repeated work into one-line playbooks. Change this anytime.'));
   const grid = el('div', 'ob-grid');
   const top = domains.slice(0, 8);
   const current = new Set(S.domains || []);
@@ -2811,11 +2874,12 @@ function maybeOnboard() {
 function bootSplash() {
   const b = $('#boot'); if (!b) return;
   b.innerHTML = '';
-  b.appendChild(el('pre', 'boot-art',
-    "  _   __            ____        _   \n" +
-    " | | / /__ ____    / __ )___  / /_ \n" +
-    " | |/ / _ `/ _ \\  / __  / _ \\/ __/ \n" +
-    " |___/\\_,_/_//_/ /_____/\\___/\\__/  "));
+  // A crisp styled wordmark — ASCII figlets read ambiguously (KanBot looked like
+  // "Van Bot"); this is unmistakable and on-brand.
+  const mark = el('div', 'boot-mark');
+  mark.appendChild(el('span', 'boot-glyph', '▤'));
+  mark.appendChild(el('span', 'boot-word', 'DECKHAND'));
+  b.appendChild(mark);
   const line = el('div', 'boot-line');
   line.appendChild(document.createTextNode('agent control room · booting '));
   line.appendChild(el('span', 'boot-caret', '▮'));
@@ -2861,12 +2925,12 @@ function paletteCommands() {
   if (S.demo) add('Connect local backend', 'run kanbot up & link', showConnectPanel);
   add('Profile · what KanBot learned about you', 'your work domains (p)', () => openProfile());
   add('New task', 'one-off agent task (n)', () => openComposer());
-  add('Automations', 'multi-step runs (w)', () => openAutomations());
-  add('Build automations from my focus', 'auto-analyze & extract', () => buildAutomations());
+  add('Playbooks', 'your distilled, reusable prompts (w)', () => openAutomations());
+  add('Build playbooks from my focus', 'auto-analyze & distill', () => buildAutomations());
   add('Browse all sessions', 'analyze any one manually', () => openSuggestAutomations());
   add('Training', 'exemplars + improvement pass', () => openTraining());
   add('Browse templates', '', () => openTemplatePicker());
-  add('Import automation', 'paste JSON', () => importWorkflowModal());
+  add('Import playbook', 'paste JSON', () => importWorkflowModal());
   add('Sessions', 'recent agent sessions', () => { S.extractPick.clear(); openSessionsModal(); });
   add('Manage tags', '', () => openManageTags());
   add('API reference', 'build your own client', () => openApiModal());
