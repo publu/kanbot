@@ -20,6 +20,7 @@ from ..profiles import list_profiles
 from ..distill import distill_available, distill_workflows
 from ..runner.discovery import all_user_turns
 from ..training.evaluator import evaluate_workflow
+from ..training.optimizer import run_improvement_pass
 from ..workflows import extract_workflows, starter_templates, suggest_automations
 
 EXEMPLAR_BAR = 75   # eval score at/above which a workflow becomes a few-shot exemplar
@@ -27,8 +28,9 @@ from .db import DB, now
 from .hub import Hub, RunnerConn
 from .insights import PROVIDER_META, compute
 from .schemas import (BoardCreate, CardCreate, CardMove, CardPatch, FromSession,
-                      ReviveRequest, TagAttach, TagCreate, UploadRequest, WorkflowClone,
-                      WorkflowEval, WorkflowExtract, WorkflowImport, WorkflowRun, WorkflowSave)
+                      ImproveRequest, ReviveRequest, TagAttach, TagCreate, UploadRequest,
+                      WorkflowClone, WorkflowEval, WorkflowExtract, WorkflowImport,
+                      WorkflowRun, WorkflowSave)
 
 STATIC_DIR = Path(__file__).parent / "static"
 SERVER_TOKEN = os.environ.get("KANBOT_TOKEN") or os.environ.get("DECKHAND_TOKEN", "")
@@ -428,6 +430,21 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
     @app.get("/api/boards/{board_id}/exemplars")
     async def list_exemplars(board_id: str):
         return {"exemplars": db.list_exemplars(board_id), "evals": db.list_evals(board_id, 30)}
+
+    @app.post("/api/boards/{board_id}/workflows/improve")
+    async def improve_workflows(board_id: str, body: ImproveRequest):
+        """One self-improvement pass: distill (steered by current exemplars) ->
+        evaluate against ground truth -> bank what clears the bar, over the top
+        `limit` substantial sessions. Slow (real agent calls); cost-capped."""
+        if not db.get_board(board_id):
+            raise HTTPException(404, "board not found")
+        avail = hub.available_agents()
+        if not distill_available(avail):
+            raise HTTPException(503, "no reasoning agent available to improve with")
+        limit = max(1, min(8, int(body.limit or 2)))
+        summary = await asyncio.to_thread(run_improvement_pass, db, board_id,
+                                          hub.all_agent_sessions(), avail, EXEMPLAR_BAR, limit)
+        return {"results": summary, "exemplars": db.list_exemplars(board_id)}
 
     @app.delete("/api/exemplars/{exemplar_id}")
     async def delete_exemplar(exemplar_id: str):

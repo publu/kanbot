@@ -1530,6 +1530,7 @@ function openWorkflowsModal() {
     autoBtn('＋ New', () => openWorkflowBuilder(null)),
     autoBtn('◇ Template', openTemplatePicker, 'ghost'),
     autoBtn('⬇ Import', importWorkflowModal, 'ghost'),
+    autoBtn('🧠 Training', openTraining, 'ghost'),
   ];
   const { body } = autoFrame('list', '⛓ Automations',
     { sub: 'Multi-step agent runs that work unattended for hours.', actions });
@@ -1955,7 +1956,7 @@ async function extractFromSession(sessionIds, name) {
       'That session reads as discussion or one-off exploration — not a repeatable engineering task — so there’s nothing solid to turn into a workflow. Try a session where you actually built or fixed something.');
     return;
   }
-  reviewDistilled(wfs);
+  reviewDistilled(wfs, sessionIds[0]);
 }
 
 // A centered, explained state inside the automations surface (loading / empty /
@@ -1974,7 +1975,7 @@ function autoEmptyState(body, mark, title, sub) {
 
 // When distillation splits a messy draft into several distinct automations,
 // show them clearly so the user can name, edit, and create the ones they want.
-function reviewDistilled(templates) {
+function reviewDistilled(templates, sessionId) {
   const items = templates.map(t => ({ ...t, _include: true }));
   const by = items[0] && items[0]._distilled_by;
   const { body, foot } = autoFrame('extract', 'Distilled automations',
@@ -1994,6 +1995,19 @@ function reviewDistilled(templates) {
     const red = promptingReduction(t.source_tokens);
     if (red) info.appendChild(el('div', 'wf-reduction', red));
     row.appendChild(info);
+    if (sessionId && S.distillAvailable) {
+      const ev = el('button', 'btn ghost small', '⚖ Evaluate');
+      ev.title = 'Grade this against the real session outcome; ≥75 banks it as an exemplar (~1 min)';
+      ev.onclick = async () => {
+        ev.disabled = true; ev.textContent = 'judging…';
+        try {
+          const r = await api.post(`/api/boards/${S.boardId}/workflows/eval`, { template: t, session_id: sessionId });
+          ev.textContent = '★ ' + r.score + (r.banked_as_exemplar ? ' · banked' : '');
+          toast(`scored ${r.score}/100 — ${r.critique}`.slice(0, 160));
+        } catch (e) { toast('eval failed: ' + e.message); ev.disabled = false; ev.textContent = '⚖ Evaluate'; }
+      };
+      row.appendChild(ev);
+    }
     const edit = el('button', 'btn ghost small', '✎ Edit'); edit.onclick = () => openWorkflowBuilder(null, t);
     row.appendChild(edit);
     list.appendChild(row);
@@ -2009,6 +2023,77 @@ function reviewDistilled(templates) {
     } catch (e) { toast('create failed: ' + e.message); }
   };
   foot.appendChild(create); foot.style.display = '';
+}
+
+// ---- training: the self-improvement surface ----------------------------
+// Shows what the system has proven (exemplars that steer future distillation)
+// and recent grounded evaluations, and lets you run an improvement pass.
+async function openTraining() {
+  if (S.demo) { toast('Training runs on your local Deckhand'); return; }
+  const { body, foot } = autoFrame('training', '🧠 Training',
+    { back: true, sub: 'Distill → judge against the real outcome → keep what proves out as exemplars that steer future distillation.' });
+  setHash('#/automations/training');
+  body.appendChild(el('div', 'sug-loading', 'loading the library…'));
+  let data;
+  try { data = await api.get(`/api/boards/${S.boardId}/exemplars`); }
+  catch (e) { body.innerHTML = ''; body.appendChild(el('div', 'label', 'could not load: ' + e.message)); return; }
+  if (S.autoView !== 'training') return;
+  renderTraining(body, foot, data);
+}
+
+function renderTraining(body, foot, data) {
+  body.innerHTML = '';
+  const ex = data.exemplars || [], evals = data.evals || [];
+
+  body.appendChild(el('h3', null, `Proven exemplars (${ex.length})`));
+  if (!ex.length) {
+    body.appendChild(el('div', 'label',
+      'None yet. Run an improvement pass below, or Evaluate a workflow after Analyze — anything scoring ≥75 is banked here and steers future distillation.'));
+  }
+  for (const e of ex) {
+    const row = el('div', 'wf-row');
+    const info = el('div', 'wf-info');
+    const t = el('div', 'wf-title');
+    t.appendChild(el('span', 'sug-kind pat', '★ ' + Math.round(e.score)));
+    t.appendChild(el('span', 'wf-name', e.name));
+    info.appendChild(t);
+    if (e.template && e.template.description) info.appendChild(el('div', 'wf-desc', e.template.description));
+    const red = promptingReduction(e.source_tokens); if (red) info.appendChild(el('div', 'wf-reduction', red));
+    row.appendChild(info);
+    const del = el('button', 'btn ghost small danger', '🗑'); del.title = 'Remove exemplar';
+    del.onclick = async () => { try { await api.del(`/api/exemplars/${e.id}`); openTraining(); } catch (er) { toast(er.message); } };
+    row.appendChild(del);
+    body.appendChild(row);
+  }
+
+  body.appendChild(el('h3', null, `Recent evaluations (${evals.length})`));
+  if (!evals.length) body.appendChild(el('div', 'label', 'No evaluations yet.'));
+  for (const v of evals.slice(0, 15)) {
+    const row = el('div', 'wf-row');
+    const info = el('div', 'wf-info');
+    const t = el('div', 'wf-title');
+    const verdict = (v.breakdown && v.breakdown.verdict) || '';
+    t.appendChild(el('span', 'sug-kind ' + (v.score >= 75 ? 'pat' : 'proj'), Math.round(v.score) + '/100'));
+    t.appendChild(el('span', 'wf-name', v.name || '(unnamed)'));
+    if (verdict) t.appendChild(el('span', 'wf-stepcount', verdict));
+    info.appendChild(t);
+    if (v.critique) info.appendChild(el('div', 'wf-desc', v.critique));
+    row.appendChild(info);
+    body.appendChild(row);
+  }
+
+  const imp = el('button', 'btn primary', '🧠 Run an improvement pass');
+  imp.title = 'Distill + judge your richest sessions and bank the winners (slow — real agent runs).';
+  imp.onclick = async () => {
+    imp.disabled = true; imp.textContent = 'running… (a few minutes)';
+    try {
+      const r = await api.post(`/api/boards/${S.boardId}/workflows/improve`, { limit: 2 });
+      const banked = (r.results || []).filter(x => x.banked).length;
+      toast(`pass done — ${r.results.length} judged, ${banked} banked ✓`);
+      openTraining();
+    } catch (e) { toast('improve failed: ' + e.message); imp.disabled = false; imp.textContent = '🧠 Run an improvement pass'; }
+  };
+  foot.appendChild(imp); foot.style.display = '';
 }
 
 // ---- minimal markdown -> HTML (for the terminal transcript preview) -----
@@ -2360,6 +2445,7 @@ function route() {
     else if (sub === 'suggest') openSuggestAutomations();
     else if (sub === 'templates') openTemplatePicker();
     else if (sub === 'import') importWorkflowModal();
+    else if (sub === 'training') openTraining();
     else { const wf = S.workflowById[sub]; wf ? openWorkflowBuilder(wf) : openWorkflowsModal(); }
   } else if (parts[0] === 'card') {
     closeAutomations();
