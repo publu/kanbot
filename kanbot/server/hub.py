@@ -99,10 +99,26 @@ class Hub:
         self.agent_sessions[runner_id] = sessions
         await self.broadcast({"type": "agent.sessions.updated"})
 
+    @staticmethod
+    def _is_noise_session(s: dict) -> bool:
+        """KanBot's own internal agent calls (distillation/eval/judge run via the
+        CLI) get logged and re-discovered. They're not the user's work — hide
+        them from every consumer (board, suggest, profile)."""
+        name = (s.get("name") or "").lower()
+        if name.startswith(("kanbot-scratch", "kanbot-replay", "tmp", "t.")):
+            return True
+        blob = ((s.get("title") or "") + " " + (s.get("recap") or "") + " "
+                + " ".join(m.get("text", "") for m in (s.get("tail") or []))).lower()
+        return ("reply with exactly the two words: hello world" in blob
+                or "you are extracting reusable, grounded workflows" in blob
+                or "you are auditing a candidate automation" in blob
+                or "you are converting a developer" in blob
+                or "you are mining a developer's past" in blob)
+
     def all_agent_sessions(self) -> List[dict]:
         out: List[dict] = []
         for sessions in self.agent_sessions.values():
-            out.extend(sessions)
+            out.extend(s for s in sessions if not self._is_noise_session(s))
         out.sort(key=lambda s: s.get("mtime", 0), reverse=True)
         return out
 

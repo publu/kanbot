@@ -321,7 +321,7 @@ async function attemptLocal() {
     const pill = $('.demo-pill'); if (pill) pill.remove();
     const bar = $('.demo-bar'); if (bar) bar.remove();
     $('#version').textContent = 'local · v' + h.version;
-    closeModal(); closeOnboarding();
+    closeModal(); closeAutomations();
     // The user just connected THEIR machine — always profile it, even if they'd
     // dismissed the demo onboarding. Clearing the flag makes liveSetup's
     // maybeOnboard re-run the scan on their real sessions.
@@ -331,10 +331,22 @@ async function attemptLocal() {
   } catch (e) { return false; }
 }
 
+// KanBot's own internal agent calls (distillation, eval, judging) spawn agent
+// sessions that get logged and re-discovered — pure noise. Hide them everywhere.
+function isNoiseSession(s) {
+  const n = (s.name || '').toLowerCase();
+  if (n.startsWith('kanbot-scratch') || n.startsWith('kanbot-replay') || n.startsWith('tmp')) return true;
+  const blob = ((s.title || '') + ' ' + (s.recap || '') + ' ' + (s.tail || []).map(m => m.text || '').join(' ')).toLowerCase();
+  return blob.includes('reply with exactly the two words: hello world')
+    || blob.includes('you are extracting reusable, grounded workflows')
+    || blob.includes('you are auditing a candidate automation')
+    || blob.includes('you are converting a developer');
+}
+
 async function loadAgentSessions() {
   try {
     const { sessions } = await api.get('/api/agent-sessions');
-    S.agentSessions = sessions;
+    S.agentSessions = (sessions || []).filter(s => !isNoiseSession(s));
   } catch (e) { S.agentSessions = []; }
   updateLiveBadge();
   renderColumns();
@@ -1622,8 +1634,20 @@ async function openSuggestAutomations() {
     return;
   }
   const patterns = suggestions.filter(s => s.kind === 'pattern');
-  if (note) note.textContent =
-    `Each card is one session (your most substantial first) — hit ✨ Analyze to deep-read it and extract its workflows. Pattern automations at top are ready-made.`;
+  // surface the sessions that match the profile the user picked, first
+  if (S.domains && S.domains.length) {
+    const byId = Object.fromEntries((S.agentSessions || []).map(s => [s.session_id, s]));
+    const score = (sug) => {
+      if (sug.kind !== 'session') return 2;
+      const s = byId[sug.session_id]; const d = s ? sessionDomain(s) : null;
+      return d && S.domains.includes(d) ? 1 : 0;
+    };
+    suggestions.forEach((s, i) => s._ord = i);
+    suggestions.sort((a, b) => (score(b) - score(a)) || (a._ord - b._ord));
+  }
+  if (note) note.textContent = (S.domains && S.domains.length)
+    ? `Sessions in your focus (${S.domains.join(', ')}) first — hit ✨ Analyze to extract workflows. Pattern automations at top are ready-made.`
+    : `Each card is one session — hit ✨ Analyze to deep-read it and extract its workflows. Pattern automations at top are ready-made.`;
   for (const sug of suggestions) list.appendChild(suggestionCard(sug));
 
   if (patterns.length) {
@@ -2452,6 +2476,8 @@ function route() {
   } else if (parts[0] === 'card') {
     closeAutomations();
     if (S.cards.find(c => c.id === parts[1])) openDrawer(parts[1]); else closeAllOverlays();
+  } else if (parts[0] === 'profile') {
+    if (!S.demo || S.agentSessions.length) openProfile(); else closeAllOverlays();
   } else if (parts[0] === 'sessions') {
     closeAutomations(); openSessionsModal();
   } else {
@@ -2494,27 +2520,36 @@ function detectDomains(sessions) {
     .sort((a, b) => b.count - a.count || b.score - a.score);
 }
 
-function closeOnboarding() {
-  const ob = $('#onboard'); if (!ob) return;
-  ob.classList.add('done');
-  setTimeout(() => { ob.className = 'onboard'; ob.innerHTML = ''; }, 400);
+// Which single domain a session most belongs to (for filtering the suggest list).
+function sessionDomain(s) {
+  const blob = (' ' + (s.name || '') + ' ' + (s.cwd || '') + ' ' + (s.title || '') + ' '
+    + (s.recap || '') + ' ' + (s.tail || []).map(m => m.text || '').join(' ') + ' ').toLowerCase();
+  let best = null, bh = 0;
+  for (const d of WORK_DOMAINS) { let h = 0; for (const k of d.kw) if (blob.includes(k)) h++; if (h > bh) { bh = h; best = d; } }
+  return bh >= 1 ? best.key : null;
 }
 
-function runOnboarding() {
-  const ob = $('#onboard'); if (!ob) return;
-  ob.className = 'onboard show'; ob.innerHTML = '';
+// Profile is a first-class, routed surface (#/profile) — revisit it anytime via
+// the ◎ profile button, `p`, or ⌘K. Not a one-shot popup.
+function openProfile() {
+  const animate = localStorage.getItem('kanbot_onboarded') !== '1';
+  const { body, foot } = autoFrame('profile', '◎ Profile',
+    { sub: S.demo ? 'derived from the sample data — connect your machine to profile yours' : 'derived from your agent sessions' });
+  setHash('#/profile');
   const sessions = S.agentSessions || [];
+  if (animate) profileScan(body, sessions, () => profileReveal(body, foot, sessions));
+  else profileReveal(body, foot, sessions);
+}
 
-  // STAGE 1 — scan (the loading IS the analysis)
-  const scan = el('div', 'ob-stage ob-scan');
+function profileScan(body, sessions, done) {
+  body.innerHTML = '';
+  const wrap = el('div', 'ob-scan');
   const head = el('div', 'ob-scan-head');
   head.appendChild(el('span', 'ob-prompt', '❯'));
   head.appendChild(document.createTextNode(' scanning your agent sessions '));
   head.appendChild(el('span', 'boot-caret', '▮'));
-  scan.appendChild(head);
-  const log = el('div', 'ob-scan-log'); scan.appendChild(log);
-  ob.appendChild(scan);
-
+  wrap.appendChild(head);
+  const log = el('div', 'ob-scan-log'); wrap.appendChild(log); body.appendChild(wrap);
   const projects = new Set(sessions.map(s => s.name || s.cwd).filter(Boolean));
   const lines = [
     'reading ~/.claude/projects · ~/.codex/sessions …',
@@ -2524,77 +2559,65 @@ function runOnboarding() {
   ];
   let i = 0;
   const tick = () => {
-    if (i < lines.length) {
-      const ln = el('div', 'ob-log-line'); ln.textContent = '  ' + lines[i]; log.appendChild(ln);
-      i++; setTimeout(tick, 360 + Math.random() * 240);
-    } else setTimeout(reveal, 480);
+    if (i < lines.length) { const ln = el('div', 'ob-log-line'); ln.textContent = '  ' + lines[i]; log.appendChild(ln); i++; setTimeout(tick, 340 + Math.random() * 220); }
+    else setTimeout(() => { if (S.autoView === 'profile') done(); }, 420);
   };
-  setTimeout(tick, 320);
+  setTimeout(tick, 260);
+}
 
-  // STAGE 2 — reveal what they build + let them pick
-  function reveal() {
-    const domains = detectDomains(sessions);
-    ob.innerHTML = '';
-    const r = el('div', 'ob-stage ob-reveal');
-    r.appendChild(el('div', 'ob-kicker', (S.demo ? 'PROFILE · from the sample data' : 'PROFILE · derived from your sessions')));
-    if (!domains.length) {
-      r.appendChild(el('h2', 'ob-title', 'No clear patterns yet'));
-      r.appendChild(el('div', 'ob-sub', 'Run a few real coding sessions, then rescan — KanBot learns your domains from what you actually do.'));
-      const act = el('div', 'ob-actions');
-      const go = el('button', 'btn primary', 'Go to the board'); go.onclick = closeOnboarding;
-      act.appendChild(go); r.appendChild(act); ob.appendChild(r); return;
-    }
-    r.appendChild(el('h2', 'ob-title', "Here's what you build"));
-    r.appendChild(el('div', 'ob-sub',
-      'Pick the areas to have KanBot learn. It studies those sessions, grades the workflows it distills, and gets better at turning your repeated work into one-command automations.'));
-
-    const grid = el('div', 'ob-grid');
-    const top = domains.slice(0, 8);
-    const selected = new Set(top.slice(0, Math.min(3, top.length)).map(d => d.key));
-    top.forEach(d => {
-      const card = el('button', 'ob-card' + (selected.has(d.key) ? ' on' : ''));
-      card.appendChild(el('div', 'ob-card-icon', d.icon));
-      const b = el('div', 'ob-card-b');
-      b.appendChild(el('div', 'ob-card-l', d.label));
-      b.appendChild(el('div', 'ob-card-m', `${d.count} session${d.count === 1 ? '' : 's'} · ${d.projects.slice(0, 3).join(', ')}${d.projects.length > 3 ? '…' : ''}`));
-      card.appendChild(b);
-      const chk = el('span', 'ob-card-chk', selected.has(d.key) ? '✓' : '');
-      card.appendChild(chk);
-      card.onclick = () => {
-        if (selected.has(d.key)) { selected.delete(d.key); card.classList.remove('on'); chk.textContent = ''; }
-        else { selected.add(d.key); card.classList.add('on'); chk.textContent = '✓'; }
-      };
-      grid.appendChild(card);
-    });
-    r.appendChild(grid);
-
-    const act = el('div', 'ob-actions');
-    const persist = () => {
-      S.domains = [...selected];
-      try { localStorage.setItem('kanbot_domains', JSON.stringify(S.domains)); localStorage.setItem('kanbot_onboarded', '1'); } catch (e) {}
-      renderStatus();
-    };
-    if (S.demo) {
-      const explore = el('button', 'btn ghost', 'Explore the demo'); explore.onclick = () => { persist(); closeOnboarding(); };
-      const conn = el('button', 'btn primary', '⚡ Profile MY machine');
-      conn.onclick = () => { persist(); closeOnboarding(); showConnectPanel(); };
-      act.appendChild(explore); act.appendChild(conn);
-    } else {
-      const skip = el('button', 'btn ghost', 'Skip'); skip.onclick = () => { persist(); closeOnboarding(); };
-      const go = el('button', 'btn primary', 'Start learning →');
-      go.onclick = () => { persist(); closeOnboarding(); if (S.domains.length) { toast(`learning ${S.domains.length} area${S.domains.length === 1 ? '' : 's'} — analyzing your sessions`); openSuggestAutomations(); } };
-      act.appendChild(skip); act.appendChild(go);
-    }
-    r.appendChild(act);
-    ob.appendChild(r);
+function profileReveal(body, foot, sessions) {
+  if (S.autoView !== 'profile') return;
+  body.innerHTML = ''; foot.innerHTML = '';
+  const domains = detectDomains(sessions);
+  if (!domains.length) {
+    body.appendChild(el('div', 'ob-sub', 'No clear patterns yet — run a few real coding sessions, then reopen Profile. KanBot learns your domains from what you actually do.'));
+    return;
   }
+  body.appendChild(el('div', 'ob-kicker', S.demo ? 'PROFILE · sample data' : 'PROFILE · derived from your sessions'));
+  body.appendChild(el('h2', 'ob-title', "Here's what you build"));
+  body.appendChild(el('div', 'ob-sub', 'Pick the areas to have KanBot learn. It studies those sessions, grades the workflows it distills, and turns your repeated work into one-command automations. Change this anytime.'));
+  const grid = el('div', 'ob-grid');
+  const top = domains.slice(0, 8);
+  const current = new Set(S.domains || []);
+  const selected = current.size ? new Set([...current].filter(k => top.some(d => d.key === k))) : new Set(top.slice(0, Math.min(3, top.length)).map(d => d.key));
+  top.forEach(d => {
+    const card = el('button', 'ob-card' + (selected.has(d.key) ? ' on' : ''));
+    card.appendChild(el('div', 'ob-card-icon', d.icon));
+    const b = el('div', 'ob-card-b');
+    b.appendChild(el('div', 'ob-card-l', d.label));
+    b.appendChild(el('div', 'ob-card-m', `${d.count} session${d.count === 1 ? '' : 's'} · ${d.projects.slice(0, 3).join(', ')}${d.projects.length > 3 ? '…' : ''}`));
+    card.appendChild(b);
+    const chk = el('span', 'ob-card-chk', selected.has(d.key) ? '✓' : '');
+    card.appendChild(chk);
+    card.onclick = () => {
+      if (selected.has(d.key)) { selected.delete(d.key); card.classList.remove('on'); chk.textContent = ''; }
+      else { selected.add(d.key); card.classList.add('on'); chk.textContent = '✓'; }
+    };
+    grid.appendChild(card);
+  });
+  body.appendChild(grid);
+  const save = () => {
+    S.domains = [...selected];
+    try { localStorage.setItem('kanbot_domains', JSON.stringify(S.domains)); localStorage.setItem('kanbot_onboarded', '1'); } catch (e) {}
+    renderStatus();
+  };
+  if (S.demo) {
+    const explore = el('button', 'btn ghost', 'Explore the demo'); explore.onclick = () => { save(); closeAutomations(); };
+    const conn = el('button', 'btn primary', '⚡ Profile my machine'); conn.onclick = () => { save(); showConnectPanel(); };
+    foot.appendChild(explore); foot.appendChild(conn);
+  } else {
+    const done = el('button', 'btn ghost', 'Done'); done.onclick = () => { save(); closeAutomations(); };
+    const go = el('button', 'btn primary', 'Suggest automations →'); go.onclick = () => { save(); openSuggestAutomations(); };
+    foot.appendChild(done); foot.appendChild(go);
+  }
+  foot.style.display = '';
 }
 
 function maybeOnboard() {
   try { S.domains = JSON.parse(localStorage.getItem('kanbot_domains') || '[]'); } catch (e) { S.domains = []; }
   const onboarded = localStorage.getItem('kanbot_onboarded') === '1';
   const deepLink = location.hash && location.hash !== '#/' && location.hash !== '#';
-  if (!onboarded && !deepLink) runOnboarding();
+  if (!onboarded && !deepLink) openProfile();
 }
 
 // ---- TUI: boot splash, status bar, command palette, keyboard nav --------
@@ -2649,7 +2672,7 @@ function paletteCommands() {
   const c = [];
   const add = (label, hint, run) => c.push({ label, hint, run });
   if (S.demo) add('Connect local backend', 'run kanbot up & link', showConnectPanel);
-  add('Profile · rescan my work', 'classify your sessions (p)', () => runOnboarding());
+  add('Profile · what KanBot learned about you', 'your work domains (p)', () => openProfile());
   add('New task', 'one-off agent task (n)', () => openComposer());
   add('Automations', 'multi-step runs (w)', () => openAutomations());
   add('Suggest automations from my sessions', 'analyze & distill', () => openSuggestAutomations());
@@ -2724,7 +2747,7 @@ function wireGlobalUI() {
   if (!window.__kbRouter) { window.__kbRouter = true; window.addEventListener('popstate', applyRoute); }
   const nb = $('#newTaskBtn'); if (nb) nb.onclick = () => openComposer();
   const wb = $('#workflowsBtn'); if (wb) wb.onclick = openAutomations;
-  const pb = $('#profileBtn'); if (pb) pb.onclick = runOnboarding;
+  const pb = $('#profileBtn'); if (pb) pb.onclick = openProfile;
   $('#sessionsBtn').onclick = () => { S.extractPick.clear(); openSessionsModal(); };
   $('#manageTagsBtn').onclick = openManageTags;
   $('#apiBtn').onclick = openApiModal;
@@ -2746,7 +2769,7 @@ function wireGlobalUI() {
     switch (e.key) {
       case 'n': case 'N': e.preventDefault(); openComposer(); break;
       case 'w': case 'W': e.preventDefault(); openAutomations(); break;
-      case 'p': case 'P': e.preventDefault(); runOnboarding(); break;
+      case 'p': case 'P': e.preventDefault(); openProfile(); break;
       case 'g': if (S.demo) { e.preventDefault(); showConnectPanel(); } break;
       case 'ArrowDown': case 'j': e.preventDefault(); moveSel(0, 1); break;
       case 'ArrowUp': case 'k': e.preventDefault(); moveSel(0, -1); break;
