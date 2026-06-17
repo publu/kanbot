@@ -2,7 +2,7 @@
 
 **A visual control room for your coding-agent TUIs — and a Kanban board where every card is a task run by them.**
 
-**Live demo:** https://getkanbot.vercel.app · **Install:** `pipx install kanbot && kanbot up`
+**Live demo:** https://getkanbot.vercel.app · **Run instantly:** `uvx kanbot` (or `pipx install kanbot && kanbot up`)
 
 You run a lot of terminal coding agents (Claude Code, Codex, …). KanBot gives you
 one screen to *see what every session is doing*, pick any of them back up, and
@@ -156,6 +156,31 @@ The point of 0.4.0 is making workflows **easy to get**, not just run:
 API: `GET /api/workflow-templates`, `…/workflows` (CRUD), `…/workflows/import`,
 `…/workflows/extract`, `…/workflows/{id}/export`, `…/workflows/{id}/run`. The full
 spec is under **`</> API`** in the app.
+
+## Self-improving (Training)
+
+A workflow's job is to **distill a whole conversation into a procedure that
+reproduces the outcome with far less prompting** — cards show the estimated
+"↓ ~Nx less prompting." Deckhand improves at this on its own, locally, using your
+agents:
+
+- **Grounded distillation.** Extraction runs an agent *read-only inside the
+  session's real repo*, so workflows are verified against actual code, not
+  hallucinated from chat.
+- **Evaluate.** After Analyze, **⚖ Evaluate** grades a workflow against the
+  session's real outcome (git diff/commits) — fidelity, reusability, baked-in
+  takeaways — and writes a grounded critique.
+- **Exemplar library.** Anything scoring ≥75 is banked as a **proven exemplar**
+  and injected as few-shot into future distillation — the system bootstraps off
+  its own wins. See **⛓ Automations → 🧠 Training**.
+- **Improvement pass.** "🧠 Run an improvement pass" distills + judges your
+  richest sessions and banks the winners (cost-capped; real agent runs).
+- **Sandbox replay (opt-in).** A deeper reward: replay a workflow in a throwaway
+  `git worktree` at the session's pre-state and judge the diff it *produces*
+  against the real one (`sandbox` flag on the eval/improve API).
+
+API: `…/workflows/from-session` (deep extract), `…/workflows/eval`,
+`…/workflows/improve`, `…/exemplars`.
 
 ## Tags & insights
 
