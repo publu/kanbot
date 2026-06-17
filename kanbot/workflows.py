@@ -309,6 +309,8 @@ def suggest_automations(sessions: List[Dict[str, Any]], limit: int = 6) -> List[
         proj = _project_name(rep)
         tpl = extract_workflows(rep, split=False)[0]
         tpl["steps"] = tpl["steps"][:8]
+        # the session's first prompt is the real objective; later turns are noise
+        tpl["_context"] = rep.get("title") or rep.get("recap") or ""
         tpl["name"] = f"{proj} automation"
         tpl["description"] = (f"A repeatable run based on your work in {proj} "
                               f"({len(grp)} session(s) seen).")

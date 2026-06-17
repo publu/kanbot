@@ -1596,17 +1596,25 @@ async function openSuggestAutomations() {
     return;
   }
   if (note) note.textContent = S.distillAvailable
-    ? `${suggestions.length} draft${suggestions.length === 1 ? '' : 's'}. Hit ✨ Refine to have an agent rewrite the raw transcript into clean prompts.`
-    : `${suggestions.length} draft${suggestions.length === 1 ? '' : 's'} (raw transcript — connect a reasoning agent to auto-refine).`;
+    ? `Pattern automations are ready to run. Project drafts are raw transcript — an agent generalizes them into clean workflows when you Refine or Create.`
+    : `${suggestions.length} draft${suggestions.length === 1 ? '' : 's'} (raw transcript — connect a reasoning agent to generalize them).`;
   for (const sug of suggestions) list.appendChild(suggestionCard(sug));
 
   const all = el('button', 'btn primary', `Create all ${suggestions.length}`);
   all.onclick = async () => {
-    all.disabled = true; all.textContent = 'creating…';
-    try {
-      for (const sug of suggestions) await api.post(`/api/boards/${S.boardId}/workflows/import`, { template: sug.template });
-      toast(`created ${suggestions.length} automations ✓`); openWorkflowsModal();
-    } catch (e) { toast('create failed: ' + e.message); all.disabled = false; all.textContent = `Create all ${suggestions.length}`; }
+    all.disabled = true;
+    let n = 0, made = 0;
+    for (const sug of suggestions) {
+      n++;
+      let tpls = [sug.template];
+      if (S.distillAvailable && !sug._distilled && sug.kind === 'project') {
+        all.textContent = `✨ refining ${n}/${suggestions.length}…`;
+        try { const r = await api.post('/api/workflows/distill', { template: sug.template }); const wfs = r.workflows || (r.template ? [r.template] : []); tpls = wfs; } catch (e) { tpls = [sug.template]; }
+      }
+      all.textContent = `creating ${n}/${suggestions.length}…`;
+      for (const t of tpls) { try { await api.post(`/api/boards/${S.boardId}/workflows/import`, { template: t }); made++; } catch (e) { /* skip */ } }
+    }
+    toast(`created ${made} automation${made === 1 ? '' : 's'} ✓`); openWorkflowsModal();
   };
   foot.appendChild(all); foot.style.display = '';
 }
@@ -1630,7 +1638,8 @@ function suggestionCard(sug) {
     [...new Set(sug.sources)].slice(0, 5).forEach(n => src.appendChild(el('span', 'wf-chip', n)));
     info.appendChild(src);
   }
-  if (sug._distilled) { const b = el('span', 'sug-refined', '✨ refined' + (sug._by ? ' by ' + sug._by : '')); info.appendChild(b); }
+  if (sug._distilled) info.appendChild(el('span', 'sug-refined', '✨ refined' + (sug._by ? ' by ' + sug._by : '')));
+  else if (sug.kind === 'project' && S.distillAvailable) info.appendChild(el('span', 'sug-raw', '⚠ raw transcript — an agent generalizes it when you Refine or Create'));
   row.appendChild(info);
   const ctrls = el('div', 'wf-ctrls');
   if (S.distillAvailable && !sug._distilled) {
@@ -1653,8 +1662,19 @@ function suggestionCard(sug) {
   const create = el('button', 'btn primary small', '＋ Create');
   create.onclick = async () => {
     create.disabled = true;
-    try { await api.post(`/api/boards/${S.boardId}/workflows/import`, { template: sug.template }); toast('automation created ✓'); create.textContent = '✓ created'; }
-    catch (e) { toast(e.message); create.disabled = false; }
+    try {
+      let tpls = [sug.template];
+      if (S.distillAvailable && !sug._distilled && sug.kind === 'project') {
+        create.textContent = '✨ refining…';
+        const r = await api.post('/api/workflows/distill', { template: sug.template });
+        const wfs = r.workflows || (r.template ? [r.template] : []);
+        if (!wfs.length) { toast('nothing worth automating in that session'); create.disabled = false; create.textContent = '＋ Create'; return; }
+        tpls = wfs;
+      }
+      create.textContent = 'creating…';
+      for (const t of tpls) await api.post(`/api/boards/${S.boardId}/workflows/import`, { template: t });
+      toast(tpls.length > 1 ? `created ${tpls.length} ✓` : 'automation created ✓'); create.textContent = '✓ created';
+    } catch (e) { toast(e.message); create.disabled = false; create.textContent = '＋ Create'; }
   };
   ctrls.appendChild(edit); ctrls.appendChild(create);
   row.appendChild(ctrls);

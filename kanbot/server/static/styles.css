@@ -681,5 +681,6 @@ input, textarea, select { font-family: var(--ui); }
 
 /* distillation */
 .sug-refined { font-size: 10px; color: var(--violet); margin-top: 3px; font-weight: 500; }
+.sug-raw { font-size: 10px; color: var(--text-faint); margin-top: 3px; }
 .wf-distill { align-self: flex-start; color: var(--violet); border-color: rgba(180,145,245,.35); }
 .wf-distill:hover { border-color: var(--violet); }

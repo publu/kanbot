@@ -33,12 +33,21 @@ clean, REUSABLE automations (workflows) they can run again on similar tasks.
 Below are the human instructions from the session, in order. They are messy, \
 conversational, full of dead ends, and specific to that moment.
 
+The instructions are a TRANSCRIPT, not a spec. Much of it is noise: meta-\
+commentary aimed at the assistant ("stop telling me what to do", "you should be \
+helping me", "GIVE ME THE LAST PART", "check the fucking folder"), reactions \
+("ok that's good i guess"), and half-formed musings ("so you're saying basically \
+a platform where…"). IGNORE all of that. Infer the underlying ENGINEERING goal \
+from the substance of the work — what was actually being built or fixed — not \
+from the literal words. Never copy a raw chat line into a step name or prompt.
+
 STEP 1 — FIND THE OBJECTIVES. A single session often mixes SEVERAL unrelated \
 goals (e.g. "add a rate limiter" … later … "now rewrite the docs" … later … \
 "set up CI"). Identify each distinct objective. Treat a clear topic shift, a new \
 unrelated noun/feature, or a "now/next/also/different thing" as a boundary. Short \
 follow-ups ("make sure it has tests", "now fix the lint") belong to the objective \
-they refer to — keep them attached.
+they refer to — keep them attached. If the material is too thin or vague to form \
+a real engineering task, return an empty workflows array.
 
 STEP 2 — EMIT ONE WORKFLOW PER OBJECTIVE so they're easy to tell apart:
 - If the session pursued multiple distinct objectives, output MULTIPLE workflows.
@@ -158,8 +167,13 @@ def distill_workflows(template: Dict[str, Any], available: Optional[List[str]] =
     turns = [t for t in turns if t]
     if not turns:
         return []
-    body = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(turns))[:6000]
-    prompt = META_PROMPT % body
+    ctx = str(template.get("_context") or "").strip()
+    body = ""
+    if ctx:
+        body += f"THE SESSION'S OPENING REQUEST (the real goal): {ctx[:800]}\n\n"
+    body += "LATER LINES FROM THE TRANSCRIPT (mostly noise — mine for intent):\n"
+    body += "\n".join(f"- {t}" for t in turns)
+    prompt = META_PROMPT % body[:6500]
     env = os.environ.copy()
     env.update(spec.env)
     try:
