@@ -66,6 +66,7 @@ const S = {
   inspectSessionId: null,   // session_id whose live transcript is open
   currentHash: '',          // last URL hash we set (for the router)
   _routing: false,          // true while applying a route (suppresses pushState)
+  sel: { c: 0, i: -1 },     // keyboard board selection (column, card index; -1 = none)
   dragSession: null,    // session object currently being dragged
   dragging: false,      // a card/session drag is in flight — pause re-renders
   demo: false,          // true when running without a backend (Vercel)
@@ -164,23 +165,10 @@ function enterDemo(showModal = true) {
   S.boards = [DEMO.board]; S.boardId = DEMO.board.id; S.board = DEMO.board;
   S.columns = DEMO.columns; S.cards = DEMO.cards; S.tags = [];
   S.agentSessions = DEMO.sessions;
-  // persistent TUI status bar — always offers the path to a real backend
-  if (!$('.demo-bar')) {
-    const bar = el('div', 'demo-bar');
-    const left = el('div', 'demo-bar-left');
-    left.appendChild(el('span', 'demo-dot'));
-    const txt = el('span', null);
-    txt.innerHTML = '<b>DEMO</b> — sample data · your agents run on your machine, nothing leaves it';
-    left.appendChild(txt);
-    bar.appendChild(left);
-    const cbtn = el('button', 'btn primary small', '⚡ Connect local backend');
-    cbtn.onclick = showConnectPanel;
-    bar.appendChild(cbtn);
-    $('#app').appendChild(bar);
-  }
   updateLiveBadge();
   renderColumns();
   wireGlobalUI();
+  renderStatus();
   if (showModal) showConnectPanel();
 }
 
@@ -267,6 +255,7 @@ async function probeConnect(btn) {
 const LOCAL_KANBOT = 'http://127.0.0.1:8787';
 
 async function boot() {
+  bootSplash();
   const origin = location.origin.replace(/\/$/, '');
   const onLocalOrigin = /(127\.0\.0\.1|localhost):8787/.test(origin);
 
@@ -456,6 +445,7 @@ function handleEvent(msg) {
 function renderRunners() {
   const wrap = $('#runners');
   wrap.innerHTML = '';
+  renderStatus();
   const online = S.runners.filter(r => r.status !== 'offline');
   if (online.length === 0) {
     const pill = el('div', 'runner-pill empty');
@@ -571,6 +561,8 @@ function renderColumns() {
     if (scrollByCol[col.id] != null) body.scrollTop = scrollByCol[col.id];
   }
   board.scrollLeft = boardScrollLeft;
+  applyBoardSel();
+  renderStatus();
 }
 
 function sessionPreview(s) {
@@ -2462,9 +2454,128 @@ function route() {
 }
 function applyRoute() { S._routing = true; try { route(); } finally { S._routing = false; } }
 
+// ---- TUI: boot splash, status bar, command palette, keyboard nav --------
+function bootSplash() {
+  const b = $('#boot'); if (!b) return;
+  b.innerHTML = '';
+  b.appendChild(el('pre', 'boot-art',
+    "  _   __            ____        _   \n" +
+    " | | / /__ ____    / __ )___  / /_ \n" +
+    " | |/ / _ `/ _ \\  / __  / _ \\/ __/ \n" +
+    " |___/\\_,_/_//_/ /_____/\\___/\\__/  "));
+  const line = el('div', 'boot-line');
+  line.appendChild(document.createTextNode('agent control room · booting '));
+  line.appendChild(el('span', 'boot-caret', '▮'));
+  b.appendChild(line);
+  setTimeout(() => { b.classList.add('done'); setTimeout(() => b.remove(), 480); }, 850);
+}
+
+function renderStatus() {
+  const sb = $('#statusbar'); if (!sb) return;
+  sb.innerHTML = '';
+  const left = el('div', 'sb-left');
+  if (S.demo) {
+    const tag = el('span', 'sb-tag demo', '◌ DEMO'); tag.onclick = showConnectPanel; left.appendChild(tag);
+    left.appendChild(el('span', 'sb-dim', 'sample data — not connected'));
+  } else {
+    left.appendChild(el('span', 'sb-tag live', '● LIVE'));
+    left.appendChild(el('span', 'sb-dim', (S.board && S.board.name) || 'board'));
+    const online = (S.runners || []).filter(r => r.status !== 'offline');
+    if (online.length) {
+      const caps = [...availableAgentNames()];
+      left.appendChild(el('span', 'sb-dim', `${online.length} runner${online.length > 1 ? 's' : ''} · ${caps.join('·') || '—'}`));
+    } else left.appendChild(el('span', 'sb-dim warn', 'no runner — run `kanbot up`'));
+    const act = S.agentSessions.filter(isSessionActive).length;
+    if (act) left.appendChild(el('span', 'sb-tag work', `◆ ${act} working`));
+  }
+  sb.appendChild(left);
+  const right = el('div', 'sb-right');
+  if (S.demo) { const c = el('span', 'sb-connect', '⚡ connect local backend'); c.onclick = showConnectPanel; right.appendChild(c); }
+  const keys = S.demo
+    ? [['⌘K', 'commands'], ['g', 'connect']]
+    : [['⌘K', 'commands'], ['n', 'task'], ['w', 'auto'], ['j k', 'move'], ['⏎', 'open'], ['/', 'find']];
+  for (const [k, label] of keys) {
+    const s = el('span', 'sb-key'); s.appendChild(el('kbd', null, k)); s.appendChild(el('span', 'sb-key-l', label)); right.appendChild(s);
+  }
+  sb.appendChild(right);
+}
+
+// command palette --------------------------------------------------------
+function paletteCommands() {
+  const c = [];
+  const add = (label, hint, run) => c.push({ label, hint, run });
+  if (S.demo) add('Connect local backend', 'run kanbot up & link', showConnectPanel);
+  add('New task', 'one-off agent task (n)', () => openComposer());
+  add('Automations', 'multi-step runs (w)', () => openAutomations());
+  add('Suggest automations from my sessions', 'analyze & distill', () => openSuggestAutomations());
+  add('Training', 'exemplars + improvement pass', () => openTraining());
+  add('Browse templates', '', () => openTemplatePicker());
+  add('Import automation', 'paste JSON', () => importWorkflowModal());
+  add('Sessions', 'recent agent sessions', () => { S.extractPick.clear(); openSessionsModal(); });
+  add('Manage tags', '', () => openManageTags());
+  add('API reference', 'build your own client', () => openApiModal());
+  for (const wf of (S.workflows || [])) add('Run · ' + wf.name, `${wf.steps.length} steps`, () => runWorkflow(wf.id, wf.cwd, ''));
+  return c;
+}
+let _palItems = [], _palIdx = 0;
+function openPalette() {
+  $('#paletteScrim').classList.add('open');
+  const inp = $('#paletteInput'); inp.value = ''; filterPalette('');
+  setTimeout(() => inp.focus(), 15);
+}
+function closePalette() { $('#paletteScrim').classList.remove('open'); }
+function paletteIsOpen() { return $('#paletteScrim').classList.contains('open'); }
+function filterPalette(q) {
+  q = (q || '').toLowerCase().trim();
+  const all = paletteCommands();
+  _palItems = q ? all.filter(c => c.label.toLowerCase().includes(q)) : all;
+  _palIdx = 0;
+  const list = $('#paletteList'); list.innerHTML = '';
+  _palItems.slice(0, 50).forEach((c, i) => {
+    const r = el('div', 'palette-item' + (i === 0 ? ' sel' : ''));
+    r.appendChild(el('span', 'palette-item-l', c.label));
+    if (c.hint) r.appendChild(el('span', 'palette-item-h', c.hint));
+    r.onmousemove = () => { _palIdx = i; paintPalette(); };
+    r.onclick = execPalette;
+    list.appendChild(r);
+  });
+}
+function paintPalette() { [...$('#paletteList').children].forEach((e, i) => e.classList.toggle('sel', i === _palIdx)); }
+function execPalette() { const c = _palItems[_palIdx]; closePalette(); if (c) c.run(); }
+function paletteKey(e) {
+  if (e.key === 'Escape') { e.preventDefault(); closePalette(); }
+  else if (e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n')) { e.preventDefault(); _palIdx = Math.min(_palItems.length - 1, _palIdx + 1); paintPalette(); palScroll(); }
+  else if (e.key === 'ArrowUp' || (e.ctrlKey && e.key === 'p')) { e.preventDefault(); _palIdx = Math.max(0, _palIdx - 1); paintPalette(); palScroll(); }
+  else if (e.key === 'Enter') { e.preventDefault(); execPalette(); }
+}
+function palScroll() { const s = $('#paletteList').children[_palIdx]; if (s) s.scrollIntoView({ block: 'nearest' }); }
+
+// keyboard board navigation ----------------------------------------------
+function boardColumns() { return [...document.querySelectorAll('#board .column')].map(col => [...col.querySelectorAll('.col-body .card')]); }
+function applyBoardSel() {
+  document.querySelectorAll('#board .card.kb-sel').forEach(e => e.classList.remove('kb-sel'));
+  if (S.sel.i < 0) return;
+  const grid = boardColumns(); const card = (grid[S.sel.c] || [])[S.sel.i];
+  if (card) { card.classList.add('kb-sel'); card.scrollIntoView({ block: 'nearest' }); }
+}
+function moveSel(dc, di) {
+  const grid = boardColumns(); if (!grid.length) return;
+  if (S.sel.i < 0) { S.sel.c = 0; S.sel.i = 0; }
+  else {
+    S.sel.c = Math.max(0, Math.min(grid.length - 1, S.sel.c + dc));
+    S.sel.i = Math.max(0, Math.min((grid[S.sel.c] || []).length - 1, S.sel.i + di));
+  }
+  applyBoardSel();
+}
+function openSelected() { const grid = boardColumns(); const card = (grid[S.sel.c] || [])[S.sel.i]; if (card) card.click(); }
+function boardActive() { return !modalOpen() && !$('#drawer').classList.contains('open') && !autoIsOpen() && !paletteIsOpen(); }
+
 // ---- global UI ----------------------------------------------------------
 function wireGlobalUI() {
   installGlobalImageDrop();
+  const pi = $('#paletteInput');
+  if (pi && !pi._wired) { pi._wired = true; pi.oninput = () => filterPalette(pi.value); }
+  const psc = $('#paletteScrim'); if (psc) psc.onclick = (e) => { if (e.target.id === 'paletteScrim') closePalette(); };
   if (!window.__kbRouter) { window.__kbRouter = true; window.addEventListener('popstate', applyRoute); }
   const nb = $('#newTaskBtn'); if (nb) nb.onclick = () => openComposer();
   const wb = $('#workflowsBtn'); if (wb) wb.onclick = openAutomations;
@@ -2476,16 +2587,28 @@ function wireGlobalUI() {
   $('#modalScrim').onclick = (e) => { if (e.target.id === 'modalScrim') closeModal(); };
   $('#dTitle').onblur = () => { if (S.openCardId) patchCard(S.openCardId, { title: $('#dTitle').value }); };
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') { closeModal(); closeDrawer(); closeAutomations(); }
-    // 'n' opens the composer when not typing into a field
-    const typing = /^(INPUT|TEXTAREA|SELECT)$/.test((e.target.tagName || ''));
-    if (!typing && (e.key === 'n' || e.key === 'N') && !modalOpen() && !$('#drawer').classList.contains('open')) {
-      e.preventDefault(); openComposer();
+    // Command palette: Cmd/Ctrl+K anywhere (even while typing)
+    if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+      e.preventDefault(); paletteIsOpen() ? closePalette() : openPalette(); return;
     }
-    if (!typing && (e.key === 'w' || e.key === 'W') && !modalOpen() && !$('#drawer').classList.contains('open')) {
-      e.preventDefault(); openAutomations();
+    if (paletteIsOpen()) { paletteKey(e); return; }
+    if (e.key === 'Escape') { closeModal(); closeDrawer(); closeAutomations(); return; }
+    const typing = /^(INPUT|TEXTAREA|SELECT)$/.test((e.target.tagName || ''));
+    if (typing) return;
+    if (e.key === '/' || e.key === ':') { e.preventDefault(); openPalette(); return; }
+    if (!boardActive()) return;
+    switch (e.key) {
+      case 'n': case 'N': e.preventDefault(); openComposer(); break;
+      case 'w': case 'W': e.preventDefault(); openAutomations(); break;
+      case 'g': if (S.demo) { e.preventDefault(); showConnectPanel(); } break;
+      case 'ArrowDown': case 'j': e.preventDefault(); moveSel(0, 1); break;
+      case 'ArrowUp': case 'k': e.preventDefault(); moveSel(0, -1); break;
+      case 'ArrowRight': case 'l': e.preventDefault(); moveSel(1, 0); break;
+      case 'ArrowLeft': case 'h': e.preventDefault(); moveSel(-1, 0); break;
+      case 'Enter': e.preventDefault(); openSelected(); break;
     }
   });
+  renderStatus();
 }
 function modalOpen() { return $('#modalScrim').classList.contains('open'); }
 

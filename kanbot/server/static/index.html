@@ -32,7 +32,21 @@
 
     <!-- board -->
     <main class="board" id="board"></main>
+
+    <!-- TUI status / keybind bar -->
+    <footer class="statusbar" id="statusbar"></footer>
   </div>
+
+  <!-- command palette -->
+  <div class="palette-scrim" id="paletteScrim">
+    <div class="palette" id="palette">
+      <div class="palette-in"><span class="palette-prompt">❯</span><input id="paletteInput" class="palette-input" placeholder="type a command…" autocomplete="off" spellcheck="false" /></div>
+      <div class="palette-list" id="paletteList"></div>
+    </div>
+  </div>
+
+  <!-- boot splash -->
+  <div class="boot" id="boot"></div>
 
   <!-- card drawer -->
   <div class="drawer-scrim" id="drawerScrim"></div>
