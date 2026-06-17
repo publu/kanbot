@@ -1577,6 +1577,21 @@ function openWorkflowsModal() {
         : 'Your past sessions distilled into reusable, one-line prompts — run them again with far less typing.',
       actions });
 
+  // If a previous build/draft generated playbooks you haven't saved yet, surface
+  // them instead of quietly losing the (expensive) work — resume, don't re-run.
+  restoreBuildState();
+  if (S.build && (S.build.made || []).length) {
+    const m = S.build.made.length;
+    const verb = S.build.kind === 'draft' ? 'drafted' : 'distilled';
+    const banner = el('div', 'wf-resume');
+    banner.appendChild(el('span', 'wf-resume-t', `✨ ${m} playbook${m === 1 ? '' : 's'} ${verb} last time, not yet saved`));
+    const view = el('button', 'btn small', 'review →');
+    view.onclick = () => { const { body: b, foot: f } = autoFrame('build', S.build.kind === 'draft' ? '✎ Your drafted playbook' : '✨ Your playbooks', { back: true }); renderBuildView(b, f); };
+    const drop = el('button', 'btn ghost small', 'discard'); drop.onclick = () => { clearBuildState(); openWorkflowsModal(); };
+    banner.appendChild(view); banner.appendChild(drop);
+    body.appendChild(banner);
+  }
+
   if (!S.workflows.length) {
     const empty = el('div', 'wf-empty');
     empty.appendChild(el('div', 'wf-empty-mark', '✨'));
@@ -1728,6 +1743,38 @@ function renderBuildView(body, foot) {
   }, 1000);
 }
 
+// Persist generated-but-not-yet-created playbooks across reloads, so kanbot never
+// throws away (or re-generates) work you already paid for. The in-memory S.build
+// covers navigation; this covers a full page reload / coming back tomorrow.
+function saveBuildState() {
+  const st = S.build; if (!st) return;
+  try {
+    localStorage.setItem('kanbot_lastbuild', JSON.stringify({
+      made: st.made, kind: st.kind || 'build', done: st.done, n: st.n,
+      log: (st.log || []).slice(-40), _draft: st._draft || null, at: Date.now(),
+    }));
+  } catch (e) {}
+}
+function clearBuildState() {
+  S.build = null;
+  try { localStorage.removeItem('kanbot_lastbuild'); } catch (e) {}
+}
+function restoreBuildState() {
+  if (S.build) return true;
+  try {
+    const raw = localStorage.getItem('kanbot_lastbuild');
+    if (!raw) return false;
+    const o = JSON.parse(raw);
+    if (!o || !Array.isArray(o.made) || !o.made.length) return false;
+    S.build = {
+      job: null, made: o.made, log: o.log || [], n: o.n || o.made.length,
+      t0: o.at || Date.now(), lastLog: o.at || Date.now(), cur: 'restored',
+      done: true, error: null, dom: null, kind: o.kind || 'build', _draft: o._draft || null,
+    };
+    return true;
+  } catch (e) { return false; }
+}
+
 // push one line into the persistent feed + (if mounted) the live terminal
 function buildTermLine(text) {
   const st = S.build; if (!st) return;
@@ -1758,12 +1805,14 @@ function buildOnWorkflow(msg) {
     st.dom.count.textContent = `${st.made.length} playbook${st.made.length === 1 ? '' : 's'} found so far`;
   }
   buildTermLine(`✓ extracted: ${w.name}`);
+  saveBuildState();
 }
 
 function buildOnDone(msg) {
   const st = S.build; if (!st || msg.job !== st.job) return;
   st.done = true; st.error = msg.error || null;
   buildTermLine(msg.error ? `✗ error: ${msg.error}` : '✓ analysis complete');
+  saveBuildState();
   if (st.dom && S.autoView === 'build') finishBuildView();
 }
 
@@ -1797,6 +1846,7 @@ function finishBuildView() {
       ca.disabled = true; ca.textContent = 'creating…';
       let n = 0;
       for (const w of made) { try { await api.post(`/api/boards/${S.boardId}/workflows/import`, { template: { name: w.name, description: w.description, agent: w.agent, cwd: w.cwd, steps: w.steps, source_tokens: w.source_tokens } }); n++; } catch (e) {} }
+      clearBuildState();
       toast(`created ${n} playbook${n === 1 ? '' : 's'} ✓`); openWorkflowsModal();
     };
     d.foot.appendChild(ca); d.foot.style.display = '';

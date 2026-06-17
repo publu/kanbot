@@ -1019,4 +1019,10 @@ body.demo .board { padding-bottom: 0; }
 .spree-block { color: var(--text-dim); padding: 2px 0; }
 .build-pulse.off { animation: none; background: var(--text-faint); box-shadow: none; }
 .build-line.spree-done .build-working { color: var(--text-faint); animation: none; }
-.wf-empty-ctas { display: flex; gap: 10px; justify-content: center; }
+.wf-empty-ctas { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+.wf-resume {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 14px;
+  padding: 10px 14px; border: 1px solid var(--brand-dim); border-radius: 6px;
+  background: rgba(61,220,132,.06); font-family: var(--mono); font-size: 13px;
+}
+.wf-resume-t { flex: 1; color: var(--brand); }

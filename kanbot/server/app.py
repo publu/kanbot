@@ -427,6 +427,17 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                     await hub.broadcast({"type": "build.session", "job": job,
                                          "name": s.get("name") or "session", "repo": repo,
                                          "i": i + 1, "n": len(sessions)})
+                    # Reuse the same per-(session, mtime) cache the single-session
+                    # extractor uses, so we never re-run the agent on work we already
+                    # distilled. Cache survives until the session file changes.
+                    key = ((s.get("session_id"), int(s.get("mtime", 0))),)
+                    cached = hub.distill_cache.get(key)
+                    if cached is not None:
+                        await hub.broadcast({"type": "build.log", "job": job,
+                                             "line": f"↺ reusing {len(cached)} cached playbook(s) — already distilled"})
+                        for w in cached:
+                            await hub.broadcast({"type": "build.workflow", "job": job, "workflow": w})
+                        continue
                     turns = all_user_turns(s.get("path", ""), s.get("fmt", "claude")) or \
                         [m.get("text", "") for m in (s.get("tail") or []) if m.get("role") == "user"]
                     turns = [t for t in turns if t]
@@ -447,6 +458,10 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                     for w in wfs:
                         w["source_tokens"] = src
                         w["_from"] = s.get("name")
+                    hub.distill_cache[key] = wfs            # persist for next time
+                    if len(hub.distill_cache) > 128:
+                        hub.distill_cache.pop(next(iter(hub.distill_cache)))
+                    for w in wfs:
                         await hub.broadcast({"type": "build.workflow", "job": job, "workflow": w})
                 await hub.broadcast({"type": "build.done", "job": job})
             except Exception as e:
