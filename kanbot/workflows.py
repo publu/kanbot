@@ -316,11 +316,15 @@ def suggest_automations(sessions: List[Dict[str, Any]], limit: int = 6) -> List[
                               f"({len(grp)} session(s) seen).")
         n = len(grp)
         projects.append({
-            "title": f"{proj} automation",
+            "title": proj,
             "kind": "project",
-            "rationale": (f"You've run {n} session{'s' if n != 1 else ''} in {proj}. "
-                          f"Here's a {len(tpl['steps'])}-step automation from your "
-                          "most substantial one — tweak it once, rerun it forever."),
+            # raw drafts are never shown/saved — the project card runs a real
+            # deep distillation of this session on demand.
+            "session_id": rep.get("session_id"),
+            "turns": len(_user_texts(rep)),
+            "rationale": (f"{n} session{'s' if n != 1 else ''} in {proj}. "
+                          "Analyze the most substantial one to extract clean, "
+                          "generalized workflows from it."),
             "sources": [s.get("name") or proj for s in grp][:6],
             "template": tpl,
             "score": n,

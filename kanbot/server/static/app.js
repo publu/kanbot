@@ -1603,36 +1603,33 @@ async function openSuggestAutomations() {
       'Nothing obvious to automate from your current sessions — run a few more, or build one by hand / from a template.'));
     return;
   }
-  if (note) note.textContent = S.distillAvailable
-    ? `Pattern automations are ready to run. Project drafts are raw transcript — an agent generalizes them into clean workflows when you Refine or Create.`
-    : `${suggestions.length} draft${suggestions.length === 1 ? '' : 's'} (raw transcript — connect a reasoning agent to generalize them).`;
+  const patterns = suggestions.filter(s => s.kind === 'pattern');
+  if (note) note.textContent =
+    `Pattern automations are ready to run. For each project, hit ✨ Analyze — it deep-reads that session and extracts clean, generalized workflows (raw transcript is never saved).`;
   for (const sug of suggestions) list.appendChild(suggestionCard(sug));
 
-  const all = el('button', 'btn primary', `Create all ${suggestions.length}`);
-  all.onclick = async () => {
-    all.disabled = true;
-    let n = 0, made = 0;
-    for (const sug of suggestions) {
-      n++;
-      let tpls = [sug.template];
-      if (S.distillAvailable && !sug._distilled && sug.kind === 'project') {
-        all.textContent = `✨ refining ${n}/${suggestions.length}…`;
-        try { const r = await api.post('/api/workflows/distill', { template: sug.template }); const wfs = r.workflows || (r.template ? [r.template] : []); tpls = wfs; } catch (e) { tpls = [sug.template]; }
-      }
-      all.textContent = `creating ${n}/${suggestions.length}…`;
-      for (const t of tpls) { try { await api.post(`/api/boards/${S.boardId}/workflows/import`, { template: t }); made++; } catch (e) { /* skip */ } }
-    }
-    toast(`created ${made} automation${made === 1 ? '' : 's'} ✓`); openWorkflowsModal();
-  };
-  foot.appendChild(all); foot.style.display = '';
+  if (patterns.length) {
+    const all = el('button', 'btn primary', `Add ${patterns.length} pattern automation${patterns.length === 1 ? '' : 's'}`);
+    all.onclick = async () => {
+      all.disabled = true; all.textContent = 'creating…';
+      let made = 0;
+      for (const sug of patterns) { try { await api.post(`/api/boards/${S.boardId}/workflows/import`, { template: sug.template }); made++; } catch (e) { /* skip */ } }
+      toast(`added ${made} automation${made === 1 ? '' : 's'} ✓`); openWorkflowsModal();
+    };
+    foot.appendChild(all); foot.style.display = '';
+  }
 }
 
 function suggestionCard(sug) {
+  // PROJECT cards never show or save raw transcript. They run a real, deep
+  // distillation of the session on demand (the only path that yields good
+  // workflows). PATTERN cards are hand-written templates — clean and instant.
+  if (sug.kind === 'project') return projectSuggestionCard(sug);
+
   const row = el('div', 'wf-row sug-row');
   const info = el('div', 'wf-info');
   const title = el('div', 'wf-title');
-  title.appendChild(el('span', 'sug-kind ' + (sug.kind === 'pattern' ? 'pat' : 'proj'),
-    sug.kind === 'pattern' ? '✨ pattern' : '📁 project'));
+  title.appendChild(el('span', 'sug-kind pat', '✨ pattern'));
   title.appendChild(el('span', 'wf-name', sug.title));
   title.appendChild(el('span', 'wf-stepcount', `${sug.template.steps.length} steps`));
   info.appendChild(title);
@@ -1640,51 +1637,36 @@ function suggestionCard(sug) {
   const chain = el('div', 'wf-chain');
   sug.template.steps.forEach((st, i) => { if (i) chain.appendChild(el('span', 'wf-arrow', '→')); chain.appendChild(el('span', 'wf-step-pill', st.name)); });
   info.appendChild(chain);
-  if (sug.sources && sug.sources.length) {
-    const src = el('div', 'sug-sources');
-    src.appendChild(el('span', 'sug-src-label', 'from'));
-    [...new Set(sug.sources)].slice(0, 5).forEach(n => src.appendChild(el('span', 'wf-chip', n)));
-    info.appendChild(src);
-  }
-  if (sug._distilled) info.appendChild(el('span', 'sug-refined', '✨ refined' + (sug._by ? ' by ' + sug._by : '')));
-  else if (sug.kind === 'project' && S.distillAvailable) info.appendChild(el('span', 'sug-raw', '⚠ raw transcript — an agent generalizes it when you Refine or Create'));
   row.appendChild(info);
   const ctrls = el('div', 'wf-ctrls');
-  if (S.distillAvailable && !sug._distilled) {
-    const refine = el('button', 'btn ghost small', '✨ Refine');
-    refine.title = 'Use a connected agent to rewrite the raw transcript into clean, generalized step prompts (~1 min)';
-    refine.onclick = async () => {
-      refine.disabled = true; refine.textContent = '✨ refining…';
-      try {
-        const r = await api.post('/api/workflows/distill', { template: sug.template });
-        const wfs = r.workflows || (r.template ? [r.template] : []);
-        if (wfs.length > 1) { toast(`split into ${wfs.length} automations`); reviewDistilled(wfs); return; }
-        sug.template = wfs[0] || sug.template; sug._distilled = true; sug._by = r.by;
-        row.replaceWith(suggestionCard(sug));
-        toast('refined' + (r.by ? ' by ' + r.by : '') + ' ✓');
-      } catch (e) { toast('refine failed: ' + e.message); refine.disabled = false; refine.textContent = '✨ Refine'; }
-    };
-    ctrls.appendChild(refine);
-  }
   const edit = el('button', 'btn ghost small', '✎ Edit'); edit.onclick = () => openWorkflowBuilder(null, sug.template);
   const create = el('button', 'btn primary small', '＋ Create');
   create.onclick = async () => {
-    create.disabled = true;
-    try {
-      let tpls = [sug.template];
-      if (S.distillAvailable && !sug._distilled && sug.kind === 'project') {
-        create.textContent = '✨ refining…';
-        const r = await api.post('/api/workflows/distill', { template: sug.template });
-        const wfs = r.workflows || (r.template ? [r.template] : []);
-        if (!wfs.length) { toast('nothing worth automating in that session'); create.disabled = false; create.textContent = '＋ Create'; return; }
-        tpls = wfs;
-      }
-      create.textContent = 'creating…';
-      for (const t of tpls) await api.post(`/api/boards/${S.boardId}/workflows/import`, { template: t });
-      toast(tpls.length > 1 ? `created ${tpls.length} ✓` : 'automation created ✓'); create.textContent = '✓ created';
-    } catch (e) { toast(e.message); create.disabled = false; create.textContent = '＋ Create'; }
+    create.disabled = true; create.textContent = 'creating…';
+    try { await api.post(`/api/boards/${S.boardId}/workflows/import`, { template: sug.template }); toast('automation created ✓'); create.textContent = '✓ created'; }
+    catch (e) { toast(e.message); create.disabled = false; create.textContent = '＋ Create'; }
   };
   ctrls.appendChild(edit); ctrls.appendChild(create);
+  row.appendChild(ctrls);
+  return row;
+}
+
+function projectSuggestionCard(sug) {
+  const row = el('div', 'wf-row sug-row');
+  const info = el('div', 'wf-info');
+  const title = el('div', 'wf-title');
+  title.appendChild(el('span', 'sug-kind proj', '📁 project'));
+  title.appendChild(el('span', 'wf-name', sug.title));
+  if (sug.turns) title.appendChild(el('span', 'wf-stepcount', `${sug.turns} turns`));
+  info.appendChild(title);
+  info.appendChild(el('div', 'wf-desc', sug.rationale));
+  row.appendChild(info);
+  const ctrls = el('div', 'wf-ctrls');
+  const analyze = el('button', 'btn primary small', '✨ Analyze');
+  analyze.title = 'Deep-read this session and extract clean, generalized workflows (~1 min)';
+  analyze.disabled = !sug.session_id;
+  analyze.onclick = () => extractFromSession([sug.session_id], sug.title);
+  ctrls.appendChild(analyze);
   row.appendChild(ctrls);
   return row;
 }
