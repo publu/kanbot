@@ -64,6 +64,8 @@ const S = {
   autoView: 'list',         // which automations sub-view is showing
   extractPick: new Set(),   // session_ids selected to extract a workflow from
   inspectSessionId: null,   // session_id whose live transcript is open
+  currentHash: '',          // last URL hash we set (for the router)
+  _routing: false,          // true while applying a route (suppresses pushState)
   dragSession: null,    // session object currently being dragged
   dragging: false,      // a card/session drag is in flight — pause re-renders
   demo: false,          // true when running without a backend (Vercel)
@@ -300,6 +302,7 @@ async function liveSetup() {
   connectWS();
   wireGlobalUI();
   startStaleSweep();
+  applyRoute();   // honor a deep-link / refreshed URL
 }
 
 // Re-render periodically so "working" badges and time-ago labels stay honest
@@ -878,6 +881,7 @@ async function openDrawer(cardId) {
   $('#drawerScrim').classList.add('open');
   renderDrawerBody(card);
   reloadSessions();
+  setHash('#/card/' + cardId);
 }
 
 function refreshDrawerHeader(card) {
@@ -890,6 +894,7 @@ function closeDrawer() {
   S.terminals = {};
   $('#drawer').classList.remove('open');
   $('#drawerScrim').classList.remove('open');
+  if (S.currentHash.startsWith('#/card/')) setHash('#/');
 }
 
 function renderDrawerBody(card) {
@@ -1411,10 +1416,11 @@ function openSessionsModal() {
 
   const actions = el('div', 'modal-actions');
   const close = el('button', 'btn primary', 'Done');
-  close.onclick = () => { S.sessionsModalOpen = false; closeModal(); };
+  close.onclick = () => { S.sessionsModalOpen = false; closeModal(); setHash('#/'); };
   actions.appendChild(close);
   m.appendChild(actions);
   openModal();
+  setHash('#/sessions');
 }
 
 function sessRow(s) {
@@ -1475,7 +1481,7 @@ function openAutomations() {
   $('#autoView').classList.add('open');
   openWorkflowsModal();
 }
-function closeAutomations() { $('#autoView').classList.remove('open'); $('#autoView').innerHTML = ''; }
+function closeAutomations() { $('#autoView').classList.remove('open'); $('#autoView').innerHTML = ''; setHash('#/'); }
 
 // Build the surface chrome (fixed header + scrolling body + optional footer)
 // and return the regions to fill. `back` shows a back-to-list button.
@@ -1530,6 +1536,7 @@ function openWorkflowsModal() {
     for (const wf of S.workflows) list.appendChild(workflowRow(wf));
     body.appendChild(list);
   }
+  setHash('#/automations');
 }
 
 function workflowRow(wf) {
@@ -1571,6 +1578,7 @@ async function openSuggestAutomations() {
   if (S.demo) { toast('Connect your local Deckhand to analyze sessions'); return; }
   const { body, foot } = autoFrame('suggest', '✨ Automations from your sessions',
     { back: true, sub: `Reading ${S.agentSessions.length} sessions for repeatable work…` });
+  setHash('#/automations/suggest');
   const note = $('#autoView').querySelector('.auto-sub');
   const list = el('div', 'wf-list');
   const loading = el('div', 'sug-loading');
@@ -1698,6 +1706,7 @@ async function exportWorkflow(id) {
 function importWorkflowModal() {
   const { body, foot } = autoFrame('import', 'Import automation',
     { back: true, sub: 'Paste a workflow template (the JSON from Export).' });
+  setHash('#/automations/import');
   const ta = textareaField('Workflow JSON', '{ "name": "...", "steps": [ ... ] }');
   ta.input.style.minHeight = '300px'; ta.input.classList.add('mono-input');
   body.appendChild(ta.wrap);
@@ -1713,6 +1722,7 @@ function importWorkflowModal() {
 
 async function openTemplatePicker() {
   const { body } = autoFrame('templates', 'Start from a template', { back: true });
+  setHash('#/automations/templates');
   body.appendChild(el('div', 'sug-loading', 'loading templates…'));
   const templates = await ensureTemplates();
   if (S.autoView !== 'templates') return;
@@ -1833,6 +1843,7 @@ function openWorkflowBuilder(wf, prefill) {
   const saveBtn = el('button', 'btn', 'Save'); saveBtn.onclick = () => save(false);
   const runBtn = el('button', 'btn primary', '▶ Save & run'); runBtn.onclick = () => save(true);
   foot.appendChild(back); foot.appendChild(saveBtn); foot.appendChild(runBtn); foot.style.display = '';
+  setHash(wf ? '#/automations/' + wf.id : '#/automations/new');
   setTimeout(() => name.input.focus(), 50);
 }
 
@@ -2389,9 +2400,45 @@ function profileSelectField(value) {
 function openModal() { $('#modal').classList.remove('wide', 'wf-builder'); $('#modalScrim').classList.add('open'); }
 function closeModal() { $('#modalScrim').classList.remove('open'); S.sessionsModalOpen = false; S.workflowsModalOpen = false; S.inspectSessionId = null; S.extractPick.clear(); }
 
+// ---- hash routing -------------------------------------------------------
+// Surfaces map to URLs so Back/Forward, refresh, and deep-links work. Renderers
+// call setHash() to reflect the current view (no event); popstate + first load
+// call route() to rebuild a view from the URL.
+function setHash(h) {
+  if (h === S.currentHash) return;
+  S.currentHash = h;
+  if (S._routing) return;            // applying a route — don't push back
+  try { history.pushState(null, '', h); } catch (e) { location.hash = h; }
+}
+function closeAllOverlays() { closeAutomations(); closeDrawer(); closeModal(); }
+function route() {
+  const h = location.hash || '#/';
+  S.currentHash = h;
+  const parts = h.replace(/^#\/?/, '').split('/').filter(Boolean);
+  if (parts[0] === 'automations') {
+    if (S.demo) { closeAllOverlays(); return; }
+    const sub = parts[1];
+    if (!sub) openWorkflowsModal();
+    else if (sub === 'new') openWorkflowBuilder(null);
+    else if (sub === 'suggest') openSuggestAutomations();
+    else if (sub === 'templates') openTemplatePicker();
+    else if (sub === 'import') importWorkflowModal();
+    else { const wf = S.workflowById[sub]; wf ? openWorkflowBuilder(wf) : openWorkflowsModal(); }
+  } else if (parts[0] === 'card') {
+    closeAutomations();
+    if (S.cards.find(c => c.id === parts[1])) openDrawer(parts[1]); else closeAllOverlays();
+  } else if (parts[0] === 'sessions') {
+    closeAutomations(); openSessionsModal();
+  } else {
+    closeAllOverlays();
+  }
+}
+function applyRoute() { S._routing = true; try { route(); } finally { S._routing = false; } }
+
 // ---- global UI ----------------------------------------------------------
 function wireGlobalUI() {
   installGlobalImageDrop();
+  if (!window.__kbRouter) { window.__kbRouter = true; window.addEventListener('popstate', applyRoute); }
   const nb = $('#newTaskBtn'); if (nb) nb.onclick = () => openComposer();
   const wb = $('#workflowsBtn'); if (wb) wb.onclick = openAutomations;
   $('#sessionsBtn').onclick = () => { S.extractPick.clear(); openSessionsModal(); };
