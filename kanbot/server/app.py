@@ -297,7 +297,8 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         if not t.get("name") or not isinstance(t.get("steps"), list):
             raise HTTPException(400, "template needs a name and a steps list")
         wf = db.save_workflow(board_id, t["name"], t.get("description", ""),
-                              t.get("agent", "auto"), t.get("cwd", ""), t["steps"])
+                              t.get("agent", "auto"), t.get("cwd", ""), t["steps"],
+                              source_tokens=int(t.get("source_tokens") or 0))
         await hub.broadcast({"type": "workflow.saved", "board_id": board_id, "workflow": wf})
         return wf
 
@@ -380,6 +381,10 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             wfs = await asyncio.to_thread(distill_workflows, draft, avail, 300)
         else:
             wfs = extract_workflows(sessions, split=True)   # heuristic fallback
+        # Part 3 metric: how much conversation each workflow compresses. ~4 chars/token.
+        source_tokens = sum(len(t) for t in turns) // 4
+        for w in wfs:
+            w["source_tokens"] = source_tokens
         hub.distill_cache[key] = wfs
         if len(hub.distill_cache) > 128:        # bound memory on a long run
             hub.distill_cache.pop(next(iter(hub.distill_cache)))

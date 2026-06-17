@@ -682,6 +682,7 @@ input, textarea, select { font-family: var(--ui); }
 /* distillation */
 .sug-refined { font-size: 10px; color: var(--violet); margin-top: 3px; font-weight: 500; }
 .sug-raw { font-size: 10px; color: var(--text-faint); margin-top: 3px; }
+.wf-reduction { font-size: 11px; color: var(--green); margin-top: 4px; font-weight: 500; }
 
 /* centered loading / empty / error state inside the automations surface */
 .auto-state {

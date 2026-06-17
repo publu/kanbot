@@ -119,6 +119,7 @@ CREATE TABLE IF NOT EXISTS workflows (
     description TEXT DEFAULT '',
     cwd         TEXT DEFAULT '',        -- default working dir for runs
     agent       TEXT DEFAULT 'auto',    -- default agent for steps that don't override
+    source_tokens INTEGER DEFAULT 0,    -- est. input tokens of the conversation this distilled
     created_at  REAL NOT NULL,
     updated_at  REAL NOT NULL,
     FOREIGN KEY (board_id) REFERENCES boards(id) ON DELETE CASCADE
@@ -212,6 +213,9 @@ class DB:
         rcols = {r["name"] for r in self.q("PRAGMA table_info(runners)")}
         if "auto_approve" not in rcols:
             self.conn.execute("ALTER TABLE runners ADD COLUMN auto_approve INTEGER DEFAULT 1")
+        wfcols = {r["name"] for r in self.q("PRAGMA table_info(workflows)")}
+        if wfcols and "source_tokens" not in wfcols:
+            self.conn.execute("ALTER TABLE workflows ADD COLUMN source_tokens INTEGER DEFAULT 0")
         # Drop deprecated columns from older boards, relocating any stray cards:
         #   info  -> backlog (sessions now live inline by recency)
         #   queued -> running (a card is queued via status, not a column)
@@ -377,21 +381,25 @@ class DB:
     def save_workflow(self, board_id: str, name: str, description: str = "",
                       agent: str = "auto", cwd: str = "",
                       steps: Optional[List[dict]] = None,
-                      workflow_id: Optional[str] = None) -> Dict[str, Any]:
+                      workflow_id: Optional[str] = None,
+                      source_tokens: int = 0) -> Dict[str, Any]:
         """Create or replace a workflow and its steps in one shot. Used by the
         builder (save), import (from a template), and extract (from a session)."""
         ts = now()
         wid = workflow_id or gen_id()
+        st = max(0, int(source_tokens or 0))
         if self.get_workflow(wid):
+            # keep an existing source_tokens if this update doesn't carry one
             self.exec(
-                "UPDATE workflows SET name=?, description=?, agent=?, cwd=?, updated_at=? WHERE id=?",
-                (name, description, agent or "auto", cwd, ts, wid),
+                """UPDATE workflows SET name=?, description=?, agent=?, cwd=?,
+                   source_tokens=COALESCE(NULLIF(?,0), source_tokens), updated_at=? WHERE id=?""",
+                (name, description, agent or "auto", cwd, st, ts, wid),
             )
         else:
             self.exec(
                 """INSERT INTO workflows (id, board_id, name, description, agent, cwd,
-                   created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)""",
-                (wid, board_id, name, description, agent or "auto", cwd, ts, ts),
+                   source_tokens, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)""",
+                (wid, board_id, name, description, agent or "auto", cwd, st, ts, ts),
             )
         self._replace_steps(wid, steps or [])
         return self.get_workflow(wid)

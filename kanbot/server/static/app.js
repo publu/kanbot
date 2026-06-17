@@ -1465,6 +1465,19 @@ function stepAgentSelect(value) {
   return sel;
 }
 
+// Part 3 objective made legible: a workflow's value is how much prompting it
+// saves vs the original conversation. ~1 short run-time prompt (the TARGET) ≈ 25
+// tokens, vs the whole session it distilled.
+const RUNTIME_INPUT_TOKENS = 25;
+function promptingReduction(sourceTokens) {
+  const s = parseInt(sourceTokens) || 0;
+  if (s < 80) return null;
+  const x = Math.round(s / RUNTIME_INPUT_TOKENS);
+  if (x < 2) return null;
+  const t = s >= 1000 ? (s / 1000).toFixed(1) + 'k' : String(s);
+  return `↓ ~${x}× less prompting — distilled from ~${t} tokens of conversation`;
+}
+
 async function runWorkflow(id, cwd, title) {
   try {
     const card = await api.post(`/api/workflows/${id}/run`, { cwd: cwd || '', title: title || '', run: true });
@@ -1556,6 +1569,8 @@ function workflowRow(wf) {
     chain.appendChild(pill);
   });
   info.appendChild(chain);
+  const red = promptingReduction(wf.source_tokens);
+  if (red) info.appendChild(el('div', 'wf-reduction', red));
   row.appendChild(info);
 
   const ctrls = el('div', 'wf-ctrls');
@@ -1976,6 +1991,8 @@ function reviewDistilled(templates) {
     const chain = el('div', 'wf-chain');
     t.steps.forEach((s, i) => { if (i) chain.appendChild(el('span', 'wf-arrow', '→')); chain.appendChild(el('span', 'wf-step-pill', s.name)); });
     info.appendChild(chain);
+    const red = promptingReduction(t.source_tokens);
+    if (red) info.appendChild(el('div', 'wf-reduction', red));
     row.appendChild(info);
     const edit = el('button', 'btn ghost small', '✎ Edit'); edit.onclick = () => openWorkflowBuilder(null, t);
     row.appendChild(edit);
@@ -1987,7 +2004,7 @@ function reviewDistilled(templates) {
     const mk = items.filter(t => t._include);
     if (!mk.length) { toast('nothing selected'); return; }
     try {
-      for (const t of mk) await api.post(`/api/boards/${S.boardId}/workflows/import`, { template: { name: t.name, description: t.description, agent: t.agent, cwd: t.cwd, steps: t.steps } });
+      for (const t of mk) await api.post(`/api/boards/${S.boardId}/workflows/import`, { template: { name: t.name, description: t.description, agent: t.agent, cwd: t.cwd, steps: t.steps, source_tokens: t.source_tokens } });
       toast(`created ${mk.length} automation${mk.length === 1 ? '' : 's'} ✓`); openWorkflowsModal();
     } catch (e) { toast('create failed: ' + e.message); }
   };
