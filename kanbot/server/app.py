@@ -56,11 +56,15 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
     )
 
     @app.middleware("http")
-    async def no_cache(request, call_next):
+    async def headers(request, call_next):
         resp = await call_next(request)
         path = request.url.path
         if path == "/" or path.endswith((".js", ".css", ".html")):
             resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        # Chrome Private Network Access: let a hosted (public) page like the Vercel
+        # demo reach this local server. Without this the connect fetch is blocked.
+        if request.headers.get("access-control-request-private-network"):
+            resp.headers["Access-Control-Allow-Private-Network"] = "true"
         return resp
 
     def board_state(board_id: str) -> dict:

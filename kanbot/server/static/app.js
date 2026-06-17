@@ -67,6 +67,7 @@ const S = {
   currentHash: '',          // last URL hash we set (for the router)
   _routing: false,          // true while applying a route (suppresses pushState)
   sel: { c: 0, i: -1 },     // keyboard board selection (column, card index; -1 = none)
+  domains: [],              // work domains the user chose to have KanBot learn
   dragSession: null,    // session object currently being dragged
   dragging: false,      // a card/session drag is in flight — pause re-renders
   demo: false,          // true when running without a backend (Vercel)
@@ -169,7 +170,7 @@ function enterDemo(showModal = true) {
   renderColumns();
   wireGlobalUI();
   renderStatus();
-  if (showModal) showConnectPanel();
+  maybeOnboard();
 }
 
 // A polished, terminal-styled "bring your own backend" panel: one command, a
@@ -279,7 +280,7 @@ async function boot() {
     if (await attemptLocal()) return;          // previously allowed: connect quietly
     localStorage.removeItem('kanbot_connect_local');
   }
-  showConnectPanel();
+  // enterDemo() already kicked off the scan/profile onboarding (with a connect CTA)
 }
 
 async function liveSetup() {
@@ -295,6 +296,7 @@ async function liveSetup() {
   wireGlobalUI();
   startStaleSweep();
   applyRoute();   // honor a deep-link / refreshed URL
+  maybeOnboard(); // scan + profile on first run
 }
 
 // Re-render periodically so "working" badges and time-ago labels stay honest
@@ -319,7 +321,11 @@ async function attemptLocal() {
     const pill = $('.demo-pill'); if (pill) pill.remove();
     const bar = $('.demo-bar'); if (bar) bar.remove();
     $('#version').textContent = 'local · v' + h.version;
-    closeModal();
+    closeModal(); closeOnboarding();
+    // The user just connected THEIR machine — always profile it, even if they'd
+    // dismissed the demo onboarding. Clearing the flag makes liveSetup's
+    // maybeOnboard re-run the scan on their real sessions.
+    try { localStorage.removeItem('kanbot_onboarded'); } catch (e) {}
     await liveSetup();
     return true;
   } catch (e) { return false; }
@@ -2454,6 +2460,143 @@ function route() {
 }
 function applyRoute() { S._routing = true; try { route(); } finally { S._routing = false; } }
 
+// ---- onboarding: scan sessions → classify the user's work → they pick ----
+// Domains are detected from the ACTUAL sessions (names, cwds, transcripts) — no
+// fixed list shown unless it's backed by evidence in the user's own data.
+const WORK_DOMAINS = [
+  { key: 'frontend', label: 'Frontend & UI', icon: '🖼', kw: ['react', 'vue', 'svelte', 'next.js', 'nextjs', 'css', 'tailwind', 'component', 'frontend', 'landing', 'webpage', ' page', 'animation', 'canvas', 'layout', 'button', 'responsive', 'dashboard', 'chart', 'styling', 'ux', ' ui '] },
+  { key: 'ml', label: 'ML & AI', icon: '🧠', kw: ['model', 'train', 'dataset', 'torch', 'pytorch', 'tensor', 'embedding', ' llm', 'inference', 'neural', 'fine-tune', 'finetune', ' rag', 'classifier', 'checkpoint'] },
+  { key: 'backend', label: 'Backend & APIs', icon: '🛠', kw: [' api', 'endpoint', 'server', 'route', 'rate limit', 'middleware', ' auth', 'rest ', 'graphql', 'fastapi', 'express', 'webhook', 'microservice'] },
+  { key: 'data', label: 'Data & Databases', icon: '🗄', kw: [' sql', 'database', 'migration', 'schema', 'postgres', 'sqlite', ' query', ' table', ' index', 'pandas', ' etl', 'scrape', 'warehouse', 'analytics'] },
+  { key: 'infra', label: 'Infra & DevOps', icon: '⚙', kw: ['docker', 'deploy', ' ci ', 'terraform', 'kubernetes', ' k8s', 'github actions', 'vercel', 'nginx', ' aws', ' gcp', 'pipeline', 'staging'] },
+  { key: 'web3', label: 'Web3 & Crypto', icon: '⛓', kw: ['solidity', 'smart contract', ' token', 'onchain', 'wallet', ' defi', 'crypto', ' evm', 'staking', 'vault', 'veaero', 'aero'] },
+  { key: 'robotics', label: 'Robotics & Hardware', icon: '🤖', kw: ['robot', ' ros', 'teleop', ' motor', ' sensor', 'firmware', 'arduino', 'telemetry', 'dimos', 'operator'] },
+  { key: 'gtm', label: 'Sales & Fundraising', icon: '📈', kw: ['investor', ' pitch', ' deck', ' sales', 'outreach', ' crm', ' lead', ' gtm', 'fundrais', ' loi', 'revenue', ' tam', 'market size'] },
+  { key: 'docs', label: 'Docs & Writing', icon: '📝', kw: [' docs', 'readme', 'getting-started', 'documentation', ' blog', ' copy', 'writing', 'article'] },
+];
+function detectDomains(sessions) {
+  const out = WORK_DOMAINS.map(d => ({ ...d, projects: new Set(), score: 0, count: 0 }));
+  for (const s of (sessions || [])) {
+    const blob = (' ' + (s.name || '') + ' ' + (s.cwd || '') + ' ' + (s.title || '') + ' '
+      + (s.recap || '') + ' ' + (s.tail || []).map(m => m.text || '').join(' ') + ' ').toLowerCase();
+    if (blob.trim().length < 3) continue;
+    // assign this session to its single best-matching domain so buckets are
+    // distinct (a real profile), not "everything matches everything".
+    let best = null, bestHits = 0;
+    for (const d of out) {
+      let hits = 0; for (const k of d.kw) if (blob.includes(k)) hits++;
+      if (hits > bestHits) { bestHits = hits; best = d; }
+    }
+    if (best && bestHits >= 1) { best.count++; best.score += bestHits; if (s.name) best.projects.add(s.name); }
+  }
+  return out.filter(d => d.count >= 1)
+    .map(d => ({ ...d, projects: [...d.projects] }))
+    .sort((a, b) => b.count - a.count || b.score - a.score);
+}
+
+function closeOnboarding() {
+  const ob = $('#onboard'); if (!ob) return;
+  ob.classList.add('done');
+  setTimeout(() => { ob.className = 'onboard'; ob.innerHTML = ''; }, 400);
+}
+
+function runOnboarding() {
+  const ob = $('#onboard'); if (!ob) return;
+  ob.className = 'onboard show'; ob.innerHTML = '';
+  const sessions = S.agentSessions || [];
+
+  // STAGE 1 — scan (the loading IS the analysis)
+  const scan = el('div', 'ob-stage ob-scan');
+  const head = el('div', 'ob-scan-head');
+  head.appendChild(el('span', 'ob-prompt', '❯'));
+  head.appendChild(document.createTextNode(' scanning your agent sessions '));
+  head.appendChild(el('span', 'boot-caret', '▮'));
+  scan.appendChild(head);
+  const log = el('div', 'ob-scan-log'); scan.appendChild(log);
+  ob.appendChild(scan);
+
+  const projects = new Set(sessions.map(s => s.name || s.cwd).filter(Boolean));
+  const lines = [
+    'reading ~/.claude/projects · ~/.codex/sessions …',
+    `found ${sessions.length} session${sessions.length === 1 ? '' : 's'} across ${projects.size} project${projects.size === 1 ? '' : 's'}`,
+    'parsing transcripts for intent …',
+    'classifying your work by domain …',
+  ];
+  let i = 0;
+  const tick = () => {
+    if (i < lines.length) {
+      const ln = el('div', 'ob-log-line'); ln.textContent = '  ' + lines[i]; log.appendChild(ln);
+      i++; setTimeout(tick, 360 + Math.random() * 240);
+    } else setTimeout(reveal, 480);
+  };
+  setTimeout(tick, 320);
+
+  // STAGE 2 — reveal what they build + let them pick
+  function reveal() {
+    const domains = detectDomains(sessions);
+    ob.innerHTML = '';
+    const r = el('div', 'ob-stage ob-reveal');
+    r.appendChild(el('div', 'ob-kicker', (S.demo ? 'PROFILE · from the sample data' : 'PROFILE · derived from your sessions')));
+    if (!domains.length) {
+      r.appendChild(el('h2', 'ob-title', 'No clear patterns yet'));
+      r.appendChild(el('div', 'ob-sub', 'Run a few real coding sessions, then rescan — KanBot learns your domains from what you actually do.'));
+      const act = el('div', 'ob-actions');
+      const go = el('button', 'btn primary', 'Go to the board'); go.onclick = closeOnboarding;
+      act.appendChild(go); r.appendChild(act); ob.appendChild(r); return;
+    }
+    r.appendChild(el('h2', 'ob-title', "Here's what you build"));
+    r.appendChild(el('div', 'ob-sub',
+      'Pick the areas to have KanBot learn. It studies those sessions, grades the workflows it distills, and gets better at turning your repeated work into one-command automations.'));
+
+    const grid = el('div', 'ob-grid');
+    const top = domains.slice(0, 8);
+    const selected = new Set(top.slice(0, Math.min(3, top.length)).map(d => d.key));
+    top.forEach(d => {
+      const card = el('button', 'ob-card' + (selected.has(d.key) ? ' on' : ''));
+      card.appendChild(el('div', 'ob-card-icon', d.icon));
+      const b = el('div', 'ob-card-b');
+      b.appendChild(el('div', 'ob-card-l', d.label));
+      b.appendChild(el('div', 'ob-card-m', `${d.count} session${d.count === 1 ? '' : 's'} · ${d.projects.slice(0, 3).join(', ')}${d.projects.length > 3 ? '…' : ''}`));
+      card.appendChild(b);
+      const chk = el('span', 'ob-card-chk', selected.has(d.key) ? '✓' : '');
+      card.appendChild(chk);
+      card.onclick = () => {
+        if (selected.has(d.key)) { selected.delete(d.key); card.classList.remove('on'); chk.textContent = ''; }
+        else { selected.add(d.key); card.classList.add('on'); chk.textContent = '✓'; }
+      };
+      grid.appendChild(card);
+    });
+    r.appendChild(grid);
+
+    const act = el('div', 'ob-actions');
+    const persist = () => {
+      S.domains = [...selected];
+      try { localStorage.setItem('kanbot_domains', JSON.stringify(S.domains)); localStorage.setItem('kanbot_onboarded', '1'); } catch (e) {}
+      renderStatus();
+    };
+    if (S.demo) {
+      const explore = el('button', 'btn ghost', 'Explore the demo'); explore.onclick = () => { persist(); closeOnboarding(); };
+      const conn = el('button', 'btn primary', '⚡ Profile MY machine');
+      conn.onclick = () => { persist(); closeOnboarding(); showConnectPanel(); };
+      act.appendChild(explore); act.appendChild(conn);
+    } else {
+      const skip = el('button', 'btn ghost', 'Skip'); skip.onclick = () => { persist(); closeOnboarding(); };
+      const go = el('button', 'btn primary', 'Start learning →');
+      go.onclick = () => { persist(); closeOnboarding(); if (S.domains.length) { toast(`learning ${S.domains.length} area${S.domains.length === 1 ? '' : 's'} — analyzing your sessions`); openSuggestAutomations(); } };
+      act.appendChild(skip); act.appendChild(go);
+    }
+    r.appendChild(act);
+    ob.appendChild(r);
+  }
+}
+
+function maybeOnboard() {
+  try { S.domains = JSON.parse(localStorage.getItem('kanbot_domains') || '[]'); } catch (e) { S.domains = []; }
+  const onboarded = localStorage.getItem('kanbot_onboarded') === '1';
+  const deepLink = location.hash && location.hash !== '#/' && location.hash !== '#';
+  if (!onboarded && !deepLink) runOnboarding();
+}
+
 // ---- TUI: boot splash, status bar, command palette, keyboard nav --------
 function bootSplash() {
   const b = $('#boot'); if (!b) return;
@@ -2488,6 +2631,7 @@ function renderStatus() {
     const act = S.agentSessions.filter(isSessionActive).length;
     if (act) left.appendChild(el('span', 'sb-tag work', `◆ ${act} working`));
   }
+  if (S.domains && S.domains.length) left.appendChild(el('span', 'sb-learn', '◎ learning: ' + S.domains.join('·')));
   sb.appendChild(left);
   const right = el('div', 'sb-right');
   if (S.demo) { const c = el('span', 'sb-connect', '⚡ connect local backend'); c.onclick = showConnectPanel; right.appendChild(c); }
@@ -2505,6 +2649,7 @@ function paletteCommands() {
   const c = [];
   const add = (label, hint, run) => c.push({ label, hint, run });
   if (S.demo) add('Connect local backend', 'run kanbot up & link', showConnectPanel);
+  add('Profile · rescan my work', 'classify your sessions (p)', () => runOnboarding());
   add('New task', 'one-off agent task (n)', () => openComposer());
   add('Automations', 'multi-step runs (w)', () => openAutomations());
   add('Suggest automations from my sessions', 'analyze & distill', () => openSuggestAutomations());
@@ -2579,6 +2724,7 @@ function wireGlobalUI() {
   if (!window.__kbRouter) { window.__kbRouter = true; window.addEventListener('popstate', applyRoute); }
   const nb = $('#newTaskBtn'); if (nb) nb.onclick = () => openComposer();
   const wb = $('#workflowsBtn'); if (wb) wb.onclick = openAutomations;
+  const pb = $('#profileBtn'); if (pb) pb.onclick = runOnboarding;
   $('#sessionsBtn').onclick = () => { S.extractPick.clear(); openSessionsModal(); };
   $('#manageTagsBtn').onclick = openManageTags;
   $('#apiBtn').onclick = openApiModal;
@@ -2600,6 +2746,7 @@ function wireGlobalUI() {
     switch (e.key) {
       case 'n': case 'N': e.preventDefault(); openComposer(); break;
       case 'w': case 'W': e.preventDefault(); openAutomations(); break;
+      case 'p': case 'P': e.preventDefault(); runOnboarding(); break;
       case 'g': if (S.demo) { e.preventDefault(); showConnectPanel(); } break;
       case 'ArrowDown': case 'j': e.preventDefault(); moveSel(0, 1); break;
       case 'ArrowUp': case 'k': e.preventDefault(); moveSel(0, -1); break;

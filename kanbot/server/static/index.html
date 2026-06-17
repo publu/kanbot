@@ -19,15 +19,15 @@
         <span class="ver" id="version"></span>
       </div>
 
-      <button class="btn primary" id="workflowsBtn" title="Create &amp; run multi-step workflows (w)">⛓ Workflows</button>
-      <button class="btn ghost small" id="newTaskBtn" title="Create a one-off task for an agent (n)">＋ Task</button>
-
       <div class="spacer"></div>
 
       <div class="runners" id="runners"></div>
+      <button class="btn ghost small" id="profileBtn" title="What KanBot has learned about your work (p)">◎ profile</button>
+      <button class="btn ghost small" id="newTaskBtn" title="Create a one-off task for an agent (n)">＋ task</button>
+      <button class="btn primary small" id="workflowsBtn" title="Automations — multi-step runs (w)">⛓ automations</button>
       <button class="btn ghost small" id="sessionsBtn" title="Recent agent sessions (Claude, Codex, …)">⟳ sessions <span id="liveBadge" class="live-badge hidden">0</span></button>
       <button class="btn ghost small" id="manageTagsBtn" title="Manage tags">🏷 tags</button>
-      <button class="btn ghost small" id="apiBtn" title="Full API reference — build your own UI on top of KanBot">&lt;/&gt; API</button>
+      <button class="btn ghost small" id="apiBtn" title="Full API reference">&lt;/&gt; API</button>
     </header>
 
     <!-- board -->
@@ -47,6 +47,9 @@
 
   <!-- boot splash -->
   <div class="boot" id="boot"></div>
+
+  <!-- onboarding: scan your sessions, reveal what you build, you pick -->
+  <div class="onboard" id="onboard"></div>
 
   <!-- card drawer -->
   <div class="drawer-scrim" id="drawerScrim"></div>

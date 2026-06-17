@@ -898,3 +898,44 @@ body.demo .board { padding-bottom: 52px; }   /* clear the fixed bar */
 /* retire the old fixed demo bar / extra padding */
 .demo-bar { display: none; }
 body.demo .board { padding-bottom: 0; }
+
+/* ---- onboarding: scan + profile reveal -------------------------------- */
+.onboard {
+  position: fixed; inset: 0; z-index: 150; background: #070809;
+  display: none; align-items: center; justify-content: center; padding: 40px;
+  transition: opacity .4s ease;
+  background-image: repeating-linear-gradient(to bottom, rgba(255,255,255,.018) 0 1px, transparent 1px 3px);
+}
+.onboard.show { display: flex; }
+.onboard.done { opacity: 0; pointer-events: none; }
+.ob-stage { width: min(720px, 94vw); }
+
+/* scan */
+.ob-scan-head { font-family: var(--mono); font-size: 15px; color: var(--text); }
+.ob-scan-head .ob-prompt { color: var(--brand); margin-right: 4px; }
+.ob-scan-log { margin-top: 14px; display: flex; flex-direction: column; gap: 4px; }
+.ob-log-line { font-family: var(--mono); font-size: 13px; color: var(--text-dim); animation: ob-in .25s ease; }
+@keyframes ob-in { from { opacity: 0; transform: translateY(3px); } }
+
+/* reveal */
+.ob-kicker { font-family: var(--mono); font-size: 11px; letter-spacing: .16em; color: var(--brand); text-transform: uppercase; }
+.ob-title { font-family: var(--mono); font-size: 26px; font-weight: 700; color: var(--text); margin-top: 8px; }
+.ob-sub { font-size: 13.5px; color: var(--text-dim); line-height: 1.55; margin-top: 8px; max-width: 620px; }
+.ob-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 20px; }
+.ob-card {
+  display: flex; align-items: center; gap: 12px; text-align: left;
+  padding: 13px 14px; background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: 6px; cursor: pointer; transition: .12s;
+}
+.ob-card:hover { border-color: var(--brand-dim); }
+.ob-card.on { border-color: var(--brand); background: rgba(61,220,132,.08); box-shadow: -3px 0 0 0 var(--brand) inset; }
+.ob-card-icon { font-size: 20px; line-height: 1; flex: 0 0 auto; }
+.ob-card-b { flex: 1; min-width: 0; }
+.ob-card-l { font-size: 14px; font-weight: 600; color: var(--text); }
+.ob-card-m { font-family: var(--mono); font-size: 11px; color: var(--text-faint); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ob-card-chk { font-family: var(--mono); color: var(--brand); width: 16px; text-align: center; flex: 0 0 auto; }
+.ob-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px; }
+.ob-actions .btn { padding: 9px 18px; }
+
+.sb-learn { color: var(--brand); white-space: nowrap; }
+@media (max-width: 640px) { .ob-grid { grid-template-columns: 1fr; } }
