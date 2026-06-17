@@ -976,6 +976,7 @@ body.demo .board { padding-bottom: 0; }
   font-size: 10.5px; letter-spacing: .14em; font-weight: 700; color: var(--brand);
   animation: build-blink 1.4s steps(2, start) infinite;
 }
+.build-working.stalled { color: #e0564d; animation: none; }
 @keyframes build-blink { 50% { opacity: .35; } }
 .build-term-dot {
   display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 7px;

@@ -460,9 +460,13 @@ function handleEvent(msg) {
       }
       break;
     case 'build.session':
+      // adopt the job id from the first event in case it arrived before the POST
+      // response set it (otherwise the live feed silently shows nothing)
+      if (S.build && S.build.job == null) S.build.job = msg.job;
       buildOnSession(msg);
       break;
     case 'build.log':
+      if (S.build && S.build.job == null) S.build.job = msg.job;
       if (S.build && msg.job === S.build.job) buildTermLine(msg.line);
       break;
     case 'build.workflow':
@@ -1749,8 +1753,21 @@ function renderBuildView(body, foot) {
   if (st.done) { finishBuildView(); return; }
   st.dom.tick = setInterval(() => {
     if (S.autoView !== 'build' || !S.build || !S.build.dom) return;
-    S.build.dom.clock.textContent = Math.round((Date.now() - S.build.t0) / 1000) + 's';
-    S.build.dom.work.textContent = (Date.now() - S.build.lastLog) > 4000 ? 'STILL WORKING' : 'WORKING';
+    const d = S.build.dom, quiet = Date.now() - S.build.lastLog, total = Date.now() - S.build.t0;
+    d.clock.textContent = Math.round(total / 1000) + 's';
+    const noOutput = !S.build.log.length;
+    // Be honest about silence instead of "warming up" forever: explain why it's
+    // quiet, and flag a likely stall (e.g. the server was restarted) with a retry.
+    if (noOutput && total > 90000) {
+      d.work.textContent = 'NO RESPONSE';
+      d.headTxt.textContent = ' no output in 90s — the job may have died (server restart?). Hit ↻ Rebuild.';
+      d.work.classList.add('stalled');
+    } else if (quiet > 8000) {
+      d.work.textContent = 'STILL WORKING';
+      if (noOutput) d.headTxt.textContent = ' reading the repo — the agent stays quiet until its first action (can take ~30–60s)…';
+    } else {
+      d.work.textContent = 'WORKING';
+    }
   }, 1000);
 }
 
@@ -3127,10 +3144,9 @@ function profileReveal(body, foot, sessions) {
 }
 
 function maybeOnboard() {
+  // Don't force the profile/category funnel on anyone — land on the board with
+  // your sessions. The ◎ profile button is still there if you want the scan.
   try { S.domains = JSON.parse(localStorage.getItem('kanbot_domains') || '[]'); } catch (e) { S.domains = []; }
-  const onboarded = localStorage.getItem('kanbot_onboarded') === '1';
-  const deepLink = location.hash && location.hash !== '#/' && location.hash !== '#';
-  if (!onboarded && !deepLink) openProfile();
 }
 
 // ---- TUI: boot splash, status bar, command palette, keyboard nav --------
