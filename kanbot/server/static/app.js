@@ -1459,6 +1459,14 @@ function openSessionsModal() {
   setHash('#/sessions');
 }
 
+// A starting goal for a spree launched from a session — its recap/title or last
+// human turn, so you're editing real context instead of a blank box.
+function seedGoalFromSession(s) {
+  const last = (s.tail || []).filter(m => m.role === 'user').map(m => m.text).filter(Boolean).pop();
+  const ctx = (s.recap || s.title || last || '').trim();
+  return ctx ? `Continue the "${s.name}" work to completion. Context so far: ${ctx}` : '';
+}
+
 function sessRow(s) {
   const active = isSessionActive(s);
   const row = el('div', 'sess-row' + (active ? ' active' : ''));
@@ -1472,6 +1480,10 @@ function sessRow(s) {
   const sub = (pv ? pv + ' · ' : '') + `${s.turns} turns · ${timeAgo(s.mtime)} · ${shortCwd(s.cwd)}`;
   info.appendChild(el('div', 'ssub', sub));
   row.appendChild(info);
+  const spree = el('button', 'btn ghost small', '⚡ spree');
+  spree.title = 'Push this session onto a long work spree (its repo + context prefilled)';
+  spree.onclick = () => { closeModal(); openSpreeLauncher({ cwd: s.cwd, goal: seedGoalFromSession(s), from: s.name }); };
+  row.appendChild(spree);
   const wfBtn = el('button', 'btn ghost small', '⛓ workflow');
   wfBtn.title = 'Extract a reusable workflow from this session';
   wfBtn.onclick = () => extractWorkflowFromSession(s);
@@ -1862,16 +1874,22 @@ async function startDraft(description, cwd) {
 }
 
 // ---- goal spree: set off a 10h unattended run --------------------------
-function openSpreeLauncher() {
+// `seed` lets a spree be launched FROM a session (its repo/context prefilled) —
+// the core "hijack a session and push it on a work spree" flow.
+function openSpreeLauncher(seed) {
   if (S.demo) { toast('Goal sprees run on your local Deckhand — connect first'); showConnectPanel(); return; }
+  seed = seed || {};
   const { body, foot } = autoFrame('spree', '⚡ Set off a goal spree',
-    { back: true, sub: 'Hand the agents one big goal and walk away. It splits the goal into a verifiable checklist, grinds it one task per fresh-context pass, and only stops when the checklist is done — so a skittish agent can’t quit early.' });
+    { back: true, sub: seed.from
+        ? `Picking up from your “${seed.from}” session — same repo, with its context. Give it the big goal and a playbook to drive it.`
+        : 'Hand the agents one big goal and walk away. It splits the goal into a verifiable checklist, grinds it one task per fresh-context pass, and only stops when the checklist is done — so a skittish agent can’t quit early.' });
   setHash('#/automations/spree');
 
   const goal = textareaField('Goal', 'Describe the whole objective to drive to completion. e.g. "Migrate the API off Flask to FastAPI, keep all tests green, update the docs."');
   goal.input.classList.add('spree-goal');
+  if (seed.goal) goal.input.value = seed.goal;
   const repo = inputField('Repo (working directory)', '/path/to/repo');
-  repo.input.value = bestSpreeCwd();
+  repo.input.value = seed.cwd || bestSpreeCwd();
   const verify = inputField('Verify command (optional)', 'pytest -q   ·   npm test   ·   leave blank to use the checklist only');
   const hours = inputField('Budget (hours)', '10'); hours.input.type = 'number'; hours.input.value = '10'; hours.input.min = '0.1'; hours.input.step = '0.5';
   const cap = inputField('Max iterations (advanced)', '200'); cap.input.type = 'number'; cap.input.value = '200'; cap.input.min = '1';
