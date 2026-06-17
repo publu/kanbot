@@ -56,6 +56,7 @@ class Hub:
         self.web: Set[Any] = set()
         self.runners: Dict[str, RunnerConn] = {}
         self.agent_sessions: Dict[str, List[dict]] = {}  # runner_id -> discovered sessions
+        self.distill_cache: Dict[Any, List[dict]] = {}   # (session_id, mtime) -> distilled workflows
         self._lock = asyncio.Lock()
 
     # -- web clients -------------------------------------------------------

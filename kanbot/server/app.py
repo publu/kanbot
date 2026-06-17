@@ -18,12 +18,13 @@ from .. import __version__
 from ..agents import catalog
 from ..profiles import list_profiles
 from ..distill import distill_available, distill_workflows
+from ..runner.discovery import all_user_turns
 from ..workflows import extract_workflows, starter_templates, suggest_automations
 from .db import DB, now
 from .hub import Hub, RunnerConn
 from .insights import PROVIDER_META, compute
-from .schemas import (BoardCreate, CardCreate, CardMove, CardPatch, ReviveRequest,
-                      TagAttach, TagCreate, UploadRequest, WorkflowClone,
+from .schemas import (BoardCreate, CardCreate, CardMove, CardPatch, FromSession,
+                      ReviveRequest, TagAttach, TagCreate, UploadRequest, WorkflowClone,
                       WorkflowExtract, WorkflowImport, WorkflowRun, WorkflowSave)
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -334,6 +335,53 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         if not db.get_board(board_id):
             raise HTTPException(404, "board not found")
         return {"suggestions": suggest_automations(hub.all_agent_sessions())}
+
+    @app.post("/api/boards/{board_id}/workflows/from-session")
+    async def workflows_from_session(board_id: str, body: FromSession):
+        """Deep-read a session's FULL transcript and split it into clean,
+        generalized workflows (a session often holds several). Cached per
+        (session_id, mtime) so a re-open is instant."""
+        if not db.get_board(board_id):
+            raise HTTPException(404, "board not found")
+        ids = body.session_ids or ([body.session_id] if body.session_id else [])
+        if not ids:
+            raise HTTPException(400, "need session_id or session_ids")
+        by_id = {s.get("session_id"): s for s in hub.all_agent_sessions()}
+        sessions = [by_id[i] for i in ids if i in by_id]
+        if not sessions:
+            raise HTTPException(404, "no matching agent sessions")
+
+        key = tuple((s.get("session_id"), int(s.get("mtime", 0))) for s in sessions)
+        if not body.refresh and key in hub.distill_cache:
+            wfs = hub.distill_cache[key]
+            return {"workflows": wfs, "cached": True,
+                    "by": (wfs[0].get("_distilled_by") if wfs else None)}
+
+        # Full transcript turns (all sessions, in order) — the real material.
+        turns: list = []
+        for s in sessions:
+            turns.extend(all_user_turns(s.get("path", ""), s.get("fmt", "claude")))
+        if not turns:  # fall back to the cached tail if the file is unreadable
+            for s in sessions:
+                turns.extend(m.get("text", "") for m in (s.get("tail") or [])
+                             if m.get("role") == "user" and m.get("text"))
+        turns = [t for t in turns if t]
+        if not turns:
+            raise HTTPException(422, "no human turns found in that session")
+
+        draft = {
+            "agent": sessions[0].get("agent", "auto") or "auto",
+            "cwd": sessions[0].get("cwd", "") or "",
+            "_context": sessions[0].get("title") or sessions[0].get("recap") or "",
+            "steps": [{"prompt": t} for t in turns],
+        }
+        avail = hub.available_agents()
+        if distill_available(avail):
+            wfs = await asyncio.to_thread(distill_workflows, draft, avail, 240)
+        else:
+            wfs = extract_workflows(sessions, split=True)   # heuristic fallback
+        hub.distill_cache[key] = wfs
+        return {"workflows": wfs, "by": (wfs[0].get("_distilled_by") if wfs else None)}
 
     @app.post("/api/workflows/distill")
     async def distill_workflow(body: WorkflowImport):

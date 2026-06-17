@@ -1920,7 +1920,25 @@ function checkRow(label, checked, onChange) {
   return l;
 }
 
-function extractWorkflowFromSession(s) { closeModal(); openExtractReview([s.session_id]); }
+function extractWorkflowFromSession(s) { closeModal(); extractFromSession([s.session_id], s.name); }
+
+// Deep extraction: read the FULL transcript on the server, split it into the
+// distinct workflows it contains, and present them to pick from.
+async function extractFromSession(sessionIds, name) {
+  const { body } = autoFrame('extract', 'Extracting automations' + (name ? ` from ${name}` : ''),
+    { back: true, sub: 'reading the full transcript and splitting it into workflows…' });
+  const load = el('div', 'sug-loading');
+  load.appendChild(el('span', 'spinner')); load.appendChild(el('span', null, 'analyzing the session (this can take a minute)…'));
+  body.appendChild(load);
+  let wfs;
+  try {
+    const r = await api.post(`/api/boards/${S.boardId}/workflows/from-session`, { session_ids: sessionIds });
+    wfs = r.workflows || [];
+  } catch (e) { toast('extract failed: ' + e.message); openWorkflowsModal(); return; }
+  if (S.autoView !== 'extract') return;
+  if (!wfs.length) { toast('nothing worth automating in that session'); openWorkflowsModal(); return; }
+  reviewDistilled(wfs);
+}
 
 // A session is not always one workflow. Extraction segments it by topic; this
 // review lets you decide split-vs-combine, drop segments, and rename before

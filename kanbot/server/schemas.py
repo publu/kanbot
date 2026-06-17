@@ -108,3 +108,9 @@ class WorkflowExtract(BaseModel):
 
 class WorkflowClone(BaseModel):
     name: str = ""
+
+
+class FromSession(BaseModel):
+    session_id: str = ""
+    session_ids: List[str] = []
+    refresh: bool = False        # ignore the cache and re-extract

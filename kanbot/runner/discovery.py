@@ -265,7 +265,40 @@ def _discover_provider(p: Provider) -> List[Dict[str, Any]]:
         info["mtime"] = mtime
         info["active"] = (nowt - mtime) <= ACTIVE_WINDOW_S
         info["duration"] = max(0, mtime - (info.get("started_at") or mtime))
+        # Path + format let the server deep-read the FULL transcript on demand
+        # (discovery only keeps a short tail for the board).
+        info["path"] = str(f)
+        info["fmt"] = p.fmt
         out.append(info)
+    return out
+
+
+def all_user_turns(path: str, fmt: str = "claude", limit: int = 80) -> List[str]:
+    """Every human turn in a transcript (not just the tail), de-noised and
+    de-duped — the real material to distill a session into workflows."""
+    if not path:
+        return []
+    line_fn = _codex_line_msg if fmt == "codex" else _claude_line_msg
+    out: List[str] = []
+    try:
+        with Path(path).open("r", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                m = line_fn(d)
+                if m and m[0] == "user":
+                    t = " ".join((m[1] or "").split())
+                    if t and (not out or out[-1] != t):
+                        out.append(t)
+                        if len(out) >= limit:
+                            break
+    except OSError:
+        return []
     return out
 
 
