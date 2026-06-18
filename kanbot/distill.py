@@ -27,59 +27,63 @@ from .agents import BUILTIN_BY_NAME, builtin_names
 # the others have unknown output shapes so they sit at the back.
 _PREFERENCE = ["claude", "codex", "glm", "gemini", "cursor-agent", "opencode"]
 
-META_PROMPT = """You are extracting REUSABLE, GROUNDED workflows from a \
-developer's past coding session. You are running INSIDE the actual repository \
-that session worked in — USE IT. Read the real code to ground every workflow in \
-what actually exists. Do not invent.
+META_PROMPT = """You are distilling a developer's past session into a reusable \
+PLAYBOOK. A playbook's whole job is to AUTOMATE THE PROMPTING: capture so much of \
+the method, judgment, and standards from this session that NEXT time the developer \
+supplies ONE line — a TARGET — and a fresh agent reproduces the same class of \
+outcome with no further explaining. You are running INSIDE the actual repository \
+this session worked in — read the real code to ground everything. Do not invent.
 
-READ-ONLY: you may explore (read, grep, glob, list) to verify your understanding, \
-but you MUST NOT edit, create, or delete files, or run commands that change \
-anything. This is analysis, not work.
+READ-ONLY: explore (read, grep, glob, list) to verify your understanding; you MUST \
+NOT edit, create, or delete files, or run anything that changes state.
 
-The text below is the human side of the session — messy, conversational, full of \
-dead ends and meta-commentary aimed at the assistant ("stop telling me what to \
-do", "GIVE ME THE LAST PART", "ok that's good i guess"). IGNORE the noise. Mine \
-the substance: what was actually built/fixed, HOW, and what was LEARNED.
+The text below is the human side of the session — messy, full of dead ends and \
+meta-commentary aimed at the assistant. Ignore the noise, but mine the developer's \
+OWN WORDS for the real intent, the method that worked, the standards/taste they \
+insisted on, and the gotchas that cost time. Their vocabulary is the raw material.
 
 Work in four phases:
 
-PHASE 1 — TRIAGE. From the transcript and a quick look at the repo, decide what \
-real engineering work happened and of what kind (feature / bug fix / refactor / \
-infra / research). If it was just discussion or there is no real, reusable method \
-to extract, return {"workflows": []}. Do not manufacture a workflow.
+PHASE 1 — TRIAGE. Decide what real work happened and, more importantly, what GOAL \
+it served. If it was just chatter with no reusable method, return \
+{"workflows": []}. Never manufacture one.
 
-PHASE 2 — GROUND IN THE CODE. For each candidate objective, open the actual files \
-involved. Confirm the components, modules, patterns, and conventions referenced \
-really exist in THIS repo. A workflow you cannot tie to real code is a \
-hallucination — drop it.
+PHASE 2 — GROUND. Open the actual files involved; confirm the components, modules, \
+patterns and conventions referenced really exist in THIS repo. Anything you cannot \
+tie to real code, drop.
 
-PHASE 3 — EXTRACT THE PATTERN + TAKEAWAYS. Climb the abstraction ladder: write \
-each workflow for the CLASS of task ("sort this $ table" -> "add correct \
-typed/numeric sorting to any data table"), grounded in the concrete reality you \
-just verified. Bake in the takeaways: the gotcha that wasted time, the approach \
-that worked, why a choice was made — as "Method: …" / "Watch out for: …" guidance \
-inside the step prompts, with the key lesson leading the `description`. When the \
-pattern needs a specific subject each run, make the FIRST step a fill-in: \
-"TARGET: <what to apply this to — fill in before running>".
+PHASE 3 — GENERALIZE TO THE INTENT. This is the point of the whole exercise. Climb \
+the abstraction ladder until the playbook names the GOAL, not the one-off artifact \
+the session happened to produce. The `name` must read as a reusable INTENT with an \
+explicit fill-in slot in {curly braces} — a command the developer could re-issue \
+against a totally different subject (shape: "<kind of work> on {what} toward \
+{quality/goal}"). If your name describes the specific thing built this time, you \
+have NOT climbed high enough — abstract again. The concrete subject from this \
+session becomes the {TARGET}; it is never baked into the name.
 
-PHASE 4 — FALSIFY. Before emitting, try to INVALIDATE each workflow: Is this the \
-method the code/transcript actually shows, or a guess? Is it genuinely reusable, \
-or a one-off? Could a fresh agent with no memory of this chat follow it against \
-this repo? Drop every workflow that fails. Returning FEWER real, grounded \
-workflows (even zero) is the goal — never pad with plausible slop.
+PHASE 4 — FALSIFY. Try to invalidate each playbook: is this the method the \
+code/transcript actually shows, or a guess? Would it genuinely work against a \
+DIFFERENT {TARGET}, or is it a one-off? Could a fresh agent with no memory follow \
+it? Drop every one that fails. Fewer real playbooks (even zero) beats padding.
 
-STRUCTURE each surviving workflow as 3-6 ordered steps. Each step's `prompt` is a \
-self-contained instruction for a fresh agent: what to do, the method, the \
-gotchas, how to verify. Steps hand off via files (PLAN.md / NOTES.md). For \
-iterative work set `loop_max` (e.g. 20) and a `loop_until` shell predicate (e.g. \
-`pytest -q`). `carry_context` true when a step needs the previous step's output. \
-`name` is the PATTERN (class of task), short and imperative. \
-`description` is ONE short, plain-English sentence a busy person can read at a \
-glance: what running this playbook DOES for them and when to reach for it \
-(present tense, like "Add a CRUD endpoint with tests and wire it into the \
-dashboard."). Do NOT recap what happened in the original session, do NOT dump \
-implementation archaeology or a jargon list, do NOT write a paragraph — save the \
-detailed method and gotchas for the step prompts.
+NOW WRITE A BIG PLAYBOOK. The value is in the depth — a thin playbook means you did \
+not extract enough, so dig back into the transcript and the code before settling. \
+Structure each surviving playbook as 3-6 ordered steps. Each step's `prompt` is a \
+THOROUGH markdown brief for a fresh agent — several short labelled sections that \
+together leave nothing to re-explain at run time:
+  - the exact method that worked here (concrete, ordered);
+  - the standards and taste the developer insisted on — quote their own phrasing;
+  - the gotchas that wasted time and how to avoid them;
+  - how to verify the step is actually done.
+Write in the session's real vocabulary. The FIRST step states the run-time input: \
+"TARGET: {the specific thing to apply this to — fill in before running}". Steps \
+hand off via files (PLAN.md / NOTES.md). For iterative work set `loop_max` \
+(e.g. 20) and a `loop_until` shell predicate (e.g. `pytest -q`); `carry_context` \
+true when a step needs the previous step's output.
+
+`name`: the generalized intent WITH its {slot} — short, imperative, reusable.
+`description`: ONE plain-English sentence — what running it does and when to reach \
+for it, present tense. No session recap, no jargon dump, no paragraph.
 
 Return ONLY a JSON object as the very last thing you output, no markdown fences:
 {"workflows": [{"name": str, "description": str, "steps": [{"name": str, \
@@ -300,7 +304,7 @@ def distill_workflows_stream(template, available, on_line, timeout=300, exemplar
         body += f"\nTHE SESSION'S OPENING REQUEST (the real goal): {ctx[:800]}\n\n"
     body += "LATER LINES FROM THE TRANSCRIPT (mostly noise — mine for intent):\n"
     body += "\n".join(f"- {t}" for t in turns)
-    prompt = META_PROMPT % body[:7000]
+    prompt = META_PROMPT % body[:12000]
     text, by = stream_agent(prompt, available, str(template.get("cwd") or ""), on_line, timeout)
     data = _extract_json(text)
     if not data:
@@ -341,23 +345,30 @@ def _exemplar_block(exemplars: Optional[List[dict]]) -> str:
 
 
 DRAFT_PROMPT = """You are AUTHORING a reusable PLAYBOOK from a short description — \
-NOT from a past session. A playbook is a 3-6 step procedure a fresh agent can \
-follow to accomplish a CLASS of task with almost no extra prompting.
+NOT from a past session. A playbook's whole job is to AUTOMATE THE PROMPTING: the \
+user supplies ONE line (a TARGET) and a fresh agent reproduces the outcome with no \
+further explaining.
 
 %s
 
 Design the playbook:
-- Break the work into 3-6 ordered steps. Each step's `prompt` is a self-contained \
-instruction for a fresh agent: what to do, the method, the gotchas, how to verify.
-- Climb the abstraction ladder: write for the CLASS of task, not one instance. \
-Where a specific subject is needed per run, make the first step a fill-in \
-("TARGET: <what to apply this to — fill in before running>").
-- Bake in method + gotchas as "Method: …" / "Watch out for: …" guidance inside the \
-step prompts; lead the `description` with the single most useful takeaway.
+- GENERALIZE TO THE INTENT. The `name` is the reusable GOAL with an explicit \
+fill-in slot in {curly braces} — a command re-issuable against a different subject \
+(shape: "<kind of work> on {what} toward {quality/goal}"). Never bake the specific \
+subject into the name; it is the {TARGET}.
+- WRITE BIG. Break the work into 3-6 ordered steps. Each step's `prompt` is a \
+THOROUGH markdown brief — several short labelled sections: the exact method \
+(ordered), the standards/taste to hold to, the gotchas to avoid, and how to verify \
+the step is done. Leave nothing to re-explain at run time. A thin playbook is a \
+failed one.
+- The FIRST step states the run-time input: "TARGET: {the specific thing to apply \
+this to — fill in before running}".
 - Steps hand off via files (PLAN.md / NOTES.md) since each runs with fresh context.
 - For iterative work set `loop_max` (e.g. 20) and a `loop_until` shell predicate \
 (e.g. `pytest -q`). Set `carry_context` true when a step needs the previous \
 step's output.
+- `description`: ONE plain-English sentence — what running it does and when to \
+reach for it. No jargon dump, no paragraph.
 %s
 Return ONLY a JSON object as the very last thing you output, no markdown fences:
 {"workflows": [{"name": str, "description": str, "steps": [{"name": str, \
@@ -419,7 +430,7 @@ def distill_workflows(template: Dict[str, Any], available: Optional[List[str]] =
         body += f"\nTHE SESSION'S OPENING REQUEST (the real goal): {ctx[:800]}\n\n"
     body += "LATER LINES FROM THE TRANSCRIPT (mostly noise — mine for intent):\n"
     body += "\n".join(f"- {t}" for t in turns)
-    prompt = META_PROMPT % body[:7000]
+    prompt = META_PROMPT % body[:12000]
     cwd = str(template.get("cwd") or "").strip()
     data, by = run_agent_json(prompt, available, cwd, timeout)
     if not data:
