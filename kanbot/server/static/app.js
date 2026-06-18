@@ -1542,7 +1542,7 @@ async function runWorkflow(id, cwd, title) {
 // ---- automations surface (full screen, internal navigation) ------------
 function autoIsOpen() { return $('#autoView').classList.contains('open'); }
 function openAutomations() {
-  if (S.demo) { toast('Playbooks run on your local Deckhand — connect first'); return; }
+  if (S.demo) { showConnectPanel(); return; }
   $('#autoView').classList.add('open');
   openWorkflowsModal();
 }
@@ -1576,7 +1576,7 @@ function autoFrame(view, title, opts) {
 function autoBtn(label, fn, cls) { const b = el('button', 'btn ' + (cls || ''), label); b.onclick = fn; return b; }
 
 function openWorkflowsModal() {
-  if (S.demo) { toast('Playbooks run on your local Deckhand — connect first'); return; }
+  if (S.demo) { showConnectPanel(); return; }
   const n = S.workflows.length;
   const actions = [
     autoBtn('⚡ Set off a goal spree', openSpreeLauncher, 'primary'),

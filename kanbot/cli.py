@@ -92,9 +92,12 @@ def cmd_up(args) -> int:
             time.sleep(0.1)
 
     print(f"KanBot is up  →  {base}")
+    print("  open:  https://getkanbot.vercel.app  (connects to this local backend)")
     if not args.no_open:
         try:
-            webbrowser.open(base)
+            # Open the hosted client, not localhost — it connects back to this local
+            # backend (one-time browser "allow local network access" prompt).
+            webbrowser.open("https://getkanbot.vercel.app")
         except Exception:
             pass
 
