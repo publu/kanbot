@@ -1,76 +1,46 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>KanBot · agent control room</title>
-  <link rel="stylesheet" href="/styles.css" />
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%234f8cff'/><text x='50' y='72' font-size='60' font-family='monospace' font-weight='800' text-anchor='middle' fill='%23ffffff'>K</text></svg>" />
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Deckhand — Claude task queue</title>
+  <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <div id="app">
-    <!-- top bar -->
-    <header class="topbar">
-      <div class="brand">
-        <div class="mark">K</div>
-        <div>
-          <div class="name">Kan<span>Bot</span></div>
-        </div>
-        <span class="ver" id="version"></span>
-      </div>
-
-      <div class="spacer"></div>
-
-      <div class="runners" id="runners"></div>
-      <button class="btn ghost small" id="profileBtn" title="What KanBot has learned about your work (p)">◎ profile</button>
-      <button class="btn ghost small" id="newTaskBtn" title="Create a one-off task for an agent (n)">＋ task</button>
-      <button class="btn primary small" id="workflowsBtn" title="Playbooks — your sessions distilled into reusable one-line prompts (w)">▤ playbooks <span id="wfBadge" class="live-badge hidden">0</span></button>
-      <button class="btn ghost small" id="sessionsBtn" title="Recent agent sessions (Claude, Codex, …)">⟳ sessions <span id="liveBadge" class="live-badge hidden">0</span></button>
-      <button class="btn ghost small" id="manageTagsBtn" title="Manage tags">🏷 tags</button>
-      <button class="btn ghost small" id="apiBtn" title="Full API reference">&lt;/&gt; API</button>
+  <div class="shell">
+    <header>
+      <a class="brand" href="#"><span class="logo">D</span><span>DECKHAND</span></a>
+      <div class="connection"><i id="dot"></i><span id="connection">connecting</span></div>
+      <div class="runner" id="runner">No runner</div>
     </header>
-
-    <!-- board -->
-    <main class="board" id="board"></main>
-
-    <!-- TUI status / keybind bar -->
-    <footer class="statusbar" id="statusbar"></footer>
+    <main>
+      <section class="rail">
+        <div class="rail-head"><div><p class="eyebrow">WORK QUEUE</p><h1>Tasks</h1></div><button class="square" id="composeBtn" title="New task">+</button></div>
+        <div class="lanes" id="lanes"></div>
+      </section>
+      <section class="workspace">
+        <div class="terminal-head">
+          <div class="traffic"><i></i><i></i><i></i></div>
+          <div class="terminal-title"><b id="termTitle">Claude terminal</b><span id="termPath">Waiting for a task</span></div>
+          <button class="resume hidden" id="resumeBtn">Continue in queue →</button>
+          <button class="stop hidden" id="stopBtn">Stop run</button>
+        </div>
+        <div class="terminal" id="terminal"><div class="empty"><span>❯_</span><h2>Nothing selected</h2><p>Add a task above, or pick up a Claude session below.</p></div></div>
+        <div class="session-strip"><span>PICK UP A CLAUDE SESSION <em>— continue any terminal session as a queued task</em></span><div id="sessions"></div></div>
+      </section>
+    </main>
   </div>
-
-  <!-- command palette -->
-  <div class="palette-scrim" id="paletteScrim">
-    <div class="palette" id="palette">
-      <div class="palette-in"><span class="palette-prompt">❯</span><input id="paletteInput" class="palette-input" placeholder="type a command…" autocomplete="off" spellcheck="false" /></div>
-      <div class="palette-list" id="paletteList"></div>
-    </div>
-  </div>
-
-  <!-- boot splash -->
-  <div class="boot" id="boot"></div>
-
-  <!-- onboarding: scan your sessions, reveal what you build, you pick -->
-  <div class="onboard" id="onboard"></div>
-
-  <!-- card drawer -->
-  <div class="drawer-scrim" id="drawerScrim"></div>
-  <aside class="drawer" id="drawer">
-    <div class="drawer-head">
-      <input class="title-input" id="dTitle" placeholder="Task title" />
-      <button class="x" id="drawerClose">×</button>
-    </div>
-    <div class="drawer-body" id="drawerBody"></div>
-  </aside>
-
-  <!-- automations: a full-screen surface (not a modal) with internal nav -->
-  <section class="auto-view" id="autoView"></section>
-
-  <!-- modal -->
-  <div class="modal-scrim" id="modalScrim">
-    <div class="modal" id="modal"></div>
-  </div>
-
-  <div class="toast-wrap" id="toasts"></div>
-
+  <dialog id="composer">
+    <form id="taskForm">
+      <div class="modal-head"><div><p class="eyebrow">NEW CARD</p><h2>Give Claude a task</h2></div><button type="button" class="close" id="closeComposer">×</button></div>
+      <label>Task name<input id="taskTitle" required placeholder="Refactor the authentication flow"></label>
+      <label>Instructions<textarea id="taskPrompt" required rows="8" placeholder="Describe the outcome, constraints, and how Claude should verify the work…"></textarea></label>
+      <label>Working directory<input id="taskCwd" placeholder="/path/to/repository"></label>
+      <div class="plan-row"><label class="switch"><input id="planMode" type="checkbox"><span></span></label><div><b>Plan before execution</b><p>Claude produces a read-only plan. The queue pauses until you approve it.</p></div></div>
+      <div class="plan-row sub hidden" id="autoRow"><label class="switch"><input id="planAuto" type="checkbox"><span></span></label><div><b>Auto-approve &amp; run</b><p>Skip the pause — run the plan the moment Claude finishes it. For unattended runs.</p></div></div>
+      <div class="modal-actions"><button type="button" class="secondary" id="cancelComposer">Cancel</button><button class="primary">Add to queue <span>⌘↵</span></button></div>
+    </form>
+  </dialog>
+  <div id="toast"></div>
   <script type="module" src="/app.js"></script>
 </body>
 </html>

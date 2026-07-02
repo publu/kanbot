@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 import threading
 import time
@@ -92,12 +93,14 @@ def cmd_up(args) -> int:
             time.sleep(0.1)
 
     print(f"KanBot is up  →  {base}")
-    print("  open:  https://getkanbot.vercel.app  (connects to this local backend)")
+    print(f"  open:  {base}")
     if not args.no_open:
         try:
-            # Open the hosted client, not localhost — it connects back to this local
-            # backend (one-time browser "allow local network access" prompt).
-            webbrowser.open("https://getkanbot.vercel.app")
+            # Open the local board directly: the server serves the UI and the API
+            # same-origin, so the browser talks straight to this backend.
+            # ponytail: localhost, not the hosted client — the UI uses relative
+            # paths, so it only works served from the server that owns the API.
+            webbrowser.open(base)
         except Exception:
             pass
 
@@ -149,6 +152,16 @@ def cmd_agents(args) -> int:
             print(f" {mark} {spec.name:14} {spec.description}")
     print(f"\nadvertised capabilities: {', '.join(found) or '(none)'}")
 
+    # Models + which providers have an API key configured.
+    print("\nmodels & keys (set with: kanbot config --set-key <agent>=<key>):")
+    for spec in BUILTIN_AGENTS:
+        if not spec.models:
+            continue
+        has_key = spec.name in cfg.provider_keys
+        keyed = "🔑" if has_key else ("env" if spec.api_key_env in os.environ else "—")
+        models = ", ".join(m + (" *" if m == spec.default_model else "") for m in spec.models)
+        print(f"  {keyed:>3} {spec.name:12} [{spec.api_key_env or 'n/a'}]  {models}")
+
     # Session trackers: which TUIs KanBot can see / revive.
     from .runner.discovery import active_providers, builtin_providers
     trackers = active_providers(cfg.discovery_sources)
@@ -169,6 +182,7 @@ def cmd_agents(args) -> int:
 
 
 def cmd_config(args) -> int:
+    from .agents import BUILTIN_BY_NAME
     cfg = Config.load()
     changed = False
     if args.server:
@@ -191,6 +205,14 @@ def cmd_config(args) -> int:
         cfg.auto_approve = False; changed = True
     if args.unsafe:
         cfg.auto_approve = True; changed = True
+    for pair in (args.set_key or []):
+        agent, _, key = pair.partition("=")
+        agent, key = agent.strip(), key.strip()
+        if not agent or not key:
+            print(f"bad --set-key '{pair}' (use agent=KEY, e.g. glm=sk-...)"); continue
+        cfg.provider_keys[agent] = key; changed = True
+    for agent in (args.unset_key or []):
+        cfg.provider_keys.pop(agent, None); changed = True
     if changed:
         cfg.save()
         print(f"saved {config_path()}")
@@ -201,6 +223,9 @@ def cmd_config(args) -> int:
     print(f"max_concurrency : {cfg.max_concurrency}")
     print(f"disabled_agents : {', '.join(cfg.disabled_agents) or '(none)'}")
     print(f"mode            : {'auto-approve (agents act unattended)' if cfg.auto_approve else 'SAFE (no auto-approve flags)'}")
+    keyed = ", ".join(f"{a} ({BUILTIN_BY_NAME[a].api_key_env})" if a in BUILTIN_BY_NAME else a
+                      for a in cfg.provider_keys) if cfg.provider_keys else "(none)"
+    print(f"provider_keys   : {keyed}")
     return 0
 
 
@@ -210,6 +235,35 @@ def cmd_open(args) -> int:
     print(f"opening {url}")
     webbrowser.open(url)
     return 0
+
+
+def cmd_review(args) -> int:
+    import asyncio
+    import os
+    import subprocess
+
+    repo = os.path.abspath(args.repo)
+    if args.base:
+        diff = subprocess.run(["git", "-C", repo, "diff", f"{args.base}...HEAD"],
+                              capture_output=True, text=True).stdout
+    else:
+        # Everything not yet on HEAD: staged + unstaged.
+        diff = subprocess.run(["git", "-C", repo, "diff", "HEAD"],
+                              capture_output=True, text=True).stdout
+    if not diff.strip():
+        print("no changes to review (try --base <ref>)")
+        return 1
+
+    if getattr(args, "gate", False):
+        from .review import gate_review
+        out = asyncio.run(gate_review(diff, repo_path=repo, title=args.title))
+    else:
+        from .review import review
+        out = asyncio.run(review(diff, repo_path=repo, title=args.title, depth=args.depth))
+    print(out.markdown)
+    # Exit 2 on REQUEST_CHANGES so the runner sees a Gate rejection (non-zero) and
+    # loops the work back. 0 means the gate passed.
+    return 0 if out.event != "REQUEST_CHANGES" else 2
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -255,11 +309,23 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--enable", nargs="*", help="agent names to re-enable")
     sp.add_argument("--safe", action="store_true", help="enable safe mode (no auto-approve flags)")
     sp.add_argument("--unsafe", action="store_true", help="disable safe mode (auto-approve, default)")
+    sp.add_argument("--set-key", nargs="*", metavar="AGENT=KEY",
+                    help="set a provider API key, e.g. --set-key glm=sk-... kimi=sk-...")
+    sp.add_argument("--unset-key", nargs="*", metavar="AGENT", help="remove provider API key(s)")
     sp.set_defaults(func=cmd_config)
 
     sp = sub.add_parser("open", help="open the board in a browser")
     sp.add_argument("--server", default=None)
     sp.set_defaults(func=cmd_open)
+
+    sp = sub.add_parser("review", help="AI code review of local changes (multi-agent)")
+    sp.add_argument("--repo", default=".", help="repo path to review (default: cwd)")
+    sp.add_argument("--base", default="", help="base ref to diff against (default: staged+unstaged vs HEAD)")
+    sp.add_argument("--depth", default="auto", choices=["auto", "quick", "standard", "deep"])
+    sp.add_argument("--gate", action="store_true",
+                    help="fast single-pass verdict (for use as a chain Gate); exits 2 if it blocks")
+    sp.add_argument("--title", default="", help="title for the change set")
+    sp.set_defaults(func=cmd_review)
 
     return p
 

@@ -31,6 +31,17 @@ class AgentSpec:
     # can't act unattended). Empty => no safer variant; argv is used as-is.
     safe_argv: List[str] = field(default_factory=list)
     safe_resume_argv: List[str] = field(default_factory=list)
+    # --- model catalog (surfaced to the UI/API; used by the review engine) ----
+    models: List[str] = field(default_factory=list)   # selectable model ids for this provider
+    default_model: str = ""    # premium/default model ("" = let the CLI decide)
+    fast_model: str = ""       # cheap model for classification gates ("" = use default_model)
+    model_flag: str = "--model"  # how this CLI takes a model on argv
+    # --- provider auth --------------------------------------------------------
+    # Env var this provider's API key belongs in. KanBot injects the key the user
+    # configured (Config.provider_keys[name]) into this var for the subprocess.
+    # claude-compatible providers (z.ai, Kimi) reuse ANTHROPIC_API_KEY but each
+    # runs in its own subprocess env, so the keys never collide.
+    api_key_env: str = ""
 
 
 # Non-interactive / headless invocations for each known coding CLI.
@@ -46,6 +57,10 @@ BUILTIN_AGENTS: List[AgentSpec] = [
         safe_resume_argv=["claude", "--resume", "{session_id}", "-p", "{prompt}"],
         description="Anthropic Claude Code in headless print mode.",
         color="#d97757",
+        models=["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"],
+        default_model="claude-opus-4-8",
+        fast_model="claude-haiku-4-5-20251001",
+        api_key_env="ANTHROPIC_API_KEY",
     ),
     AgentSpec(
         name="codex",
@@ -61,6 +76,11 @@ BUILTIN_AGENTS: List[AgentSpec] = [
                           "{session_id}", "{prompt}"],
         description="OpenAI Codex CLI, non-interactive exec (workspace-write sandbox).",
         color="#10a37f",
+        models=["gpt-5-codex", "gpt-5", "o4-mini"],
+        default_model="gpt-5-codex",
+        fast_model="o4-mini",
+        model_flag="--model",
+        api_key_env="OPENAI_API_KEY",
     ),
     AgentSpec(
         name="gemini",
@@ -70,6 +90,11 @@ BUILTIN_AGENTS: List[AgentSpec] = [
         safe_argv=["gemini", "-p", "{prompt}"],
         description="Google Gemini CLI in YOLO/auto mode.",
         color="#4285f4",
+        models=["gemini-2.5-pro", "gemini-2.5-flash"],
+        default_model="gemini-2.5-pro",
+        fast_model="gemini-2.5-flash",
+        model_flag="-m",
+        api_key_env="GEMINI_API_KEY",
     ),
     AgentSpec(
         name="glm",
@@ -83,6 +108,27 @@ BUILTIN_AGENTS: List[AgentSpec] = [
         description="Z.ai GLM coding plan via Claude Code (set ANTHROPIC_BASE_URL).",
         env={"ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic"},
         color="#2563eb",
+        models=["glm-4.6", "glm-4.5", "glm-4.5-air"],
+        default_model="glm-4.6",
+        fast_model="glm-4.5-air",
+        api_key_env="ANTHROPIC_API_KEY",  # claude-compatible endpoint; key is your Z.ai key
+    ),
+    AgentSpec(
+        name="kimi",
+        label="Kimi / Moonshot",
+        bin="claude",
+        argv=["claude", "-p", "{prompt}", "--dangerously-skip-permissions"],
+        resume_argv=["claude", "--resume", "{session_id}", "-p", "{prompt}",
+                     "--dangerously-skip-permissions"],
+        safe_argv=["claude", "-p", "{prompt}"],
+        safe_resume_argv=["claude", "--resume", "{session_id}", "-p", "{prompt}"],
+        description="Moonshot Kimi via Claude Code's Anthropic-compatible endpoint.",
+        env={"ANTHROPIC_BASE_URL": "https://api.moonshot.ai/anthropic"},
+        color="#1f8fff",
+        models=["kimi-k2-0905-preview", "kimi-k2-turbo-preview", "kimi-k2-0711-preview"],
+        default_model="kimi-k2-0905-preview",
+        fast_model="kimi-k2-turbo-preview",
+        api_key_env="ANTHROPIC_API_KEY",  # claude-compatible endpoint; key is your Moonshot key
     ),
     AgentSpec(
         name="opencode",
@@ -141,6 +187,9 @@ def spec_to_dict(a: AgentSpec) -> dict:
         "bin": a.bin,
         "description": a.description,
         "color": a.color,
+        "models": a.models,
+        "default_model": a.default_model,
+        "api_key_env": a.api_key_env,
     }
 
 

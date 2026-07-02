@@ -21,6 +21,8 @@ class CardCreate(BaseModel):
     loop_until: str = ""
     profile: str = ""
     command: str = ""  # optional raw command override (argv template with {prompt})
+    plan_mode: bool = False
+    plan_auto: bool = False  # plan mode, but auto-approve the plan and run without waiting
 
 
 class CardPatch(BaseModel):
@@ -34,11 +36,45 @@ class CardPatch(BaseModel):
     loop_until: Optional[str] = None
     profile: Optional[str] = None
     command: Optional[str] = None
+    plan_mode: Optional[bool] = None
 
 
 class CardMove(BaseModel):
     column_id: str
     position: int = 0
+
+
+class ProviderKey(BaseModel):
+    """Set/clear one provider's API key (empty value clears it)."""
+    agent: str
+    key: str = ""
+
+
+class ChainStep(BaseModel):
+    """One follow-up step in a "Then…" composer chain. A Step, or a Gate."""
+    name: str = ""
+    prompt: str = ""
+    agent: str = ""           # "" inherits the chain's agent
+    command: str = ""         # raw command (a gate's verdict producer, e.g. `kanbot review --gate`)
+    loop_max: int = 1         # >1 = Ralph loop this step (e.g. "fix until tests pass")
+    loop_until: str = ""      # shell predicate; exit 0 in cwd stops the loop early
+    gate: bool = False        # this step is a Gate: on fail, loop back to the prior step
+    max_retries: int = 2      # gate: how many times to loop the work back before giving up
+
+
+class ChainRequest(BaseModel):
+    """Run a prompt, then daisy-chain follow-up steps (design, test, review, …).
+
+    Each follow-up sees the previous step's output (carry_context). With no
+    follow-ups this is just a normal single card.
+    """
+    title: str
+    prompt: str = ""          # the first/base step the user typed
+    agent: str = "auto"
+    cwd: str = ""
+    profile: str = ""
+    steps: List[ChainStep] = []   # follow-up steps, in order
+    run: bool = True
 
 
 class TagCreate(BaseModel):
@@ -78,6 +114,8 @@ class WorkflowStep(BaseModel):
     loop_until: str = ""
     carry_context: bool = True
     continue_on_fail: bool = False
+    gate: bool = False        # Gate step: on fail, loop back to the prior step
+    max_retries: int = 2      # gate: loop-back budget before giving up
 
 
 class WorkflowSave(BaseModel):

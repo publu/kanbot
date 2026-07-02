@@ -144,8 +144,11 @@ class Hub:
 
     def all_agent_sessions(self) -> List[dict]:
         out: List[dict] = []
-        for sessions in self.agent_sessions.values():
-            out.extend(s for s in sessions if not self._is_noise_session(s))
+        for rid, sessions in self.agent_sessions.items():
+            # Stamp the owning runner so the client can resume a session on the
+            # exact machine it lives on (revive pins the card to this runner).
+            out.extend({**s, "runner_id": rid}
+                       for s in sessions if not self._is_noise_session(s))
         out.sort(key=lambda s: s.get("mtime", 0), reverse=True)
         return out
 
@@ -181,12 +184,19 @@ class Hub:
         async with self._lock:
             boards = self.db.list_boards()
             for board in boards:
+                # Deckhand is deliberately a single-file queue: never talk over
+                # the agent that is already working on this board.
+                if (self.db.cards_with_status(board["id"], "running") or
+                        self.db.cards_with_status(board["id"], "assigned") or
+                        self.db.cards_with_status(board["id"], "review")):
+                    continue
                 queued = self.db.cards_with_status(board["id"], "queued")
                 for card in queued:
                     runner = self._find_runner(card["agent"], card.get("pin_runner") or "")
                     if not runner:
                         continue
                     await self._assign(card, runner)
+                    break
 
     def _find_runner(self, agent: str, pin_runner: str = "") -> Optional[RunnerConn]:
         if pin_runner:
@@ -220,6 +230,15 @@ class Hub:
         if running_col:
             self.db.move_card(card["id"], running_col["id"],
                               self.db._next_position(running_col["id"]))
+        prompt = compose_prompt(card.get("profile", ""), card.get("prompt", ""))
+        if card.get("phase") == "plan":
+            prompt = ("PLAN MODE. Analyze the task and produce a concrete implementation plan. "
+                      "Do not modify files, run destructive commands, or implement anything yet. "
+                      "End with a concise checklist that can be approved.\n\nTASK:\n" + prompt)
+        elif card.get("plan_mode"):
+            prior = self._latest_session_tail(card["id"])
+            prompt = (prompt + "\n\nThe following plan was produced in a plan-only pass and approved by the user. "
+                      "Implement it now, verify the result, and report what changed.\n\nAPPROVED PLAN:\n" + prior)
         payload = {
             "type": "assign",
             "session_id": sid,
@@ -227,7 +246,7 @@ class Hub:
             "agent": agent,
             # prompt mode (e.g. 'lean') is folded into the prompt here, so it's
             # re-applied on every fresh-context loop iteration automatically.
-            "prompt": compose_prompt(card.get("profile", ""), card.get("prompt", "")),
+            "prompt": prompt,
             "cwd": card.get("cwd", ""),
             "resume_of": card.get("resume_of", "") or "",
             "loop_max": int(card.get("loop_max", 1) or 1),
@@ -264,6 +283,22 @@ class Hub:
         card = self.db.get_card(sess["card_id"])
         advanced = False
         if card:
+            if (status == "success" and card.get("plan_mode") and
+                    card.get("phase") == "plan"):
+                # plan_auto skips the human gate: queue the execute pass right away.
+                if card.get("plan_auto"):
+                    self.db.update_card(card["id"], status="queued", phase="execute")
+                else:
+                    self.db.update_card(card["id"], status="review", phase="awaiting_approval")
+                await self._emit_card(card["id"])
+                runner = self.runners.get(sess["runner_id"])
+                if runner:
+                    runner.active.discard(sid)
+                    self.db.set_runner_status(runner.runner_id, "online", active=len(runner.active))
+                    await self.broadcast({"type": "runner.updated", "runner": self.db.get_runner(runner.runner_id)})
+                await self.broadcast({"type": "session.updated", "session": self.db.get_session(sid)})
+                await self.try_dispatch()
+                return
             # Workflow run with another step to take? Queue the next step and
             # keep the card in Running instead of finishing it.
             advanced = await self._advance_workflow(card, status)
@@ -357,9 +392,18 @@ class Hub:
         text = "\n".join(e["text"] for e in evs if e.get("stream") == "stdout")
         return text[-limit:] if len(text) > limit else text
 
+    def _latest_session_tail(self, card_id: str) -> str:
+        sess = self.db.list_sessions(card_id=card_id, limit=1)
+        return self._session_tail_text(sess[0]["id"]) if sess else ""
+
     async def _advance_workflow(self, card: Dict[str, Any], session_status: str) -> bool:
-        """If `card` is a workflow run with a next step to take, queue it and
-        return True. Returns False to let normal completion (done/failed) run."""
+        """Drive a chain forward — the one place the two primitives meet.
+
+        A **Step** that finishes just advances to the next step. A **Gate**
+        (``step.gate``) that fails loops the work BACK to the prior step with its
+        findings carried, up to ``max_retries`` — a closed loop. A Gate that
+        passes clears the retry budget and advances. Returns True if it re-queued
+        the card; False to let normal completion (done/failed) run."""
         wf_id = card.get("workflow_id") or ""
         if not wf_id:
             return False
@@ -368,19 +412,45 @@ class Hub:
             return False
         steps = workflow.get("steps") or []
         cur = int(card.get("step_index") or 0)
-        nxt = cur + 1
-        if nxt >= len(steps):
+        if cur >= len(steps):
             return False
         cur_step = steps[cur]
         ok = session_status == "success"
-        if not ok and not cur_step.get("continue_on_fail"):
+        is_gate = bool(cur_step.get("gate"))
+
+        # Gate FAILED → loop the work back to the previous step with findings.
+        if is_gate and not ok:
+            used = int(card.get("gate_retries") or 0)
+            budget = int(cur_step.get("max_retries") or 0)
+            target = cur - 1
+            if target >= 0 and used < budget:
+                findings = self._latest_session_tail(card["id"])
+                f = self._step_card_fields(workflow, steps[target], target)
+                note = ("\n\n--- A gate rejected the work. Fix these, then it re-runs: ---\n"
+                        + findings) if findings else ""
+                self.db.update_card(
+                    card["id"], status="queued", step_index=target,
+                    prompt=(f["prompt"] + note).strip(), agent=f["agent"],
+                    profile=f["profile"], command=f["command"], loop_max=f["loop_max"],
+                    loop_until=f["loop_until"], max_seconds=f.get("max_seconds", 0),
+                    gate_retries=used + 1,
+                )
+                return True
+            return False  # retry budget spent → finish as failed
+
+        # Gate PASSED → clear the retry budget before moving on.
+        if is_gate and ok:
+            self.db.update_card(card["id"], gate_retries=0)
+        # Plain step that failed and isn't tolerant → stop.
+        elif not ok and not cur_step.get("continue_on_fail"):
             return False
-        carry = ""
+
+        # Advance to the next step, if there is one.
+        nxt = cur + 1
+        if nxt >= len(steps):
+            return False
         nxt_step = steps[nxt]
-        if nxt_step.get("carry_context"):
-            sess = self.db.list_sessions(card_id=card["id"], limit=1)
-            if sess:
-                carry = self._session_tail_text(sess[0]["id"])
+        carry = self._latest_session_tail(card["id"]) if nxt_step.get("carry_context") else ""
         f = self._step_card_fields(workflow, nxt_step, nxt, carry)
         self.db.update_card(
             card["id"], status="queued", step_index=nxt, prompt=f["prompt"],

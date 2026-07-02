@@ -51,6 +51,20 @@ class Config:
     #   [{"name": "hermes", "label": "Hermes", "root": "~/.hermes/sessions",
     #     "pattern": "*.jsonl", "recursive": true, "fmt": "claude"}]
     discovery_sources: list = field(default_factory=list)
+    # Provider API keys, keyed by AGENT name (claude, codex, glm, kimi, gemini…).
+    # Injected into each agent's api_key_env when its subprocess runs. Keyed by
+    # agent (not env var) so claude-compatible providers that share
+    # ANTHROPIC_API_KEY (z.ai, Kimi) can each hold their own key without clashing.
+    provider_keys: Dict[str, str] = field(default_factory=dict)
+
+    def key_env_for(self, agent_name: str) -> Dict[str, str]:
+        """Env overrides carrying the configured API key for an agent (if any)."""
+        from .agents import BUILTIN_BY_NAME
+        spec = BUILTIN_BY_NAME.get(agent_name)
+        key = self.provider_keys.get(agent_name)
+        if spec and spec.api_key_env and key:
+            return {spec.api_key_env: key}
+        return {}
 
     @classmethod
     def load(cls) -> "Config":

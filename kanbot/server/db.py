@@ -50,6 +50,9 @@ CREATE TABLE IF NOT EXISTS cards (
     workflow_id TEXT DEFAULT '',   -- if set, this card is a run of that workflow
     step_index  INTEGER DEFAULT 0, -- workflow runs: 0-based index of the active step
     max_seconds INTEGER DEFAULT 0, -- wall-clock budget for the Ralph loop (0 = unbounded)
+    plan_mode   INTEGER DEFAULT 0, -- 1 = run a plan-only pass and wait for approval
+    plan_auto   INTEGER DEFAULT 0, -- 1 = plan mode, but auto-approve and run without waiting
+    phase       TEXT DEFAULT 'execute', -- plan|awaiting_approval|execute
     created_at  REAL NOT NULL,
     updated_at  REAL NOT NULL,
     FOREIGN KEY (board_id) REFERENCES boards(id) ON DELETE CASCADE
@@ -121,6 +124,7 @@ CREATE TABLE IF NOT EXISTS workflows (
     cwd         TEXT DEFAULT '',        -- default working dir for runs
     agent       TEXT DEFAULT 'auto',    -- default agent for steps that don't override
     source_tokens INTEGER DEFAULT 0,    -- est. input tokens of the conversation this distilled
+    ephemeral   INTEGER DEFAULT 0,      -- 1 = ad-hoc chain (a "Then…" composer run); hidden from the saved-workflow list
     created_at  REAL NOT NULL,
     updated_at  REAL NOT NULL,
     FOREIGN KEY (board_id) REFERENCES boards(id) ON DELETE CASCADE
@@ -140,6 +144,8 @@ CREATE TABLE IF NOT EXISTS workflow_steps (
     carry_context   INTEGER DEFAULT 1,  -- inject prior step's final output into this prompt
     continue_on_fail INTEGER DEFAULT 0, -- advance to the next step even if this one fails
     max_seconds     INTEGER DEFAULT 0,  -- wall-clock budget for this step's loop (0 = unbounded)
+    gate            INTEGER DEFAULT 0,  -- 1 = this step is a Gate: on fail, loop back to the prior step
+    max_retries     INTEGER DEFAULT 2,  -- gate steps: how many times to loop the work back before giving up
     FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE
 );
 
@@ -245,18 +251,32 @@ class DB:
                           ("command", "TEXT DEFAULT ''"),
                           ("workflow_id", "TEXT DEFAULT ''"),
                           ("step_index", "INTEGER DEFAULT 0"),
-                          ("max_seconds", "INTEGER DEFAULT 0")):
+                          ("max_seconds", "INTEGER DEFAULT 0"),
+                          ("gate_retries", "INTEGER DEFAULT 0")):
             if name not in cols:
                 self.conn.execute(f"ALTER TABLE cards ADD COLUMN {name} {ddl}")
         rcols = {r["name"] for r in self.q("PRAGMA table_info(runners)")}
         if "auto_approve" not in rcols:
             self.conn.execute("ALTER TABLE runners ADD COLUMN auto_approve INTEGER DEFAULT 1")
+        ccols = {r["name"] for r in self.q("PRAGMA table_info(cards)")}
+        if "plan_mode" not in ccols:
+            self.conn.execute("ALTER TABLE cards ADD COLUMN plan_mode INTEGER DEFAULT 0")
+        if "plan_auto" not in ccols:
+            self.conn.execute("ALTER TABLE cards ADD COLUMN plan_auto INTEGER DEFAULT 0")
+        if "phase" not in ccols:
+            self.conn.execute("ALTER TABLE cards ADD COLUMN phase TEXT DEFAULT 'execute'")
         wfcols = {r["name"] for r in self.q("PRAGMA table_info(workflows)")}
         if wfcols and "source_tokens" not in wfcols:
             self.conn.execute("ALTER TABLE workflows ADD COLUMN source_tokens INTEGER DEFAULT 0")
+        if wfcols and "ephemeral" not in wfcols:
+            self.conn.execute("ALTER TABLE workflows ADD COLUMN ephemeral INTEGER DEFAULT 0")
         stepcols = {r["name"] for r in self.q("PRAGMA table_info(workflow_steps)")}
         if stepcols and "max_seconds" not in stepcols:
             self.conn.execute("ALTER TABLE workflow_steps ADD COLUMN max_seconds INTEGER DEFAULT 0")
+        if stepcols and "gate" not in stepcols:
+            self.conn.execute("ALTER TABLE workflow_steps ADD COLUMN gate INTEGER DEFAULT 0")
+        if stepcols and "max_retries" not in stepcols:
+            self.conn.execute("ALTER TABLE workflow_steps ADD COLUMN max_retries INTEGER DEFAULT 2")
         # Drop deprecated columns from older boards, relocating any stray cards:
         #   info  -> backlog (sessions now live inline by recency)
         #   queued -> running (a card is queued via status, not a column)
@@ -333,18 +353,22 @@ class DB:
                      agent: str = "auto", cwd: str = "", resume_of: str = "",
                      pin_runner: str = "", loop_max: int = 1, loop_until: str = "",
                      profile: str = "", command: str = "", workflow_id: str = "",
-                     step_index: int = 0, max_seconds: int = 0) -> Dict[str, Any]:
+                     step_index: int = 0, max_seconds: int = 0,
+                     plan_mode: bool = False, plan_auto: bool = False) -> Dict[str, Any]:
         cid = gen_id()
         pos = self._next_position(column_id)
         ts = now()
         self.exec(
             """INSERT INTO cards (id, board_id, column_id, title, prompt, agent, cwd,
                status, position, resume_of, pin_runner, loop_max, loop_until, profile,
-               command, workflow_id, step_index, max_seconds, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               command, workflow_id, step_index, max_seconds, plan_mode, plan_auto, phase,
+               created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (cid, board_id, column_id, title, prompt, agent, cwd, "idle", pos,
              resume_of, pin_runner, max(1, int(loop_max or 1)), loop_until, profile,
-             command, workflow_id, step_index, max(0, int(max_seconds or 0)), ts, ts),
+             command, workflow_id, step_index, max(0, int(max_seconds or 0)),
+             1 if plan_mode else 0, 1 if plan_auto else 0,
+             "plan" if plan_mode else "execute", ts, ts),
         )
         return self.get_card(cid)
 
@@ -404,7 +428,7 @@ class DB:
     # template — that's what makes extracting and sharing workflows trivial.
     STEP_FIELDS = ("name", "prompt", "agent", "profile", "command",
                    "loop_max", "loop_until", "carry_context", "continue_on_fail",
-                   "max_seconds")
+                   "max_seconds", "gate", "max_retries")
 
     @staticmethod
     def _normalize_step(raw: Dict[str, Any], position: int) -> Dict[str, Any]:
@@ -419,15 +443,18 @@ class DB:
             "carry_context": 1 if raw.get("carry_context", True) else 0,
             "continue_on_fail": 1 if raw.get("continue_on_fail", False) else 0,
             "max_seconds": max(0, int(raw.get("max_seconds") or 0)),
+            "gate": 1 if raw.get("gate", False) else 0,
+            "max_retries": max(0, int(raw.get("max_retries", 2) if raw.get("max_retries") is not None else 2)),
         }
 
     def save_workflow(self, board_id: str, name: str, description: str = "",
                       agent: str = "auto", cwd: str = "",
                       steps: Optional[List[dict]] = None,
                       workflow_id: Optional[str] = None,
-                      source_tokens: int = 0) -> Dict[str, Any]:
+                      source_tokens: int = 0, ephemeral: bool = False) -> Dict[str, Any]:
         """Create or replace a workflow and its steps in one shot. Used by the
-        builder (save), import (from a template), and extract (from a session)."""
+        builder (save), import (from a template), extract (from a session), and
+        the "Then…" composer (ephemeral=True for one-off ad-hoc chains)."""
         ts = now()
         wid = workflow_id or gen_id()
         st = max(0, int(source_tokens or 0))
@@ -441,8 +468,9 @@ class DB:
         else:
             self.exec(
                 """INSERT INTO workflows (id, board_id, name, description, agent, cwd,
-                   source_tokens, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)""",
-                (wid, board_id, name, description, agent or "auto", cwd, st, ts, ts),
+                   source_tokens, ephemeral, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (wid, board_id, name, description, agent or "auto", cwd, st,
+                 1 if ephemeral else 0, ts, ts),
             )
         self._replace_steps(wid, steps or [])
         return self.get_workflow(wid)
@@ -454,10 +482,12 @@ class DB:
             self.conn.execute(
                 """INSERT INTO workflow_steps (id, workflow_id, position, name, prompt,
                    agent, profile, command, loop_max, loop_until, carry_context,
-                   continue_on_fail, max_seconds) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   continue_on_fail, max_seconds, gate, max_retries)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (gen_id(), workflow_id, i, s["name"], s["prompt"], s["agent"],
                  s["profile"], s["command"], s["loop_max"], s["loop_until"],
-                 s["carry_context"], s["continue_on_fail"], s["max_seconds"]),
+                 s["carry_context"], s["continue_on_fail"], s["max_seconds"],
+                 s["gate"], s["max_retries"]),
             )
         self.conn.commit()
 
@@ -474,7 +504,12 @@ class DB:
         return wf
 
     def list_workflows(self, board_id: str) -> List[Dict[str, Any]]:
-        wfs = self.q("SELECT * FROM workflows WHERE board_id=? ORDER BY name", (board_id,))
+        # Ephemeral chains (ad-hoc "Then…" runs) are excluded — they're one-offs,
+        # not reusable playbooks, so they never clutter the saved-workflow drawer.
+        wfs = self.q(
+            "SELECT * FROM workflows WHERE board_id=? AND COALESCE(ephemeral,0)=0 ORDER BY name",
+            (board_id,),
+        )
         for wf in wfs:
             wf["steps"] = self.workflow_steps(wf["id"])
         return wfs

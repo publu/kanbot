@@ -53,8 +53,10 @@ def detect_agents(cfg: Config) -> Dict[str, ResolvedAgent]:
             binary = argv[0] if argv else spec.bin
         if not shutil.which(binary):
             continue
+        env = dict(spec.env)
+        env.update(cfg.key_env_for(spec.name))  # inject the configured provider API key
         found[spec.name] = ResolvedAgent(
-            name=spec.name, label=spec.label, argv=list(argv), env=dict(spec.env),
+            name=spec.name, label=spec.label, argv=list(argv), env=env,
             resume_argv=list(spec.resume_argv),
             safe_argv=list(spec.safe_argv), safe_resume_argv=list(spec.safe_resume_argv),
         )
@@ -135,6 +137,12 @@ async def run_agent(agent: ResolvedAgent, prompt: str, cwd: str, on_log: LogCb,
         workdir = os.getcwd()
     env = os.environ.copy()
     env.update(agent.env)
+    # Refresh the provider API key at exec time so keys set from the UI take
+    # effect immediately, without restarting the runner.
+    try:
+        env.update(Config.load().key_env_for(agent.name))
+    except Exception:  # noqa: BLE001
+        pass
 
     await on_log("system", f"$ {' '.join(shlex.quote(a) for a in argv)}")
     await on_log("system", f"(cwd: {workdir})")

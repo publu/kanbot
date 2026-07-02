@@ -30,9 +30,10 @@ from .db import DB, gen_id, now
 from .hub import Hub, RunnerConn
 from .insights import PROVIDER_META, compute
 from .schemas import (BoardCreate, BuildRequest, CardCreate, CardMove, CardPatch,
-                      DraftRequest, FromSession, ImproveRequest, ReviveRequest, SpreeRequest,
-                      TagAttach, TagCreate, UploadRequest, WorkflowClone, WorkflowEval,
-                      WorkflowExtract, WorkflowImport, WorkflowRun, WorkflowSave)
+                      ChainRequest, DraftRequest, FromSession, ImproveRequest, ProviderKey,
+                      ReviveRequest, SpreeRequest, TagAttach, TagCreate, UploadRequest,
+                      WorkflowClone, WorkflowEval, WorkflowExtract, WorkflowImport,
+                      WorkflowRun, WorkflowSave)
 
 STATIC_DIR = Path(__file__).parent / "static"
 SERVER_TOKEN = os.environ.get("KANBOT_TOKEN") or os.environ.get("DECKHAND_TOKEN", "")
@@ -108,6 +109,36 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                 "profiles": list_profiles(),
                 "distill": distill_available(hub.available_agents())}
 
+    @app.get("/api/provider-keys")
+    async def provider_keys():
+        """Providers that take an API key + whether one is set (keys never returned)."""
+        from ..config import Config
+        from ..agents import BUILTIN_AGENTS
+        cfg = Config.load()
+        out = []
+        for s in BUILTIN_AGENTS:
+            if not s.api_key_env:
+                continue
+            out.append({
+                "name": s.name, "label": s.label, "api_key_env": s.api_key_env,
+                "models": s.models, "default_model": s.default_model,
+                "has_key": s.name in cfg.provider_keys,
+                "in_env": bool(os.environ.get(s.api_key_env)),
+            })
+        return {"providers": out}
+
+    @app.post("/api/provider-keys")
+    async def set_provider_key(body: ProviderKey):
+        """Set (or clear, with an empty value) one provider's API key."""
+        from ..config import Config
+        cfg = Config.load()
+        if body.key.strip():
+            cfg.provider_keys[body.agent] = body.key.strip()
+        else:
+            cfg.provider_keys.pop(body.agent, None)
+        cfg.save()
+        return {"ok": True, "agent": body.agent, "has_key": body.agent in cfg.provider_keys}
+
     @app.get("/api/runners")
     async def runners():
         return {"runners": db.list_runners()}
@@ -174,16 +205,64 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         card = db.create_card(board_id, column_id, body.title, body.prompt,
                               body.agent, cwd, loop_max=body.loop_max,
                               loop_until=body.loop_until, profile=body.profile,
-                              command=body.command)
+                              command=body.command, plan_mode=body.plan_mode,
+                              plan_auto=body.plan_auto)
         await hub.broadcast({"type": "card.created", "card": card})
         await enqueue_if_needed(card, "idle")
         return card
+
+    @app.post("/api/boards/{board_id}/chain")
+    async def run_chain(board_id: str, body: ChainRequest):
+        """Run the typed prompt, then daisy-chain the selected follow-up steps.
+
+        No follow-ups → a plain card. One or more → an ephemeral workflow run, so
+        each step feeds the next (carry_context) without the user managing a
+        saved playbook."""
+        board = db.get_board(board_id)
+        if not board:
+            raise HTTPException(404, "board not found")
+        cwd = body.cwd or board.get("repo_path", "")
+
+        if not body.steps:
+            # Degenerate chain — behave exactly like the normal composer.
+            col = db.column_by_kind(board_id, "backlog") or db.columns(board_id)[0]
+            card = db.create_card(board_id, col["id"], body.title, body.prompt,
+                                  body.agent, cwd, profile=body.profile)
+            await hub.broadcast({"type": "card.created", "card": card})
+            if body.run:
+                await run_card(card["id"])
+            return db.get_card(card["id"])
+
+        steps = [{
+            "name": "Do it", "prompt": body.prompt, "agent": body.agent,
+            "profile": body.profile, "carry_context": False,
+        }]
+        for s in body.steps:
+            steps.append({
+                "name": s.name or "step",
+                "prompt": s.prompt,
+                "command": s.command,
+                "agent": s.agent or body.agent,
+                "loop_max": max(1, int(s.loop_max or 1)),
+                "loop_until": s.loop_until,
+                "carry_context": True,
+                "gate": s.gate,
+                "max_retries": s.max_retries,
+                # A gate failing is the SIGNAL to loop back (handled in _advance_workflow),
+                # so it must not be swallowed; a plain step shouldn't kill the chain.
+                "continue_on_fail": not s.gate,
+            })
+        wf = db.save_workflow(board_id, body.title, "ad-hoc chain", body.agent,
+                              cwd, steps, ephemeral=True)
+        return await hub.start_workflow(wf, cwd=cwd, title=body.title, run=body.run)
 
     @app.patch("/api/cards/{card_id}")
     async def patch_card(card_id: str, body: CardPatch):
         fields = {k: v for k, v in body.dict().items() if v is not None}
         if "auto_advance" in fields:
             fields["auto_advance"] = 1 if fields["auto_advance"] else 0
+        if "plan_mode" in fields:
+            fields["plan_mode"] = 1 if fields["plan_mode"] else 0
         card = db.update_card(card_id, **fields)
         if not card:
             raise HTTPException(404, "card not found")
@@ -211,6 +290,23 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             raise HTTPException(400, "board has no running column")
         card = db.move_card(card_id, col["id"], db._next_position(col["id"]))
         db.update_card(card_id, status="queued")
+        card = db.get_card(card_id)
+        await hub.broadcast({"type": "card.updated", "card": card})
+        await hub.try_dispatch()
+        return card
+
+    @app.post("/api/cards/{card_id}/approve")
+    async def approve_plan(card_id: str):
+        card = db.get_card(card_id)
+        if not card:
+            raise HTTPException(404, "card not found")
+        if card.get("phase") != "awaiting_approval":
+            raise HTTPException(409, "card is not awaiting plan approval")
+        col = db.column_by_kind(card["board_id"], "running")
+        db.update_card(card_id, phase="execute", status="queued")
+        if col:
+            # Approval continues the paused task before later queued cards.
+            db.move_card(card_id, col["id"], -1)
         card = db.get_card(card_id)
         await hub.broadcast({"type": "card.updated", "card": card})
         await hub.try_dispatch()
