@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Deploy the static UI to Vercel (production) and keep getkanbot.vercel.app
+# Deploy the landing page (site/) to Vercel (production) and keep the alias
 # pointed at the latest deployment. *.vercel.app aliases don't auto-track prod
 # deploys, so we re-alias every time here.
 set -euo pipefail
 
-SCOPE="ps-projects-0c7bba7e"
-ALIAS="getkanbot.vercel.app"
+SCOPE="pablo-9865s-projects"
+ALIAS="kanbot-gamma.vercel.app"   # getkanbot.vercel.app is held by an older team account
 
 cd "$(dirname "$0")/.."
 
 DEP=$(vercel deploy --prod --yes --scope "$SCOPE" 2>&1 \
-  | grep -oE 'https://kanbot-[a-z0-9]+-ps-projects-0c7bba7e\.vercel\.app' | head -1)
+  | grep -oE 'https://kanbot-[a-z0-9]+-pablo-9865s-projects\.vercel\.app' | head -1)
 
 if [ -z "$DEP" ]; then
   echo "deploy failed (no deployment URL)" >&2

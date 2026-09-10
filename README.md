@@ -2,7 +2,7 @@
 
 **One screen for every coding agent you run — live terminals you can type into from anywhere, exact working / blocked / idle state, and a task queue that drives them.**
 
-**Run instantly:** `uvx kanbot` (or `pipx install kanbot && kanbot up`) · **Live demo:** https://getkanbot.vercel.app
+**Run instantly:** `uvx kanbot` (or `pipx install kanbot && kanbot up`) · **Live demo:** https://kanbot-gamma.vercel.app
 
 You run a lot of terminal coding agents (Claude Code, Codex, Gemini, …). KanBot's
 runner *owns a real terminal for each one*, so the agents keep running when you

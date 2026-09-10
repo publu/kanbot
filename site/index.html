@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>KanBot — every coding agent, one screen</title>
+<meta name="description" content="KanBot owns a real terminal for every coding agent you run — Claude Code, Codex, Gemini and friends — with exact working/blocked/idle state, a web board you can type into from anywhere, and a task queue that drives them. Open source, pipx install kanbot.">
+<meta property="og:title" content="KanBot — every coding agent, one screen">
+<meta property="og:description" content="Live terminals for all your coding agents. Know who's blocked. Answer from your phone. Leave them running.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://kanbot-gamma.vercel.app">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23171815'/><text x='50' y='72' font-size='60' font-family='monospace' font-weight='800' text-anchor='middle' fill='%23c9f35b'>K</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300&display=swap" rel="stylesheet">
+<style>
+:root{--ink:#0e100d;--ink2:#161915;--line:#262a24;--paper:#e9ebe2;--muted:#8b9184;--dim:#5d635a;--lime:#c9f35b;--green:#43d47f;--amber:#f2b94b;--red:#ef6b5e;--serif:'Instrument Serif',Georgia,serif;--mono:'DM Mono',Menlo,monospace}
+*{box-sizing:border-box}html{scroll-behavior:smooth}
+body{margin:0;background:var(--ink);color:var(--paper);font:300 15px/1.6 var(--mono);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+body:before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;background:radial-gradient(900px 500px at 80% -10%,#1e2a14 0,transparent 60%),radial-gradient(700px 400px at -10% 30%,#1a1d17 0,transparent 55%)}
+body:after{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;opacity:.055;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+a{color:inherit}
+.wrap{position:relative;z-index:1;max-width:1180px;margin:0 auto;padding:0 28px}
+kbd{font:500 .85em var(--mono);border:1px solid var(--line);border-bottom-width:2px;border-radius:5px;padding:1px 6px;background:var(--ink2)}
+/* nav */
+nav{display:flex;align-items:center;gap:22px;padding:22px 0;font-size:12px;letter-spacing:.06em;text-transform:uppercase}
+.brand{display:flex;align-items:center;gap:10px;text-decoration:none;font-weight:500;letter-spacing:.18em}
+.logo{display:grid;place-items:center;width:30px;height:30px;border-radius:8px;background:var(--lime);color:var(--ink);font:700 18px var(--mono)}
+nav .links{margin-left:auto;display:flex;gap:18px;align-items:center}
+nav .links a{color:var(--muted);text-decoration:none}nav .links a:hover{color:var(--paper)}
+.pill{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:999px;padding:6px 12px;color:var(--paper)!important;background:var(--ink2)}
+.pill b{color:var(--lime);font-weight:500}
+/* hero */
+.hero{padding:70px 0 40px;display:grid;grid-template-columns:1.15fr .85fr;gap:48px;align-items:end}.hero>div{min-width:0}
+h1{font:400 clamp(52px,7.4vw,104px)/.95 var(--serif);letter-spacing:-.025em;margin:0 0 26px}
+h1 em{font-style:italic;color:var(--lime)}
+.lede{max-width:560px;color:var(--muted);font-size:16px;margin:0 0 34px}
+.lede b{color:var(--paper);font-weight:400}
+.install{display:inline-flex;max-width:100%;flex-wrap:wrap;align-items:center;gap:14px;border:1px solid var(--line);background:var(--ink2);border-radius:12px;padding:14px 16px 14px 20px;font-size:15px;box-shadow:0 30px 80px #0008,inset 0 1px 0 #ffffff0a}
+.install .p{color:var(--lime)}
+.install button{border:1px solid var(--line);background:transparent;color:var(--muted);border-radius:8px;padding:7px 10px;font:500 11px var(--mono);cursor:pointer;letter-spacing:.08em;text-transform:uppercase}
+.install button:hover{color:var(--paper);border-color:#3a4036}
+.alt{margin:12px 0 0;color:var(--dim);font-size:12px}.alt code{color:var(--muted)}
+.stats{display:flex;gap:26px;margin-top:40px;flex-wrap:wrap}
+.stat{display:flex;flex-direction:column;gap:2px;text-decoration:none}
+.stat b{font:400 34px/1 var(--serif);letter-spacing:-.02em}
+.stat span{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
+/* fake console */
+.console{border:1px solid var(--line);border-radius:14px;background:#0a0c09;box-shadow:0 40px 120px #000a,0 0 0 1px #ffffff05 inset;overflow:hidden;transform:rotate(-1.2deg) translateY(10px);animation:float 9s ease-in-out infinite}
+@keyframes float{50%{transform:rotate(-1.2deg) translateY(-2px)}}
+.console .bar{display:flex;align-items:center;gap:7px;padding:11px 14px;border-bottom:1px solid var(--line);background:#111410;font-size:11px;color:var(--dim)}
+.console .bar i{width:9px;height:9px;border-radius:50%;background:#3a3f36}.console .bar i:nth-child(1){background:#da6258}.console .bar i:nth-child(2){background:#d8ad45}.console .bar i:nth-child(3){background:#5ca96d}
+.console .bar span{margin-left:8px}
+.console pre{margin:0;padding:16px 18px;font:400 12.5px/1.75 var(--mono);color:#c9cec2;white-space:pre;overflow:hidden;min-height:330px;max-width:100%}
+.console .w{color:var(--green)}.console .b{color:var(--red)}.console .i{color:var(--amber)}.console .d{color:var(--dim)}.console .l{color:var(--lime)}.console .c{color:var(--muted)}
+.cur{display:inline-block;width:8px;height:15px;background:var(--lime);vertical-align:-2px;animation:blink 1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+/* marquee of agents */
+.agents{margin:54px 0 0;padding:18px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);display:flex;gap:34px;flex-wrap:wrap;justify-content:center;color:var(--dim);font-size:12px;letter-spacing:.16em;text-transform:uppercase}
+.agents span:before{content:"● ";color:var(--lime)}
+/* sections */
+section{padding:90px 0 0}
+.eyebrow{font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--lime);margin:0 0 14px}
+h2{font:400 clamp(34px,4.4vw,58px)/1.02 var(--serif);letter-spacing:-.02em;margin:0 0 18px;max-width:760px}
+h2 em{font-style:italic;color:var(--muted)}
+.sub{color:var(--muted);max-width:620px;margin:0 0 44px}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+.cell{background:var(--ink);padding:30px 28px 32px;position:relative;transition:background .25s}
+.cell:hover{background:var(--ink2)}
+.cell .n{position:absolute;top:22px;right:24px;font:400 13px var(--serif);font-style:italic;color:var(--dim)}
+.cell h3{font:400 24px/1.15 var(--serif);margin:0 0 12px}
+.cell p{margin:0;color:var(--muted);font-size:13.5px}
+.cell code{color:var(--lime);font-size:12px}
+/* state strip */
+.states{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:40px}
+.state{border:1px solid var(--line);border-radius:12px;padding:18px 20px;background:var(--ink2)}
+.state b{display:flex;align-items:center;gap:9px;font-weight:500;font-size:13px;letter-spacing:.1em;text-transform:uppercase}
+.state b i{width:9px;height:9px;border-radius:50%}
+.state p{margin:8px 0 0;color:var(--muted);font-size:12.5px}
+.s-working i{background:var(--green);box-shadow:0 0 0 4px #43d47f22}.s-blocked i{background:var(--red);animation:blink 1.2s infinite}.s-idle i{background:var(--amber)}.s-done i{background:#6a716a}
+/* compare */
+table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px}
+th,td{text-align:left;padding:13px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-weight:500;color:var(--dim);font-size:11px;letter-spacing:.16em;text-transform:uppercase}
+td:first-child{color:var(--muted)}
+td.y{color:var(--lime)}td.n{color:var(--dim)}td.p{color:var(--amber)}
+.note{color:var(--dim);font-size:12px;margin-top:14px}
+/* steps */
+.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:22px}
+.step{border-top:1px solid var(--line);padding-top:20px}
+.step .k{font:400 44px/1 var(--serif);font-style:italic;color:var(--lime);margin-bottom:12px}
+.step pre{margin:12px 0 0;background:#0a0c09;border:1px solid var(--line);border-radius:10px;padding:14px 16px;font-size:12.5px;color:#c9cec2;overflow:auto}
+.step p{color:var(--muted);font-size:13.5px;margin:0}
+/* cli */
+.cli{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:14px;overflow:hidden;font-size:13px}
+.cli div{background:var(--ink);padding:14px 18px;display:grid;grid-template-columns:260px 1fr;gap:14px}
+.cli code{color:var(--lime)}.cli span{color:var(--muted)}
+/* footer */
+footer{margin-top:110px;padding:34px 0 50px;border-top:1px solid var(--line);display:flex;gap:24px;align-items:center;color:var(--dim);font-size:12px;flex-wrap:wrap}
+footer .sp{margin-left:auto}footer a{color:var(--muted);text-decoration:none}footer a:hover{color:var(--paper)}
+/* reveal */
+.r{opacity:0;transform:translateY(14px);animation:in .7s cubic-bezier(.2,.7,.2,1) forwards}
+.r1{animation-delay:.05s}.r2{animation-delay:.18s}.r3{animation-delay:.3s}.r4{animation-delay:.42s}.r5{animation-delay:.55s}
+@keyframes in{to{opacity:1;transform:none}}
+@media(max-width:900px){.hero{grid-template-columns:1fr;gap:34px;padding-top:40px}h1{font-size:clamp(44px,13vw,64px)}.console pre{font-size:11px;min-height:280px}.stat b{font-size:28px}.console{transform:none;animation:in .7s .3s cubic-bezier(.2,.7,.2,1) forwards}.grid,.states,.steps{grid-template-columns:1fr}.cli{grid-template-columns:1fr}.cli div{grid-template-columns:1fr;gap:4px}.stats{gap:18px}nav .links a:not(.pill){display:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav class="r r1">
+    <a class="brand" href="#"><span class="logo">K</span>KANBOT</a>
+    <div class="links">
+      <a href="#how">How it works</a><a href="#compare">Compare</a><a href="#cli">CLI</a>
+      <a class="pill" href="https://pypi.org/project/kanbot/" target="_blank" rel="noopener">pypi <b id="ver">…</b></a>
+      <a class="pill" href="https://github.com/publu/kanbot" target="_blank" rel="noopener">★ <b id="stars">…</b> github</a>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <div>
+      <h1 class="r r2">Every agent.<br>One screen.<br><em>Leave them running.</em></h1>
+      <p class="lede r r3">KanBot owns a real terminal for every coding agent you run — Claude Code, Codex, Gemini, and anything with a CLI. <b>See who is working and who is stuck. Type into any of them from the board or your phone. Hand them a queue and walk away.</b></p>
+      <div class="r r4">
+        <div class="install"><span class="d">$</span><span class="p" id="cmd">pipx install kanbot && kanbot up</span><button id="copy">copy</button></div>
+        <p class="alt">zero-install: <code>uvx kanbot</code> · MIT · Python 3.9+ · macOS &amp; Linux</p>
+      </div>
+      <div class="stats r r5">
+        <a class="stat" href="https://github.com/publu/kanbot/stargazers" target="_blank" rel="noopener"><b id="stars2">—</b><span>GitHub stars</span></a>
+        <a class="stat" href="https://github.com/publu/kanbot/network/members" target="_blank" rel="noopener"><b id="forks">—</b><span>Forks</span></a>
+        <a class="stat" href="https://pypi.org/project/kanbot/" target="_blank" rel="noopener"><b id="dl">—</b><span>Downloads / month</span></a>
+        <a class="stat" href="https://github.com/publu/kanbot/commits/main" target="_blank" rel="noopener"><b id="pushed">—</b><span>Last commit</span></a>
+      </div>
+    </div>
+    <div class="console r r3">
+      <div class="bar"><i></i><i></i><i></i><span>kanbot — laptop · gpu-box</span></div>
+      <pre id="demo"></pre>
+    </div>
+  </header>
+
+  <div class="agents r r5"><span>Claude Code</span><span>Codex</span><span>Gemini CLI</span><span>OpenCode</span><span>Aider</span><span>Cursor Agent</span><span>GLM / Z.ai</span><span>Kimi</span><span>Hermes</span><span>any shell</span></div>
+
+  <section id="how">
+    <p class="eyebrow">How it works</p>
+    <h2>The runner owns the terminals. <em>You just visit.</em></h2>
+    <p class="sub">A background runner spawns each agent inside a PTY it controls. Close the tab, sleep the laptop, ssh in from somewhere else — the process is still there, the scrollback replays, and you pick up exactly where it was.</p>
+    <div class="grid">
+      <div class="cell"><span class="n">01</span><h3>Panes that outlive you</h3><p>Each agent gets a real pseudo-terminal held by the runner, not by your browser tab. Attach from the web board, from your phone, or with <code>kanbot attach</code>. <kbd>Ctrl-]</kbd> detaches; the agent keeps going.</p></div>
+      <div class="cell"><span class="n">02</span><h3>Exact state, not spinners</h3><p>Claude Code reports <code>working</code> / <code>blocked</code> / <code>idle</code> through its own lifecycle hooks — no guessing. Every other CLI is classified from what is on its screen.</p></div>
+      <div class="cell"><span class="n">03</span><h3>Blocked comes to you</h3><p>An agent waiting on a permission prompt jumps to the top of the board, flashes the tab, and pings you: a macOS banner by default, or any command you configure — Telegram, ntfy, Slack.</p></div>
+      <div class="cell"><span class="n">04</span><h3>Type from anywhere</h3><p>A real xterm in the browser, plus one-tap keys — <kbd>⏎</kbd> <kbd>y</kbd> <kbd>n</kbd> <kbd>esc</kbd> <kbd>^C</kbd> — so you can answer "Allow this command?" from a phone at dinner.</p></div>
+      <div class="cell"><span class="n">05</span><h3>An API your agents can drive</h3><p>The CLI and the local socket are one surface: <code>agent.start</code>, <code>agent.wait --until idle</code>, <code>agent.read</code>, <code>agent.prompt</code>. Scripts and other agents orchestrate agents without faking keystrokes.</p></div>
+      <div class="cell"><span class="n">06</span><h3>Still a queue</h3><p>Cards, multi-step workflows, review gates, and a 10-hour <em>goal spree</em> with a real shell stop condition. All of it runs inside panes now, so unattended runs are watchable and interruptible live.</p></div>
+    </div>
+    <div class="states">
+      <div class="state s-working"><b><i></i>working</b><p>Tokens flowing, tools running. Leave it alone.</p></div>
+      <div class="state s-blocked"><b><i></i>blocked</b><p>Waiting on a human: a permission, a question, a trust prompt.</p></div>
+      <div class="state s-idle"><b><i></i>idle</b><p>Finished the turn, ready for the next prompt.</p></div>
+      <div class="state s-done"><b><i></i>done</b><p>Process exited. Exit code and scrollback kept.</p></div>
+    </div>
+  </section>
+
+  <section id="compare">
+    <p class="eyebrow">Compare</p>
+    <h2>tmux keeps processes alive. <em>KanBot knows what they're doing.</em></h2>
+    <p class="sub">Terminal multiplexers solve persistence. Agent multiplexers add state. KanBot adds the part that lets you leave: a queue, a phone-friendly board, and a way to be told when an agent needs you.</p>
+    <table>
+      <thead><tr><th></th><th>tmux</th><th>Herdr</th><th>KanBot</th></tr></thead>
+      <tbody>
+        <tr><td>Processes survive disconnect</td><td class="y">yes</td><td class="y">yes</td><td class="y">yes</td></tr>
+        <tr><td>Agent state (working / blocked / idle)</td><td class="n">—</td><td class="y">yes</td><td class="y">yes, hook-exact for Claude Code</td></tr>
+        <tr><td>Web board, works on a phone</td><td class="n">—</td><td class="n">TUI only</td><td class="y">yes</td></tr>
+        <tr><td>Notified when an agent is blocked</td><td class="n">—</td><td class="p">in-app</td><td class="y">banner, or any command (Telegram, ntfy…)</td></tr>
+        <tr><td>Socket API + CLI for scripts and agents</td><td class="p">send-keys</td><td class="y">yes</td><td class="y">yes</td></tr>
+        <tr><td>Task queue, workflows, gates, long autonomous runs</td><td class="n">—</td><td class="n">—</td><td class="y">yes</td></tr>
+        <tr><td>Resume yesterday's session from disk</td><td class="n">—</td><td class="y">yes</td><td class="y">yes</td></tr>
+        <tr><td>Split panes and layouts in one terminal</td><td class="y">yes</td><td class="y">yes</td><td class="n">not yet — the board is the layout</td></tr>
+        <tr><td>Install</td><td class="c">brew / apt</td><td class="c">curl | sh (Rust)</td><td class="c">pipx install kanbot (Python)</td></tr>
+      </tbody>
+    </table>
+    <p class="note">Honest gaps: KanBot has no native TUI and no pane splitting. If you live in one terminal window, Herdr is excellent. If you leave agents running and check on them from elsewhere, KanBot is built for that.</p>
+  </section>
+
+  <section id="start">
+    <p class="eyebrow">Quickstart</p>
+    <h2>Three commands. <em>Then go do something else.</em></h2>
+    <div class="steps">
+      <div class="step"><div class="k">1</div><p>Install and start. The board opens at localhost:8787 with a runner attached.</p><pre>pipx install kanbot
+kanbot up</pre></div>
+      <div class="step"><div class="k">2</div><p>Give an agent a task — from the board (press <kbd>n</kbd>) or the CLI. It opens as a live pane.</p><pre>kanbot agent start claude \
+  "fix the flaky test" --cwd ~/repo</pre></div>
+      <div class="step"><div class="k">3</div><p>Leave. Come back from any terminal or any browser; answer a prompt; leave again.</p><pre>kanbot ps
+kanbot attach 3f2a
+kanbot agent keys 3f2a y Enter</pre></div>
+    </div>
+  </section>
+
+  <section id="cli">
+    <p class="eyebrow">CLI</p>
+    <h2>Herdr-shaped commands, <em>so the muscle memory transfers.</em></h2>
+    <div class="cli">
+      <div><code>kanbot up</code><span>server + local runner, opens the board</span></div>
+      <div><code>kanbot runner --server http://host:8787</code><span>add another machine</span></div>
+      <div><code>kanbot ps</code><span>every agent here: state · agent · cwd · title</span></div>
+      <div><code>kanbot attach &lt;id&gt;</code><span>your terminal becomes that pane · Ctrl-] detaches</span></div>
+      <div><code>kanbot agent start claude "…" --cwd ~/repo</code><span>open a live TUI (--headless for print mode)</span></div>
+      <div><code>kanbot agent start claude --resume &lt;session&gt;</code><span>pick up a session from disk</span></div>
+      <div><code>kanbot agent wait &lt;id&gt; --until idle</code><span>block until it's ready · blocked · done</span></div>
+      <div><code>kanbot agent read &lt;id&gt; --lines 40</code><span>the screen as plain text</span></div>
+      <div><code>kanbot agent prompt &lt;id&gt; "now add tests"</code><span>type + Enter</span></div>
+      <div><code>kanbot agent keys &lt;id&gt; y Enter</code><span>tmux-style key names · C-c · Escape · Down</span></div>
+      <div><code>kanbot agent kill &lt;id&gt;</code><span>HUP, TERM, then KILL</span></div>
+      <div><code>kanbot review --gate</code><span>multi-agent code review as a workflow gate</span></div>
+    </div>
+    <p class="note">Same methods over the unix socket at <code>~/.kanbot/runner.sock</code> and over HTTP from the board: <code>GET /api/panes</code> · <code>POST /api/panes/start</code> · <code>POST /api/panes/{id}/input</code> · <code>GET /api/panes/{id}/read</code>.</p>
+  </section>
+
+  <footer>
+    <span>© <span id="yr"></span> KanBot · MIT</span>
+    <a href="https://github.com/publu/kanbot" target="_blank" rel="noopener">GitHub</a>
+    <a href="https://pypi.org/project/kanbot/" target="_blank" rel="noopener">PyPI</a>
+    <a href="https://github.com/publu/kanbot/issues" target="_blank" rel="noopener">Issues</a>
+    <span class="sp">built by people who leave agents running overnight</span>
+  </footer>
+</div>
+
+<script>
+document.getElementById('yr').textContent = new Date().getFullYear();
+document.getElementById('copy').onclick = async e => { try { await navigator.clipboard.writeText(document.getElementById('cmd').textContent); e.target.textContent = 'copied'; setTimeout(() => e.target.textContent = 'copy', 1400) } catch {} };
+
+// live numbers — GitHub + PyPI JSON APIs both allow browser reads
+const fmt = n => n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'k' : String(n);
+const ago = iso => { const d = (Date.now() - new Date(iso)) / 864e5; return d < 1 ? 'today' : d < 2 ? 'yesterday' : d < 30 ? Math.floor(d) + 'd ago' : Math.floor(d / 30) + 'mo ago' };
+fetch('https://api.github.com/repos/publu/kanbot').then(r => r.json()).then(d => {
+  if (d.stargazers_count == null) return;
+  document.getElementById('stars').textContent = fmt(d.stargazers_count);
+  document.getElementById('stars2').textContent = fmt(d.stargazers_count);
+  document.getElementById('forks').textContent = fmt(d.forks_count);
+  document.getElementById('pushed').textContent = ago(d.pushed_at);
+}).catch(() => {});
+fetch('https://pypi.org/pypi/kanbot/json').then(r => r.json()).then(d => { document.getElementById('ver').textContent = 'v' + d.info.version }).catch(() => {});
+fetch('https://pypistats.org/api/packages/kanbot/recent').then(r => r.json()).then(d => { document.getElementById('dl').textContent = fmt(d.data.last_month) }).catch(() => { document.getElementById('dl').textContent = '—' });
+
+// the hero console: a scripted session, typed live
+const FRAMES = [
+  ['$ <span class="l">kanbot ps</span>', 0],
+  ['<span class="d">ID        STATE     AGENT    AGE   CWD            TITLE</span>', 250],
+  ['3f2a11c0  <span class="w">● working</span> claude   14m   ~/api          fix the flaky auth test', 60],
+  ['9b04e7d2  <span class="b">◆ blocked</span> codex    3m    ~/web          migrate to app router', 60],
+  ['c71d0aa8  <span class="i">○ idle</span>    gemini   41m   ~/infra        write the runbook', 60],
+  ['e02c93fb  <span class="w">● working</span> claude   2h    gpu-box:~/ml   goal spree · 7/12 boxes', 60],
+  ['', 700],
+  ['$ <span class="l">kanbot agent read 9b04</span> <span class="c">--lines 3</span>', 0],
+  ['<span class="c">  Run `npm run migrate`?</span>', 350],
+  ['<span class="c">  ❯ 1. Yes</span>', 60],
+  ['<span class="c">    2. No, tell Codex what to do differently</span>', 60],
+  ['', 800],
+  ['$ <span class="l">kanbot agent keys 9b04</span> y Enter', 0],
+  ['', 500],
+  ['$ <span class="l">kanbot agent wait 9b04</span> <span class="c">--until idle</span>', 0],
+  ['<span class="i">idle</span> <span class="d">(hooks · 2m14s)</span>', 1800],
+  ['', 600],
+  ['$ <span class="l">kanbot attach 3f2a</span>', 0],
+  ['<span class="d">[kanbot] attached to 3f2a11c0 (claude, working). Ctrl-] detaches.</span>', 400],
+];
+const pre = document.getElementById('demo');
+async function type(html, delay){
+  await new Promise(r => setTimeout(r, delay));
+  const line = document.createElement('div');
+  if (html.startsWith('$')) { line.innerHTML = '<span class="d">$</span>'; pre.append(line);
+    const rest = html.slice(1); const tmp = document.createElement('span'); tmp.innerHTML = rest; const txt = tmp.textContent;
+    for (let i = 1; i <= txt.length; i++) { line.innerHTML = '<span class="d">$</span>' + txt.slice(0, i).replace(/</g,'&lt;') + '<span class="cur"></span>'; await new Promise(r => setTimeout(r, 22 + Math.random() * 40)) }
+    line.innerHTML = '<span class="d">$</span>' + rest;
+  } else { line.innerHTML = html || '&nbsp;'; pre.append(line) }
+  while (pre.children.length > 17) pre.firstChild.remove();
+}
+(async function run(){ pre.innerHTML = ''; for (const [h, d] of FRAMES) await type(h, d); const c = document.createElement('div'); c.innerHTML = '<span class="d">$</span> <span class="cur"></span>'; pre.append(c); setTimeout(run, 9000) })();
+</script>
+</body>
+</html>

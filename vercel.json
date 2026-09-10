@@ -3,12 +3,17 @@
   "framework": null,
   "buildCommand": null,
   "installCommand": null,
-  "outputDirectory": "kanbot/server/static",
+  "outputDirectory": "site",
   "cleanUrls": true,
   "headers": [
     {
       "source": "/(.*)",
-      "headers": [{ "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }]
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=0, must-revalidate"
+        }
+      ]
     }
   ]
 }
