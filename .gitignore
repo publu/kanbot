@@ -17,3 +17,4 @@ dist/
 .DS_Store
 .goalkeeper/
 test-results/
+.vercel.old-team/
