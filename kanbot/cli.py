@@ -6,11 +6,15 @@
   kanbot agents        # show which CLI coding agents are detected here
   kanbot config        # view / set server URL, token, runner name
   kanbot open          # open the board in your browser
+  kanbot ps            # live agents on this machine (state, pane id)
+  kanbot attach ID     # your terminal becomes that agent's pane (Ctrl-] detaches)
+  kanbot agent …       # start / prompt / keys / read / wait / kill an agent
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import sys
 import threading
@@ -237,6 +241,101 @@ def cmd_open(args) -> int:
     return 0
 
 
+# -- the local socket API: Herdr-shaped agent control -----------------------
+def _api(method: str, **params):
+    from .runner.api import call
+    try:
+        return call(method, **params)
+    except (ConnectionRefusedError, FileNotFoundError):
+        print("no runner on this machine (start one with `kanbot up` or `kanbot runner`)",
+              file=sys.stderr)
+        raise SystemExit(2)
+
+
+def _age(ts: float) -> str:
+    s = max(0, int(time.time() - ts))
+    return f"{s}s" if s < 60 else f"{s // 60}m" if s < 3600 else f"{s // 3600}h"
+
+
+def cmd_ps(args) -> int:
+    agents = _api("agent.list")["agents"]
+    if getattr(args, "json", False):
+        print(json.dumps(agents, indent=2)); return 0
+    if not agents:
+        print("no agents running. try: kanbot agent start claude \"fix the tests\" --cwd ~/repo")
+        return 0
+    marks = {"working": "●", "blocked": "◆", "idle": "○", "done": "✓", "unknown": "?"}
+    print(f"{'ID':9} {'STATE':9} {'AGENT':9} {'AGE':5} {'CWD':28} TITLE")
+    for a in agents:
+        cwd = a["cwd"]; cwd = "…" + cwd[-27:] if len(cwd) > 28 else cwd
+        print(f"{a['id']:9} {marks.get(a['state'], '?')} {a['state']:7} {a['agent']:9} "
+              f"{_age(a['started_at']):5} {cwd:28} {a['title'][:50]}")
+    return 0
+
+
+def cmd_attach(args) -> int:
+    from .runner.api import attach
+    try:
+        return attach(args.id)
+    except (ConnectionRefusedError, FileNotFoundError):
+        print("no runner on this machine (start one with `kanbot up`)", file=sys.stderr)
+        return 2
+
+
+def cmd_agent(args) -> int:
+    sub = args.agent_cmd
+    if sub == "list":
+        return cmd_ps(args)
+    if sub == "start":
+        res = _api("agent.start", agent=args.agent, prompt=args.prompt or "",
+                   cwd=os.path.abspath(args.cwd) if args.cwd else "",
+                   interactive=not args.headless, resume=args.resume or "",
+                   title=args.title or "")
+        a = res["agent"]
+        print(f"{a['id']}  ({a['agent']} · {a['state']})  attach: kanbot attach {a['id']}")
+        if args.attach:
+            return cmd_attach(argparse.Namespace(id=a["id"]))
+        return 0
+    if sub == "prompt":
+        _api("agent.prompt", agent=args.id, text=args.text, enter=not args.no_enter); return 0
+    if sub == "keys":
+        _api("agent.send_keys", agent=args.id, keys=args.keys); return 0
+    if sub == "read":
+        res = _api("agent.read", agent=args.id, lines=args.lines)
+        print(res["text"]); return 0
+    if sub == "wait":
+        res = _api("agent.wait", agent=args.id, until=args.until, timeout=args.timeout,
+                   _timeout=(args.timeout + 5) if args.timeout else None)
+        print(res["state"] + (f" (exit {res['exit_code']})" if res["exit_code"] is not None else ""))
+        return 0 if res["state"] == args.until or args.until == "any" else 1
+    if sub == "kill":
+        _api("agent.kill", agent=args.id); return 0
+    if sub == "rm":
+        _api("agent.remove", agent=args.id); return 0
+    if sub == "get":
+        print(json.dumps(_api("agent.get", agent=args.id)["agent"], indent=2)); return 0
+    return 1
+
+
+def cmd_hook(args) -> int:
+    """Claude Code lifecycle hook → runner state. Must be fast and never fail."""
+    pane = os.environ.get("KANBOT_PANE_ID")
+    sock = os.environ.get("KANBOT_SOCK")
+    if not pane or not sock:
+        return 0
+    try:
+        sys.stdin.read()          # the hook payload; we don't need it
+    except Exception:  # noqa: BLE001
+        pass
+    state = args.state
+    try:
+        from .runner.api import call
+        call("pane.report_state", path=sock, pane_id=pane, state=state, source="hook", _timeout=2)
+    except Exception:  # noqa: BLE001
+        pass
+    return 0
+
+
 def cmd_review(args) -> int:
     import asyncio
     import os
@@ -317,6 +416,44 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("open", help="open the board in a browser")
     sp.add_argument("--server", default=None)
     sp.set_defaults(func=cmd_open)
+
+    sp = sub.add_parser("ps", help="live agents on this machine")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_ps)
+
+    sp = sub.add_parser("attach", help="attach your terminal to an agent's pane (Ctrl-] detaches)")
+    sp.add_argument("id", nargs="?", default="latest", help="pane id / prefix (default: latest)")
+    sp.set_defaults(func=cmd_attach)
+
+    sp = sub.add_parser("agent", help="control agents: start / prompt / keys / read / wait / kill")
+    asub = sp.add_subparsers(dest="agent_cmd", required=True)
+    a = asub.add_parser("list", help="same as kanbot ps"); a.add_argument("--json", action="store_true")
+    a = asub.add_parser("start", help="open an agent in a new pane")
+    a.add_argument("agent", help="claude · codex · gemini · shell · …")
+    a.add_argument("prompt", nargs="?", default="")
+    a.add_argument("--cwd", default="")
+    a.add_argument("--resume", default="", help="agent session id to resume")
+    a.add_argument("--title", default="")
+    a.add_argument("--headless", action="store_true", help="print/exec mode instead of the TUI")
+    a.add_argument("--attach", action="store_true", help="attach right away")
+    a = asub.add_parser("prompt", help="type a prompt into the agent and press Enter")
+    a.add_argument("id"); a.add_argument("text"); a.add_argument("--no-enter", action="store_true")
+    a = asub.add_parser("keys", help="send keys, tmux-style: y Enter · Escape · C-c")
+    a.add_argument("id"); a.add_argument("keys", nargs="+")
+    a = asub.add_parser("read", help="print the last lines of the pane")
+    a.add_argument("id"); a.add_argument("--lines", type=int, default=40)
+    a = asub.add_parser("wait", help="block until the agent reaches a state")
+    a.add_argument("id"); a.add_argument("--until", default="idle",
+                                         choices=["idle", "blocked", "working", "done", "any"])
+    a.add_argument("--timeout", type=float, default=None)
+    a = asub.add_parser("kill", help="terminate the agent"); a.add_argument("id")
+    a = asub.add_parser("rm", help="drop an exited pane"); a.add_argument("id")
+    a = asub.add_parser("get", help="pane details as JSON"); a.add_argument("id")
+    sp.set_defaults(func=cmd_agent)
+
+    sp = sub.add_parser("_hook", help=argparse.SUPPRESS)
+    sp.add_argument("state")
+    sp.set_defaults(func=cmd_hook)
 
     sp = sub.add_parser("review", help="AI code review of local changes (multi-agent)")
     sp.add_argument("--repo", default=".", help="repo path to review (default: cwd)")

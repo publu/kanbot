@@ -56,6 +56,11 @@ class Config:
     # agent (not env var) so claude-compatible providers that share
     # ANTHROPIC_API_KEY (z.ai, Kimi) can each hold their own key without clashing.
     provider_keys: Dict[str, str] = field(default_factory=dict)
+    # Shell command run when an agent needs you (state → blocked) or a TUI
+    # finishes. Gets KANBOT_TITLE, KANBOT_BODY, KANBOT_STATE, KANBOT_PANE_ID,
+    # KANBOT_AGENT in its env. "" = platform default (macOS notification banner).
+    # Point it at anything: a Telegram curl, ntfy.sh, `say`, a Slack webhook.
+    notify_command: str = ""
 
     def key_env_for(self, agent_name: str) -> Dict[str, str]:
         """Env overrides carrying the configured API key for an agent (if any)."""

@@ -1,36 +1,47 @@
 # KanBot
 
-**A visual control room for your coding-agent TUIs — and a Kanban board where every card is a task run by them.**
+**One screen for every coding agent you run — live terminals you can type into from anywhere, exact working / blocked / idle state, and a task queue that drives them.**
 
-**Live demo:** https://getkanbot.vercel.app · **Run instantly:** `uvx kanbot` (or `pipx install kanbot && kanbot up`)
+**Run instantly:** `uvx kanbot` (or `pipx install kanbot && kanbot up`) · **Live demo:** https://getkanbot.vercel.app
 
-You run a lot of terminal coding agents (Claude Code, Codex, …). KanBot gives you
-one screen to *see what every session is doing*, pick any of them back up, and
-drop new tasks that agents run for you — with live logs streamed straight to the
-card.
+You run a lot of terminal coding agents (Claude Code, Codex, Gemini, …). KanBot's
+runner *owns a real terminal for each one*, so the agents keep running when you
+close the tab, sleep the laptop, or switch machines — and you pick them back up
+exactly where they were, from the web board, your phone, or `kanbot attach`.
 
-Two things in one board:
-
-1. **Track your TUIs.** A background runner watches each agent's local session
-   store and surfaces every session as a card: the project, the latest message,
-   how many turns, how long it's been brewing, and whether it's **working right
-   now**. Sessions flow by recency — working → **Running**, just-finished →
-   **Done**, older → **Backlog**.
-2. **Run new tasks.** Drop a card, pick an agent, and the runner executes it and
-   streams stdout/stderr to the card. Or drag any tracked session into **Running**
-   to resume it (`claude --resume`, `codex exec resume`).
+- **See state, not spinners.** Every agent is `working`, `blocked` (waiting on
+  you), `idle`, or `done`. Claude Code reports it through lifecycle hooks —
+  exact, no guessing; other CLIs are read off the screen. Blocked agents jump to
+  the top of the board, flash the tab title, and ping you (macOS banner, or any
+  command you configure — Telegram, ntfy, Slack).
+- **Type into any agent from the board.** A real xterm in the browser plus
+  one-tap keys (`⏎` `y` `n` `esc` `^C`) for answering permission prompts from a
+  phone. Or `kanbot attach <id>` from any terminal — `Ctrl-]` detaches, the
+  agent keeps going.
+- **Agent-native API.** The CLI and the local socket API are the same surface
+  your own scripts (or other agents) drive: `kanbot agent start claude "…"`,
+  `kanbot agent wait <id> --until idle`, `kanbot agent read <id>`,
+  `kanbot agent prompt <id> "now add tests"`.
+- **Still a queue.** Cards, workflows, gates, and the 10-hour goal spree all run
+  *inside* panes now — so unattended runs are watchable and interruptible live.
+- **Multi-machine.** Runners on any box connect to one board; every pane shows
+  which machine it lives on.
 
 ```
- Backlog            Running            Review      Done
- (stale sessions    (sessions          (your       (recently
-  + new tasks)       working now        finished    finished
-                     + running tasks)   tasks)       sessions)
-        │  drag → Running, or "Run", queues for a runner
-        ▼
-   ╔══════════════════════════════╗
-   ║  kanbot runner (background)   ║  detects claude · codex · gemini · glm · shell
-   ║  watches ~/.claude, ~/.codex  ║  executes & resumes, streams logs back
-   ╚══════════════════════════════╝
+ ┌─ board (web) ─────────────────────────────────────────────────┐
+ │ NEEDS YOU ◆ codex  "Allow command?"      ┌─ live terminal ─┐  │
+ │ AGENTS    ● claude  fixing tests  gpu-box │ $ claude …      │  │
+ │           ○ gemini  idle                  │ Do you want to… │  │
+ │ QUEUE     · ship-feature (workflow)       │ ❯ 1. Yes        │  │
+ │ PICK UP   ↻ yesterday's claude session    └── ⏎ y n esc ^C ─┘  │
+ └────────────────────────────────────────────────────────────────┘
+        ▲ ws                                      ▲ ws
+ ╔════════════════════╗                 ╔════════════════════╗
+ ║ runner @ laptop    ║                 ║ runner @ gpu-box   ║
+ ║ pane ● claude (pty)║                 ║ pane ● claude (pty)║
+ ║ pane ◆ codex  (pty)║  ~/.kanbot/     ║ hooks → state      ║
+ ║ socket API + CLI   ║  runner.sock    ║ socket API + CLI   ║
+ ╚════════════════════╝                 ╚════════════════════╝
 ```
 
 ## Quickstart
@@ -52,9 +63,64 @@ kanbot up                             # server + local runner, board at :8787
 > Don't use bare `pip install` on macOS Homebrew Python — it errors with
 > `externally-managed-environment` (PEP 668). `pipx`/`uv` handle the env for you.
 
-The board immediately fills with your recent Claude/Codex sessions. Click any one
-to see its recent transcript in a terminal view and **resume** it; or hit
-**+ add task** to give an agent fresh work.
+Press **+** (or `n`), give an agent a task, and it opens as a live pane you can
+watch and type into. Your recent Claude/Codex sessions from disk show under
+**Pick up a session** — one click resumes any of them in a pane.
+
+## Live terminals — the Herdr part
+
+The runner owns a PTY per agent. Panes outlive every client: close the browser,
+`kanbot attach` from another terminal, or open the board from your phone — the
+scrollback replays and you are back where it left off.
+
+```bash
+kanbot ps                                     # every agent on this machine, with state
+kanbot agent start claude "fix the flaky test" --cwd ~/repo   # open a live Claude Code TUI
+kanbot agent start codex --headless "run the suite" --cwd ~/repo
+kanbot attach 3f2a                            # your terminal becomes that pane; Ctrl-] detaches
+kanbot agent wait 3f2a --until idle           # block until it's ready for you (or blocked/done)
+kanbot agent read 3f2a --lines 40             # the screen as plain text
+kanbot agent prompt 3f2a "now add tests"      # type + Enter
+kanbot agent keys 3f2a y Enter                # answer a permission prompt
+kanbot agent keys 3f2a C-c                    # interrupt
+kanbot agent kill 3f2a
+```
+
+**State** is one of `working` · `blocked` (needs a human) · `idle` · `done`.
+Claude Code panes (and GLM/Kimi via Claude Code) report it through lifecycle
+hooks injected with `--settings`, so it is exact: `UserPromptSubmit`/`PreToolUse`
+→ working, `Notification` → blocked, `Stop` → idle. Every other CLI is classified
+from the last lines of its screen (a `(y/n)`, `Allow command?`, or a `❯ 1. Yes`
+menu means blocked; a bare prompt means idle). `kanbot agent get <id>` shows
+which source is speaking (`state_source`).
+
+**Notifications.** When an agent turns blocked (or a live TUI finishes) the runner
+runs `notify_command` from `~/.kanbot/config.json` with `KANBOT_TITLE`,
+`KANBOT_BODY`, `KANBOT_STATE`, `KANBOT_PANE_ID`, `KANBOT_AGENT` in its env. Unset,
+macOS gets a banner. Point it anywhere:
+
+```json
+{ "notify_command": "curl -s -d \"$KANBOT_TITLE — $KANBOT_BODY\" ntfy.sh/my-agents" }
+```
+
+The board links straight to a pane: `http://host:8787/#pane=<id>` — put that in
+your notification and a tap opens the agent that needs you.
+
+**Socket API.** `~/.kanbot/runner.sock`, newline-delimited JSON, the same methods
+the CLI uses: `ping` · `agent.list` · `agent.get` · `agent.read` · `agent.start` ·
+`agent.prompt` · `agent.send_keys` · `agent.wait` · `agent.kill` ·
+`events.subscribe` (a stream of state changes) · `pane.attach` (raw bytes).
+Over HTTP the board exposes the same for every runner: `GET /api/panes`,
+`POST /api/panes/start`, `GET /api/panes/{id}/read`, `POST /api/panes/{id}/input`
+(`{"text":"…"}` or `{"keys":["y","Enter"]}`), `POST /api/panes/{id}/kill`.
+
+**Headless vs live.** Cards default to a live TUI. Untick **Live terminal** for
+the agent's print/exec mode (`claude -p`, `codex exec`): the run still happens in
+a pane you can watch, and its stdout lines feed the card, workflows, and gates
+as before. Plan-before-execute is headless only.
+
+> Panes die with the runner, like tmux panes die with the tmux server. Keep the
+> runner alive as a service (launchd/systemd), or run `kanbot up` in a tmux.
 
 Run the pieces separately (e.g. runner on another machine):
 
@@ -237,12 +303,16 @@ a **custom command** (e.g. `pytest -q`).
 kanbot up         server + local runner (best first run)
 kanbot server     board / API only
 kanbot runner     background runner only  (--server, --name, --concurrency)
+kanbot ps         live agents on this machine (state · agent · cwd · title)
+kanbot attach ID  your terminal becomes that agent's pane (Ctrl-] detaches)
+kanbot agent …    start / prompt / keys / read / wait / kill / get / rm
 kanbot agents     detected agents + active session trackers
 kanbot config     server URL, token, runner name, enable/disable agents
 kanbot open       open the board
+kanbot review     multi-agent code review of local changes (--gate for chains)
 ```
 
-Config: `~/.kanbot/config.json` · data: `~/.kanbot/kanbot.db`.
+Config: `~/.kanbot/config.json` · data: `~/.kanbot/kanbot.db` · socket: `~/.kanbot/runner.sock`.
 Set `KANBOT_TOKEN` on the server to require a matching `--token` from runners.
 
 ## License

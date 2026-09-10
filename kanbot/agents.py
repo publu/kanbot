@@ -42,6 +42,26 @@ class AgentSpec:
     # claude-compatible providers (z.ai, Kimi) reuse ANTHROPIC_API_KEY but each
     # runs in its own subprocess env, so the keys never collide.
     api_key_env: str = ""
+    # --- interactive (TUI) mode ------------------------------------------------
+    # argv to open the agent's own full-screen TUI inside a runner-owned pane.
+    # Tokens may contain {prompt} / {session_id}. Empty => the headless argv runs
+    # in the pane instead (still visible live, just not conversational).
+    tui_argv: List[str] = field(default_factory=list)
+    tui_resume_argv: List[str] = field(default_factory=list)
+    safe_tui_argv: List[str] = field(default_factory=list)
+    safe_tui_resume_argv: List[str] = field(default_factory=list)
+    # True for CLIs that accept Claude Code-style `--settings` hooks, which give
+    # the runner exact working/blocked/idle state instead of screen guesses.
+    claude_hooks: bool = False
+
+
+_CLAUDE_TUI = dict(
+    tui_argv=["claude", "--dangerously-skip-permissions", "{prompt}"],
+    tui_resume_argv=["claude", "--resume", "{session_id}", "--dangerously-skip-permissions", "{prompt}"],
+    safe_tui_argv=["claude", "{prompt}"],
+    safe_tui_resume_argv=["claude", "--resume", "{session_id}", "{prompt}"],
+    claude_hooks=True,
+)
 
 
 # Non-interactive / headless invocations for each known coding CLI.
@@ -61,6 +81,7 @@ BUILTIN_AGENTS: List[AgentSpec] = [
         default_model="claude-opus-4-8",
         fast_model="claude-haiku-4-5-20251001",
         api_key_env="ANTHROPIC_API_KEY",
+        **_CLAUDE_TUI,
     ),
     AgentSpec(
         name="codex",
@@ -81,6 +102,10 @@ BUILTIN_AGENTS: List[AgentSpec] = [
         fast_model="o4-mini",
         model_flag="--model",
         api_key_env="OPENAI_API_KEY",
+        tui_argv=["codex", "--full-auto", "{prompt}"],
+        tui_resume_argv=["codex", "--full-auto", "resume", "{session_id}"],
+        safe_tui_argv=["codex", "{prompt}"],
+        safe_tui_resume_argv=["codex", "resume", "{session_id}"],
     ),
     AgentSpec(
         name="gemini",
@@ -95,6 +120,8 @@ BUILTIN_AGENTS: List[AgentSpec] = [
         fast_model="gemini-2.5-flash",
         model_flag="-m",
         api_key_env="GEMINI_API_KEY",
+        tui_argv=["gemini", "-y", "-i", "{prompt}"],
+        safe_tui_argv=["gemini", "-i", "{prompt}"],
     ),
     AgentSpec(
         name="glm",
@@ -112,6 +139,7 @@ BUILTIN_AGENTS: List[AgentSpec] = [
         default_model="glm-4.6",
         fast_model="glm-4.5-air",
         api_key_env="ANTHROPIC_API_KEY",  # claude-compatible endpoint; key is your Z.ai key
+        **_CLAUDE_TUI,
     ),
     AgentSpec(
         name="kimi",
@@ -129,6 +157,7 @@ BUILTIN_AGENTS: List[AgentSpec] = [
         default_model="kimi-k2-0905-preview",
         fast_model="kimi-k2-turbo-preview",
         api_key_env="ANTHROPIC_API_KEY",  # claude-compatible endpoint; key is your Moonshot key
+        **_CLAUDE_TUI,
     ),
     AgentSpec(
         name="opencode",
@@ -137,6 +166,7 @@ BUILTIN_AGENTS: List[AgentSpec] = [
         argv=["opencode", "run", "{prompt}"],
         description="OpenCode terminal agent, non-interactive run.",
         color="#f59e0b",
+        tui_argv=["opencode", "--prompt", "{prompt}"],
     ),
     AgentSpec(
         name="hermes",
@@ -154,6 +184,8 @@ BUILTIN_AGENTS: List[AgentSpec] = [
         safe_argv=["aider", "--no-auto-commits", "--message", "{prompt}"],
         description="Aider pair-programmer, single message mode.",
         color="#22c55e",
+        tui_argv=["aider", "--yes", "--no-auto-commits"],   # prompt is typed in after launch
+        safe_tui_argv=["aider", "--no-auto-commits"],
     ),
     AgentSpec(
         name="cursor-agent",
@@ -170,6 +202,7 @@ BUILTIN_AGENTS: List[AgentSpec] = [
         argv=["bash", "-lc", "{prompt}"],
         description="Run the prompt as a raw shell command. Always available.",
         color="#64748b",
+        tui_argv=["bash", "-l"],                               # prompt is typed in after launch
     ),
 ]
 
@@ -190,6 +223,8 @@ def spec_to_dict(a: AgentSpec) -> dict:
         "models": a.models,
         "default_model": a.default_model,
         "api_key_env": a.api_key_env,
+        "interactive": bool(a.tui_argv),
+        "resumable": bool(a.resume_argv or a.tui_resume_argv),
     }
 
 

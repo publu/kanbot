@@ -30,7 +30,8 @@ from .db import DB, gen_id, now
 from .hub import Hub, RunnerConn
 from .insights import PROVIDER_META, compute
 from .schemas import (BoardCreate, BuildRequest, CardCreate, CardMove, CardPatch,
-                      ChainRequest, DraftRequest, FromSession, ImproveRequest, ProviderKey,
+                      ChainRequest, DraftRequest, FromSession, ImproveRequest, PaneInput,
+                      PaneStart, ProviderKey,
                       ReviveRequest, SpreeRequest, TagAttach, TagCreate, UploadRequest,
                       WorkflowClone, WorkflowEval, WorkflowExtract, WorkflowImport,
                       WorkflowRun, WorkflowSave)
@@ -161,7 +162,7 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         col = db.column_by_kind(board_id, target_kind) or db.columns(board_id)[0]
         card = db.create_card(board_id, col["id"], title, prompt, body.agent,
                               body.cwd, resume_of=body.session_id,
-                              pin_runner=body.runner_id)
+                              pin_runner=body.runner_id, interactive=body.interactive)
         if body.run:
             db.update_card(card["id"], status="queued")
             card = db.get_card(card["id"])
@@ -169,6 +170,65 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         if body.run:
             await hub.try_dispatch()
         return card
+
+    # -- panes: live agent terminals on every runner ------------------------
+    @app.get("/api/panes")
+    async def panes():
+        return {"panes": hub.list_panes()}
+
+    @app.post("/api/panes/start")
+    async def pane_start(body: PaneStart):
+        try:
+            return await hub.start_pane(body.agent, body.prompt, body.cwd, body.interactive,
+                                        body.resume, body.title, body.runner_id)
+        except LookupError as e:
+            raise HTTPException(409, str(e))
+        except (RuntimeError, asyncio.TimeoutError) as e:
+            raise HTTPException(502, str(e) or "runner did not answer")
+
+    @app.get("/api/panes/{pane_id}")
+    async def pane_get(pane_id: str):
+        p = hub.panes.get(pane_id)
+        if not p:
+            raise HTTPException(404, "pane not found")
+        return p
+
+    @app.get("/api/panes/{pane_id}/read")
+    async def pane_read(pane_id: str, lines: int = 60):
+        """The last lines of the terminal as plain text (what a human sees)."""
+        p = hub.panes.get(pane_id)
+        if not p:
+            raise HTTPException(404, "pane not found")
+        try:
+            res = await hub.runner_call(p["runner_id"], {"type": "pane.read", "pane_id": pane_id,
+                                                          "lines": lines})
+        except (LookupError, RuntimeError, asyncio.TimeoutError) as e:
+            raise HTTPException(502, str(e) or "runner did not answer")
+        return {"text": res.get("text", ""), "pane": res.get("pane")}
+
+    @app.post("/api/panes/{pane_id}/input")
+    async def pane_input(pane_id: str, body: PaneInput):
+        """Type into an agent: text (+Enter) or key names like ["y","Enter"], ["Escape"], ["C-c"]."""
+        if pane_id not in hub.panes:
+            raise HTTPException(404, "pane not found")
+        ok = await (hub.pane_input(pane_id, keys=body.keys) if body.keys
+                    else hub.pane_input(pane_id, text=body.text, enter=body.enter))
+        if not ok:
+            raise HTTPException(502, "runner is offline")
+        return {"ok": True}
+
+    @app.post("/api/panes/{pane_id}/kill")
+    async def pane_kill(pane_id: str):
+        if not await hub.pane_cmd(pane_id, "kill"):
+            raise HTTPException(404, "pane not found or runner offline")
+        return {"ok": True}
+
+    @app.delete("/api/panes/{pane_id}")
+    async def pane_remove(pane_id: str):
+        await hub.pane_cmd(pane_id, "remove")
+        hub.panes.pop(pane_id, None)
+        await hub.broadcast({"type": "panes.updated"})
+        return {"ok": True}
 
     # -- boards ------------------------------------------------------------
     @app.get("/api/boards")
@@ -206,7 +266,8 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                               body.agent, cwd, loop_max=body.loop_max,
                               loop_until=body.loop_until, profile=body.profile,
                               command=body.command, plan_mode=body.plan_mode,
-                              plan_auto=body.plan_auto)
+                              plan_auto=body.plan_auto, isolate=body.isolate,
+                              interactive=body.interactive)
         await hub.broadcast({"type": "card.created", "card": card})
         await enqueue_if_needed(card, "idle")
         return card
@@ -263,6 +324,10 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             fields["auto_advance"] = 1 if fields["auto_advance"] else 0
         if "plan_mode" in fields:
             fields["plan_mode"] = 1 if fields["plan_mode"] else 0
+        if "isolate" in fields:
+            fields["isolate"] = 1 if fields["isolate"] else 0
+        if "interactive" in fields:
+            fields["interactive"] = 1 if fields["interactive"] else 0
         card = db.update_card(card_id, **fields)
         if not card:
             raise HTTPException(404, "card not found")
@@ -311,6 +376,17 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         await hub.broadcast({"type": "card.updated", "card": card})
         await hub.try_dispatch()
         return card
+
+    @app.post("/api/cards/{card_id}/merge")
+    async def merge_card(card_id: str):
+        """Fold a card's isolated worktree branch back into its repo."""
+        card = db.get_card(card_id)
+        if not card:
+            raise HTTPException(404, "card not found")
+        res = await hub.request_merge(card_id)
+        if not res.get("ok"):
+            raise HTTPException(409, res.get("error", "cannot merge"))
+        return db.get_card(card_id)
 
     @app.delete("/api/cards/{card_id}")
     async def delete_card(card_id: str):
@@ -810,7 +886,30 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         try:
             await ws.send_text(json.dumps({"type": "hello", "version": __version__}))
             while True:
-                await ws.receive_text()  # clients are read-only; ignore content
+                raw = await ws.receive_text()
+                try:
+                    msg = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                t = msg.get("type", "")
+                if t == "pane.attach":
+                    ok = await hub.web_attach(ws, msg.get("pane_id", ""),
+                                              int(msg.get("rows", 0) or 0), int(msg.get("cols", 0) or 0))
+                    if not ok:
+                        await ws.send_text(json.dumps({"type": "pane.gone", "pane_id": msg.get("pane_id", "")}))
+                elif t == "pane.detach":
+                    await hub.web_detach(ws)
+                elif t == "pane.input":
+                    pid = msg.get("pane_id") or hub.web_pane.get(ws, "")
+                    if "data" in msg:
+                        await hub.pane_input(pid, data=msg["data"])
+                    elif "keys" in msg:
+                        await hub.pane_input(pid, keys=msg["keys"])
+                    else:
+                        await hub.pane_input(pid, text=msg.get("text", ""), enter=msg.get("enter", True))
+                elif t == "pane.resize":
+                    pid = msg.get("pane_id") or hub.web_pane.get(ws, "")
+                    await hub.pane_cmd(pid, "resize", rows=int(msg.get("rows", 40)), cols=int(msg.get("cols", 140)))
         except WebSocketDisconnect:
             pass
         except Exception:
@@ -857,8 +956,25 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
                     status = msg.get("status", "success")
                     await hub.finish_session(msg["session_id"], status=status,
                                              exit_code=msg.get("exit_code"))
+                elif mtype == "worktree":
+                    await hub.set_worktree(msg.get("card_id", ""), msg.get("branch", ""),
+                                           msg.get("worktree", ""), msg.get("base", ""),
+                                           msg.get("runner_id", conn.runner_id if conn else ""))
+                elif mtype == "worktree.diff":
+                    await hub.set_diffstat(msg.get("card_id", ""), msg.get("diffstat", ""))
+                elif mtype == "merge.result":
+                    await hub.merge_result(msg.get("card_id", ""), msg.get("state", ""),
+                                           msg.get("output", ""))
                 elif mtype == "agent.sessions" and conn:
                     await hub.set_agent_sessions(conn.runner_id, msg.get("sessions", []))
+                elif mtype == "panes" and conn:
+                    await hub.set_panes(conn.runner_id, msg.get("panes", []))
+                elif mtype == "pane.updated" and conn:
+                    await hub.pane_updated(conn.runner_id, msg.get("pane", {}))
+                elif mtype == "pane.data":
+                    await hub.pane_data(msg.get("pane_id", ""), msg.get("data", ""), bool(msg.get("replay")))
+                elif mtype == "pane.reply":
+                    hub.pane_reply(msg)
         except WebSocketDisconnect:
             pass
         except Exception:

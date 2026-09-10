@@ -265,6 +265,18 @@ class DB:
             self.conn.execute("ALTER TABLE cards ADD COLUMN plan_auto INTEGER DEFAULT 0")
         if "phase" not in ccols:
             self.conn.execute("ALTER TABLE cards ADD COLUMN phase TEXT DEFAULT 'execute'")
+        # Per-task worktrees ("Devin" isolation): run a card on its own branch.
+        for name, ddl in (("isolate", "INTEGER DEFAULT 0"),      # run in a worktree
+                          ("branch", "TEXT DEFAULT ''"),          # deckhand/<card>
+                          ("worktree", "TEXT DEFAULT ''"),        # its checkout path
+                          ("base_branch", "TEXT DEFAULT ''"),     # forked-from branch
+                          ("wt_runner", "TEXT DEFAULT ''"),       # runner that owns it
+                          ("merge_state", "TEXT DEFAULT ''"),     # merged|conflict|error
+                          ("diffstat", "TEXT DEFAULT ''")):       # git diff --stat
+            if name not in ccols:
+                self.conn.execute(f"ALTER TABLE cards ADD COLUMN {name} {ddl}")
+        if "interactive" not in ccols:   # run the agent's TUI in a live pane
+            self.conn.execute("ALTER TABLE cards ADD COLUMN interactive INTEGER DEFAULT 0")
         wfcols = {r["name"] for r in self.q("PRAGMA table_info(workflows)")}
         if wfcols and "source_tokens" not in wfcols:
             self.conn.execute("ALTER TABLE workflows ADD COLUMN source_tokens INTEGER DEFAULT 0")
@@ -354,7 +366,8 @@ class DB:
                      pin_runner: str = "", loop_max: int = 1, loop_until: str = "",
                      profile: str = "", command: str = "", workflow_id: str = "",
                      step_index: int = 0, max_seconds: int = 0,
-                     plan_mode: bool = False, plan_auto: bool = False) -> Dict[str, Any]:
+                     plan_mode: bool = False, plan_auto: bool = False,
+                     isolate: bool = False, interactive: bool = False) -> Dict[str, Any]:
         cid = gen_id()
         pos = self._next_position(column_id)
         ts = now()
@@ -362,13 +375,14 @@ class DB:
             """INSERT INTO cards (id, board_id, column_id, title, prompt, agent, cwd,
                status, position, resume_of, pin_runner, loop_max, loop_until, profile,
                command, workflow_id, step_index, max_seconds, plan_mode, plan_auto, phase,
-               created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               isolate, interactive, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (cid, board_id, column_id, title, prompt, agent, cwd, "idle", pos,
              resume_of, pin_runner, max(1, int(loop_max or 1)), loop_until, profile,
              command, workflow_id, step_index, max(0, int(max_seconds or 0)),
              1 if plan_mode else 0, 1 if plan_auto else 0,
-             "plan" if plan_mode else "execute", ts, ts),
+             "plan" if plan_mode else "execute", 1 if isolate else 0,
+             1 if interactive else 0, ts, ts),
         )
         return self.get_card(cid)
 

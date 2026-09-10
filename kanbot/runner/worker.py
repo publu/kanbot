@@ -4,17 +4,22 @@ advertises which CLI agents are installed locally, and executes assigned tasks.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import platform
+import sys
 import time
-from typing import Dict, Optional
+from typing import Dict, Optional, Set
 
 import websockets
 
 from ..config import Config
+from . import worktrees
 from .agents import Execution, ResolvedAgent, build_argv, detect_agents, run_agent
+from .api import ApiServer
 from .discovery import discover_all
+from .panes import Pane, PaneManager, keys_to_bytes
 
 # The DRIVER: a second, read-only agent that keeps the working agent moving. After
 # a grind pass it inspects the real repo and hands back concrete, grounded next
@@ -48,6 +53,9 @@ class Runner:
         self.executions: Dict[str, Execution] = {}
         self.tasks: Dict[str, asyncio.Task] = {}
         self._stop = False
+        self.panes: Optional[PaneManager] = None      # created inside the event loop
+        self.api: Optional[ApiServer] = None
+        self._server_subs: Dict[str, object] = {}      # pane_id -> subscriber callback
 
     def log(self, *a):
         if self.verbose:
@@ -72,6 +80,7 @@ class Runner:
             self.log("WARNING: no CLI agents detected on PATH. The runner will "
                      "advertise nothing to run. Install one of: claude, codex, "
                      "gemini, opencode, aider, cursor-agent (or 'shell' fallback).")
+        await self._boot_panes()
         backoff = 1
         while not self._stop:
             try:
@@ -109,6 +118,140 @@ class Runner:
             "max_concurrency": self.cfg.max_concurrency,
             "auto_approve": self.cfg.auto_approve,
         })
+        self._server_subs.clear()          # a fresh socket has no subscriptions
+        await self._send_panes()
+
+    # -- panes: the runner owns a PTY per agent ----------------------------
+    async def _boot_panes(self) -> None:
+        from .api import sock_path
+        self.panes = PaneManager(on_line=self._pane_line, on_state=self._pane_state,
+                                 sock_path=sock_path())
+        self.api = ApiServer(self.panes, starter=self._api_start)
+        try:
+            await self.api.start()
+            self.log(f"socket API at {self.api.path}  (kanbot agent list · kanbot attach)")
+        except OSError as e:
+            self.log(f"socket API unavailable: {e}")
+
+    async def _send_panes(self) -> None:
+        if self.panes:
+            self.panes.prune()
+            await self.send({"type": "panes", "runner_id": self.cfg.runner_id,
+                             "panes": self.panes.list()})
+
+    async def _pane_line(self, pane: Pane, text: str) -> None:
+        if pane.session_id:
+            await self.send({"type": "log", "session_id": pane.session_id,
+                             "stream": "stdout", "text": text})
+
+    async def _pane_state(self, pane: Pane, state: str) -> None:
+        await self.send({"type": "pane.updated", "runner_id": self.cfg.runner_id,
+                         "pane": pane.info()})
+        if state == "blocked" or (state == "done" and pane.interactive):
+            asyncio.create_task(self._notify(pane, state))
+
+    async def _notify(self, pane: Pane, state: str) -> None:
+        """Tell the human. Default: a macOS banner; override with notify_command."""
+        title = "Agent needs you" if state == "blocked" else "Agent finished"
+        body = f"{pane.agent}: {pane.title}"[:200]
+        cmd = self.cfg.notify_command
+        if not cmd and sys.platform == "darwin":
+            cmd = 'osascript -e "display notification \"$KANBOT_BODY\" with title \"$KANBOT_TITLE\""'
+        if not cmd:
+            return
+        env = os.environ.copy()
+        env.update({"KANBOT_TITLE": title, "KANBOT_BODY": body, "KANBOT_STATE": state,
+                    "KANBOT_PANE_ID": pane.id, "KANBOT_AGENT": pane.agent})
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "bash", "-lc", cmd, env=env, stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+            await asyncio.wait_for(proc.wait(), timeout=20)
+        except Exception as e:  # noqa: BLE001
+            self.log(f"notify failed: {e}")
+
+    def start_pane(self, agent_name: str, prompt: str = "", cwd: str = "",
+                   interactive: bool = True, resume_of: str = "", title: str = "",
+                   command: str = "") -> Pane:
+        """Open an agent in a new pane right now (no card, no queue)."""
+        assert self.panes is not None
+        agent = self.agents.get(agent_name) or self.agents.get("shell")
+        if not agent:
+            raise LookupError(f"agent '{agent_name}' is not available on this runner")
+        argv = build_argv(agent, prompt, resume_of, auto_approve=self.cfg.auto_approve,
+                          command=command, interactive=interactive)
+        env = dict(agent.env)
+        env.update(self.cfg.key_env_for(agent.name))
+        pane = self.panes.spawn(argv, cwd=cwd or os.getcwd(), env=env, agent=agent.name,
+                                title=title or prompt[:80] or agent.label,
+                                interactive=interactive)
+        if interactive and prompt and "{prompt}" not in " ".join(agent.tui_argv):
+            async def typeit():
+                await asyncio.sleep(1.5)
+                pane.write(prompt.encode() + b"\r")
+            asyncio.create_task(typeit())
+        asyncio.create_task(self._send_panes())
+        return pane
+
+    async def _api_start(self, p: dict) -> dict:
+        pane = self.start_pane(p.get("agent", "claude"), p.get("prompt", ""), p.get("cwd", ""),
+                               bool(p.get("interactive", True)), p.get("resume", "") or "",
+                               p.get("title", ""), p.get("command", "") or "")
+        return {"agent": pane.info()}
+
+    async def _pane_msg(self, msg: dict) -> None:
+        """Server-relayed pane control: subscribe/unsubscribe/input/resize/kill/start."""
+        assert self.panes is not None
+        mtype = msg["type"]
+        if mtype == "pane.start":
+            try:
+                pane = self.start_pane(msg.get("agent", "claude"), msg.get("prompt", ""),
+                                       msg.get("cwd", ""), bool(msg.get("interactive", True)),
+                                       msg.get("resume", "") or "", msg.get("title", ""))
+                await self.send({"type": "pane.reply", "request_id": msg.get("request_id"),
+                                 "pane": pane.info()})
+            except Exception as e:  # noqa: BLE001
+                await self.send({"type": "pane.reply", "request_id": msg.get("request_id"),
+                                 "error": str(e)})
+            return
+        pane = self.panes.get(msg.get("pane_id", ""))
+        if not pane:
+            return
+        if mtype == "pane.subscribe":
+            if pane.id in self._server_subs:
+                return
+            pid = pane.id
+
+            def on_data(data: bytes, pid=pid) -> None:
+                asyncio.ensure_future(self.send({"type": "pane.data", "pane_id": pid,
+                                                 "data": base64.b64encode(data).decode()}))
+            pane.subscribers.append(on_data)
+            self._server_subs[pid] = on_data
+            pane.seen_at = time.time()
+            await self.send({"type": "pane.data", "pane_id": pid, "replay": True,
+                             "data": base64.b64encode(bytes(pane.buf)).decode()})
+        elif mtype == "pane.unsubscribe":
+            cb = self._server_subs.pop(pane.id, None)
+            if cb in pane.subscribers:
+                pane.subscribers.remove(cb)
+        elif mtype == "pane.input":
+            if "data" in msg:
+                pane.write(base64.b64decode(msg["data"]))
+            elif "text" in msg:
+                pane.write(msg["text"].encode() + (b"\r" if msg.get("enter", True) else b""))
+            elif "keys" in msg:
+                pane.write(keys_to_bytes(msg["keys"]))
+        elif mtype == "pane.resize":
+            pane.resize(int(msg.get("rows", 40)), int(msg.get("cols", 140)))
+        elif mtype == "pane.kill":
+            asyncio.create_task(pane.terminate())
+        elif mtype == "pane.read":
+            await self.send({"type": "pane.reply", "request_id": msg.get("request_id"),
+                             "text": pane.read_text(int(msg.get("lines", 60))),
+                             "pane": pane.info()})
+        elif mtype == "pane.remove":
+            self.panes.remove(pane.id)
+            await self._send_panes()
 
     async def _discover_loop(self) -> None:
         """Periodically report the agents' own sessions so the board can show
@@ -122,6 +265,7 @@ class Runner:
                                  "runner_id": self.cfg.runner_id, "sessions": sessions})
             except Exception as e:
                 self.log(f"discovery error: {e}")
+            await self._send_panes()
             await asyncio.sleep(6)
 
     async def _consume(self) -> None:
@@ -136,6 +280,10 @@ class Runner:
                 self._spawn_task(msg)
             elif mtype == "cancel":
                 await self._cancel(msg.get("session_id", ""))
+            elif mtype == "merge":
+                asyncio.create_task(self._merge(msg))
+            elif mtype.startswith("pane."):
+                await self._pane_msg(msg)
             elif mtype in ("welcome", "pong"):
                 pass
 
@@ -146,12 +294,19 @@ class Runner:
 
     async def _execute(self, msg: dict) -> None:
         sid = msg["session_id"]
+        card_id = msg.get("card_id", "")
         agent_name = msg.get("agent", "")
         prompt = msg.get("prompt", "")
         cwd = msg.get("cwd", "")
+        isolate = bool(msg.get("isolate"))
+        wt = None
         resume_of = msg.get("resume_of", "")
         command = msg.get("command", "") or ""
+        interactive = bool(msg.get("interactive"))
+        title = msg.get("title", "") or ""
         loop_max = min(MAX_LOOP_ITERATIONS, max(1, int(msg.get("loop_max", 1) or 1)))
+        if interactive:
+            loop_max = 1            # a TUI is a conversation, not a grind loop
         loop_until = msg.get("loop_until", "") or ""
         max_seconds = max(0, int(msg.get("max_seconds", 0) or 0))  # 0 = unbounded
         agent = self.agents.get(agent_name)
@@ -176,6 +331,20 @@ class Runner:
             ex.session_id = sid
             self.executions[sid] = ex
 
+        # Devin-style isolation: run this card on its own branch in a throwaway
+        # worktree so it never collides with other agents in the same checkout.
+        # Best-effort — a non-git cwd just runs in place.
+        if isolate and cwd:
+            wt = await asyncio.to_thread(worktrees.prepare, cwd, card_id or sid)
+            if wt:
+                cwd = wt["workdir"]
+                await on_log("system", f"⑃ isolated · branch {wt['branch']} · {cwd}")
+                await self.send({"type": "worktree", "session_id": sid, "card_id": card_id,
+                                 "runner_id": self.cfg.runner_id, "branch": wt["branch"],
+                                 "worktree": cwd, "base": wt["base"]})
+            else:
+                await on_log("system", "⑃ isolate requested but cwd isn't a git repo — running in place")
+
         try:
             # Ralph loop: run the agent with fresh context up to loop_max times,
             # stopping early when loop_until (a shell predicate) exits 0 in cwd, or
@@ -199,9 +368,10 @@ class Runner:
                     budget = f" · {elapsed // 60}m/{max_seconds // 60}m" if max_seconds else ""
                     await on_log("system", f"━━━━━ iteration {i}/{loop_max}{budget} ━━━━━")
                 rc = await run_agent(agent, prompt + driver_block, cwd, on_log, register,
-                                     resume_of=resume_of if i == 1 else "",
+                                     self.panes, resume_of=resume_of if i == 1 else "",
                                      auto_approve=self.cfg.auto_approve,
-                                     command=command)
+                                     command=command, interactive=interactive,
+                                     session_id=sid, card_id=card_id, title=title)
                 if loop_max == 1:
                     break
                 if loop_until:
@@ -246,6 +416,12 @@ class Runner:
                     await on_log("system", msg)
                 elif i >= loop_max:
                     await on_log("system", f"reached max iterations ({loop_max})")
+            if wt:
+                # Commit whatever the agent left, then hand the card its diffstat.
+                await asyncio.to_thread(worktrees.commit_all, cwd, "deckhand: session work")
+                ds = await asyncio.to_thread(worktrees.summary, cwd, wt["base"])
+                await self.send({"type": "worktree.diff", "session_id": sid,
+                                 "card_id": card_id, "diffstat": ds})
             status = "success" if rc == 0 else "failed"
             await self.send({"type": "session.end", "session_id": sid,
                              "status": status, "exit_code": rc})
@@ -340,6 +516,13 @@ class Runner:
                 pass
         import hashlib
         return hashlib.sha1((head.strip() + "\n" + prog).encode("utf-8", "replace")).hexdigest()
+
+    async def _merge(self, msg: dict) -> None:
+        """Fold a card's isolated branch back into the real repo, then drop the
+        worktree. Runs on the runner that owns the worktree (its filesystem)."""
+        res = await asyncio.to_thread(worktrees.merge, msg.get("cwd", ""),
+                                      msg.get("branch", ""), msg.get("worktree", ""))
+        await self.send({"type": "merge.result", "card_id": msg.get("card_id", ""), **res})
 
     async def _cancel(self, sid: str) -> None:
         ex = self.executions.get(sid)

@@ -2,45 +2,69 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Deckhand — Claude task queue</title>
+  <title>KanBot — agent console</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <div class="shell">
     <header>
-      <a class="brand" href="#"><span class="logo">D</span><span>DECKHAND</span></a>
+      <a class="brand" href="#"><span class="logo">K</span><span>KANBOT</span></a>
+      <div class="hint" id="hint">every agent, one screen · <kbd>n</kbd> new · <kbd>j</kbd>/<kbd>k</kbd> switch</div>
       <div class="connection"><i id="dot"></i><span id="connection">connecting</span></div>
       <div class="runner" id="runner">No runner</div>
+      <button class="square" id="composeBtn" title="New task (n)">+</button>
     </header>
     <main>
       <section class="rail">
-        <div class="rail-head"><div><p class="eyebrow">WORK QUEUE</p><h1>Tasks</h1></div><button class="square" id="composeBtn" title="New task">+</button></div>
         <div class="lanes" id="lanes"></div>
       </section>
       <section class="workspace">
         <div class="terminal-head">
           <div class="traffic"><i></i><i></i><i></i></div>
-          <div class="terminal-title"><b id="termTitle">Claude terminal</b><span id="termPath">Waiting for a task</span></div>
-          <button class="resume hidden" id="resumeBtn">Continue in queue →</button>
-          <button class="stop hidden" id="stopBtn">Stop run</button>
+          <div class="terminal-title"><b id="termTitle">Nothing selected</b><span id="termPath">Pick an agent on the left, or press n</span></div>
+          <span class="state-badge hidden" id="stateBadge"></span>
+          <div class="keys hidden" id="keys">
+            <button data-keys='["Enter"]' title="Enter">⏎</button>
+            <button data-keys='["y","Enter"]' title="yes">y</button>
+            <button data-keys='["n","Enter"]' title="no">n</button>
+            <button data-keys='["Escape"]' title="Escape">esc</button>
+            <button data-keys='["C-c"]' title="Ctrl-C">^C</button>
+            <button data-keys='["Up"]' title="Up">↑</button>
+            <button data-keys='["Down"]' title="Down">↓</button>
+          </div>
+          <button class="resume hidden" id="resumeBtn">Open here →</button>
+          <button class="stop hidden" id="stopBtn">Stop</button>
+          <button class="ghost hidden" id="attachHint" title="copy the attach command">⌘ attach</button>
         </div>
-        <div class="terminal" id="terminal"><div class="empty"><span>❯_</span><h2>Nothing selected</h2><p>Add a task above, or pick up a Claude session below.</p></div></div>
-        <div class="session-strip"><span>PICK UP A CLAUDE SESSION <em>— continue any terminal session as a queued task</em></span><div id="sessions"></div></div>
+        <div class="terminal" id="terminal"><div class="empty"><span>❯_</span><h2>Nothing selected</h2><p>Every agent on every runner shows up on the left. Click one to watch it live and type into it.</p></div></div>
+        <pre class="logview hidden" id="logview"></pre>
+        <form class="typebar" id="typebar">
+          <input id="typeInput" placeholder="Type to the agent… (Enter sends)" autocomplete="off" disabled>
+          <button id="typeSend" disabled>Send</button>
+        </form>
       </section>
     </main>
   </div>
   <dialog id="composer">
     <form id="taskForm">
-      <div class="modal-head"><div><p class="eyebrow">NEW CARD</p><h2>Give Claude a task</h2></div><button type="button" class="close" id="closeComposer">×</button></div>
+      <div class="modal-head"><div><p class="eyebrow">NEW AGENT</p><h2>Give an agent a task</h2></div><button type="button" class="close" id="closeComposer">×</button></div>
       <label>Task name<input id="taskTitle" required placeholder="Refactor the authentication flow"></label>
-      <label>Instructions<textarea id="taskPrompt" required rows="8" placeholder="Describe the outcome, constraints, and how Claude should verify the work…"></textarea></label>
-      <label>Working directory<input id="taskCwd" placeholder="/path/to/repository"></label>
-      <div class="plan-row"><label class="switch"><input id="planMode" type="checkbox"><span></span></label><div><b>Plan before execution</b><p>Claude produces a read-only plan. The queue pauses until you approve it.</p></div></div>
-      <div class="plan-row sub hidden" id="autoRow"><label class="switch"><input id="planAuto" type="checkbox"><span></span></label><div><b>Auto-approve &amp; run</b><p>Skip the pause — run the plan the moment Claude finishes it. For unattended runs.</p></div></div>
-      <div class="modal-actions"><button type="button" class="secondary" id="cancelComposer">Cancel</button><button class="primary">Add to queue <span>⌘↵</span></button></div>
+      <label>Instructions<textarea id="taskPrompt" rows="7" placeholder="Describe the outcome, constraints, and how to verify the work…"></textarea></label>
+      <div class="two">
+        <label>Working directory<input id="taskCwd" placeholder="/path/to/repository"></label>
+        <label>Agent<select id="taskAgent"></select></label>
+      </div>
+      <div class="plan-row"><label class="switch"><input id="interactive" type="checkbox" checked><span></span></label><div><b>⌨ Live terminal</b><p>Open the agent's own TUI in a pane you can watch and type into, here or from <code>kanbot attach</code>. Off = headless print mode with logs.</p></div></div>
+      <div class="plan-row"><label class="switch"><input id="isolate" type="checkbox"><span></span></label><div><b>⑃ Isolate in a git worktree</b><p>Run on its own <code>deckhand/*</code> branch in a throwaway checkout. Merge it back when you're happy.</p></div></div>
+      <div class="plan-row" id="planRow"><label class="switch"><input id="planMode" type="checkbox"><span></span></label><div><b>Plan before execution</b><p>Headless only. A read-only plan first; the queue pauses until you approve it.</p></div></div>
+      <div class="plan-row sub hidden" id="autoRow"><label class="switch"><input id="planAuto" type="checkbox"><span></span></label><div><b>Auto-approve &amp; run</b><p>Skip the pause — run the plan the moment it's written.</p></div></div>
+      <div class="modal-actions"><button type="button" class="secondary" id="cancelComposer">Cancel</button><button class="primary">Start <span>⌘↵</span></button></div>
     </form>
   </dialog>
   <div id="toast"></div>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
   <script type="module" src="/app.js"></script>
 </body>
 </html>

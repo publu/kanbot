@@ -23,6 +23,8 @@ class CardCreate(BaseModel):
     command: str = ""  # optional raw command override (argv template with {prompt})
     plan_mode: bool = False
     plan_auto: bool = False  # plan mode, but auto-approve the plan and run without waiting
+    isolate: bool = False    # run in its own git worktree/branch (Devin-style isolation)
+    interactive: bool = False  # open the agent's TUI in a live pane instead of headless print mode
 
 
 class CardPatch(BaseModel):
@@ -37,6 +39,8 @@ class CardPatch(BaseModel):
     profile: Optional[str] = None
     command: Optional[str] = None
     plan_mode: Optional[bool] = None
+    isolate: Optional[bool] = None
+    interactive: Optional[bool] = None
 
 
 class CardMove(BaseModel):
@@ -101,6 +105,7 @@ class ReviveRequest(BaseModel):
     title: str = ""
     prompt: str = ""
     run: bool = True
+    interactive: bool = True   # resume in the agent's TUI (live, typeable) by default
 
 
 # -- workflows ------------------------------------------------------------
@@ -187,3 +192,20 @@ class SpreeRequest(BaseModel):
     playbook_id: str = ""        # optional saved playbook whose method seeds the run
     title: str = ""              # run card title (defaults from the goal)
     run: bool = True             # dispatch now (vs park in backlog)
+
+
+# -- panes (runner-owned terminals) -----------------------------------------
+class PaneStart(BaseModel):
+    agent: str = "claude"
+    prompt: str = ""
+    cwd: str = ""
+    interactive: bool = True
+    resume: str = ""
+    title: str = ""
+    runner_id: str = ""        # "" = any online runner that has the agent
+
+
+class PaneInput(BaseModel):
+    text: str = ""             # typed text (Enter appended unless enter=false)
+    enter: bool = True
+    keys: Optional[List[str]] = None   # tmux-style key names instead of text: ["y", "Enter"]

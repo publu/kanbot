@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from typing import Any, Dict, List, Optional, Set
 
 from ..profiles import compose_prompt
@@ -83,6 +84,12 @@ class Hub:
         self.web: Set[Any] = set()
         self.runners: Dict[str, RunnerConn] = {}
         self.agent_sessions: Dict[str, List[dict]] = {}  # runner_id -> discovered sessions
+        # Runner-owned terminals (panes), mirrored here so the board can list,
+        # watch and type into any agent on any machine.
+        self.panes: Dict[str, dict] = {}                 # pane_id -> info (+runner_id/name)
+        self.pane_subs: Dict[str, Set[Any]] = {}         # pane_id -> web sockets watching it
+        self.web_pane: Dict[Any, str] = {}               # web ws -> pane_id it is attached to
+        self._replies: Dict[str, asyncio.Future] = {}    # request_id -> pane.reply future
         self.distill_cache = _DistillCache(db)           # (session_id, mtime) -> workflows, DB-backed
         self._lock = asyncio.Lock()
 
@@ -92,6 +99,7 @@ class Hub:
 
     def remove_web(self, ws) -> None:
         self.web.discard(ws)
+        asyncio.ensure_future(self.web_detach(ws))
 
     async def broadcast(self, event: dict) -> None:
         """Push an event to every connected web client."""
@@ -155,6 +163,9 @@ class Hub:
     async def deregister_runner(self, runner_id: str) -> None:
         conn = self.runners.pop(runner_id, None)
         self.agent_sessions.pop(runner_id, None)
+        if any(p.get("runner_id") == runner_id for p in self.panes.values()):
+            self.panes = {k: v for k, v in self.panes.items() if v.get("runner_id") != runner_id}
+            await self.broadcast({"type": "panes.updated"})
         self.db.set_runner_status(runner_id, "offline", active=0)
         await self.broadcast({"type": "runner.updated", "runner": self.db.get_runner(runner_id)})
         await self.broadcast({"type": "agent.sessions.updated"})
@@ -253,6 +264,9 @@ class Hub:
             "loop_until": card.get("loop_until", "") or "",
             "max_seconds": int(card.get("max_seconds", 0) or 0),
             "command": card.get("command", "") or "",
+            "isolate": bool(card.get("isolate")),
+            "interactive": bool(card.get("interactive")),
+            "title": card.get("title", ""),
         }
         try:
             await runner.ws.send_text(json.dumps(payload))
@@ -341,6 +355,175 @@ class Hub:
         card = self.db.get_card(card_id)
         if card:
             await self.broadcast({"type": "card.updated", "card": card})
+
+    # -- worktrees (Devin-style isolation, driven by runner messages) ------
+    async def set_worktree(self, card_id: str, branch: str, worktree: str,
+                           base: str, runner_id: str) -> None:
+        """A runner opened an isolated branch for this card — record it so the
+        board can show the branch and offer to merge it."""
+        if not card_id:
+            return
+        self.db.update_card(card_id, branch=branch, worktree=worktree,
+                            base_branch=base, wt_runner=runner_id, merge_state="")
+        await self._emit_card(card_id)
+
+    async def set_diffstat(self, card_id: str, diffstat: str) -> None:
+        if card_id:
+            self.db.update_card(card_id, diffstat=diffstat)
+            await self._emit_card(card_id)
+
+    async def request_merge(self, card_id: str) -> dict:
+        """Ask the owning runner to fold the card's branch back into the repo."""
+        card = self.db.get_card(card_id)
+        if not card or not card.get("branch"):
+            return {"ok": False, "error": "card has no isolated branch"}
+        runner = self.runners.get(card.get("wt_runner") or "")
+        if not runner:
+            return {"ok": False, "error": "the runner that owns this worktree is offline"}
+        self.db.update_card(card_id, merge_state="merging")
+        await self._emit_card(card_id)
+        await runner.ws.send_text(json.dumps({
+            "type": "merge", "card_id": card_id, "cwd": card.get("cwd", ""),
+            "branch": card["branch"], "worktree": card.get("worktree", ""),
+        }))
+        return {"ok": True}
+
+    async def merge_result(self, card_id: str, state: str, output: str) -> None:
+        if not card_id:
+            return
+        # A clean merge consumes the worktree (keep the diffstat to show what
+        # landed); a conflict/error leaves it in place and shows why it failed.
+        fields = {"merge_state": state}
+        if state == "merged":
+            fields.update(branch="", worktree="", wt_runner="")
+        elif output:
+            fields["diffstat"] = output[-1200:]
+        self.db.update_card(card_id, **fields)
+        await self._emit_card(card_id)
+
+    # -- panes: runner-owned terminals ------------------------------------
+    def _stamp(self, runner_id: str, info: dict) -> dict:
+        conn = self.runners.get(runner_id)
+        info["runner_id"] = runner_id
+        info["runner_name"] = conn.name if conn else runner_id
+        return info
+
+    async def set_panes(self, runner_id: str, panes: List[dict]) -> None:
+        """A runner's full pane list (sent on connect and every few seconds)."""
+        before = {k: v.get("state") for k, v in self.panes.items() if v.get("runner_id") == runner_id}
+        self.panes = {k: v for k, v in self.panes.items() if v.get("runner_id") != runner_id}
+        for info in panes:
+            self.panes[info["id"]] = self._stamp(runner_id, info)
+            if info.get("state") == "blocked" and before.get(info["id"]) != "blocked":
+                await self.broadcast({"type": "agent.blocked", "pane": self.panes[info["id"]]})
+        await self.broadcast({"type": "panes.updated"})
+
+    async def pane_updated(self, runner_id: str, info: dict) -> None:
+        old = self.panes.get(info["id"], {})
+        self.panes[info["id"]] = self._stamp(runner_id, info)
+        await self.broadcast({"type": "pane.updated", "pane": self.panes[info["id"]]})
+        if info.get("state") == "blocked" and old.get("state") != "blocked":
+            await self.broadcast({"type": "agent.blocked", "pane": self.panes[info["id"]]})
+
+    def list_panes(self) -> List[dict]:
+        order = {"blocked": 0, "working": 1, "idle": 2, "unknown": 3, "done": 4}
+        return sorted(self.panes.values(),
+                      key=lambda p: (order.get(p.get("state"), 9), -(p.get("started_at") or 0)))
+
+    async def _to_runner(self, pane_id: str, msg: dict) -> bool:
+        info = self.panes.get(pane_id)
+        conn = self.runners.get(info.get("runner_id", "")) if info else None
+        if not conn:
+            return False
+        try:
+            await conn.ws.send_text(json.dumps({"pane_id": pane_id, **msg}))
+            return True
+        except Exception:
+            return False
+
+    async def pane_data(self, pane_id: str, data_b64: str, replay: bool = False) -> None:
+        """Terminal bytes from a runner → every web client watching that pane."""
+        subs = self.pane_subs.get(pane_id)
+        if not subs:
+            return
+        msg = json.dumps({"type": "pane.data", "pane_id": pane_id, "data": data_b64, "replay": replay})
+        for ws in list(subs):
+            try:
+                await ws.send_text(msg)
+            except Exception:
+                subs.discard(ws)
+
+    async def web_attach(self, ws, pane_id: str, rows: int = 0, cols: int = 0) -> bool:
+        await self.web_detach(ws)
+        if pane_id not in self.panes:
+            return False
+        subs = self.pane_subs.setdefault(pane_id, set())
+        first = not subs
+        subs.add(ws)
+        self.web_pane[ws] = pane_id
+        if rows and cols:
+            await self._to_runner(pane_id, {"type": "pane.resize", "rows": rows, "cols": cols})
+        if first:
+            return await self._to_runner(pane_id, {"type": "pane.subscribe"})
+        # Later viewers get the scrollback via a fresh subscribe cycle.
+        await self._to_runner(pane_id, {"type": "pane.unsubscribe"})
+        return await self._to_runner(pane_id, {"type": "pane.subscribe"})
+
+    async def web_detach(self, ws) -> None:
+        pane_id = self.web_pane.pop(ws, None)
+        if not pane_id:
+            return
+        subs = self.pane_subs.get(pane_id)
+        if subs:
+            subs.discard(ws)
+            if not subs:
+                self.pane_subs.pop(pane_id, None)
+                await self._to_runner(pane_id, {"type": "pane.unsubscribe"})
+
+    async def pane_input(self, pane_id: str, **kw) -> bool:
+        return await self._to_runner(pane_id, {"type": "pane.input", **kw})
+
+    async def pane_cmd(self, pane_id: str, cmd: str, **kw) -> bool:
+        return await self._to_runner(pane_id, {"type": f"pane.{cmd}", **kw})
+
+    async def runner_call(self, runner_id: str, msg: dict, timeout: float = 15) -> dict:
+        """Send a request to a runner and wait for its pane.reply."""
+        conn = self.runners.get(runner_id)
+        if not conn:
+            raise LookupError("runner is offline")
+        rid = uuid.uuid4().hex
+        fut: asyncio.Future = asyncio.get_event_loop().create_future()
+        self._replies[rid] = fut
+        try:
+            await conn.ws.send_text(json.dumps({"request_id": rid, **msg}))
+            res = await asyncio.wait_for(fut, timeout)
+        finally:
+            self._replies.pop(rid, None)
+        if res.get("error"):
+            raise RuntimeError(res["error"])
+        return res
+
+    def pane_reply(self, msg: dict) -> None:
+        fut = self._replies.get(msg.get("request_id", ""))
+        if fut and not fut.done():
+            fut.set_result(msg)
+
+    async def start_pane(self, agent: str, prompt: str = "", cwd: str = "", interactive: bool = True,
+                         resume: str = "", title: str = "", runner_id: str = "") -> dict:
+        """Open an agent in a new pane on a runner, outside the card queue."""
+        conn = self.runners.get(runner_id) if runner_id else None
+        if not conn:
+            cands = [r for r in self.runners.values() if agent in r.capabilities or agent == "shell"]
+            if not cands:
+                raise LookupError(f"no online runner has '{agent}'")
+            conn = cands[0]
+        res = await self.runner_call(conn.runner_id, {
+            "type": "pane.start", "agent": agent, "prompt": prompt, "cwd": cwd,
+            "interactive": interactive, "resume": resume, "title": title})
+        info = self._stamp(conn.runner_id, res["pane"])
+        self.panes[info["id"]] = info
+        await self.broadcast({"type": "pane.updated", "pane": info})
+        return info
 
     # -- workflows ---------------------------------------------------------
     def _step_card_fields(self, workflow: Dict[str, Any], step: Dict[str, Any],
