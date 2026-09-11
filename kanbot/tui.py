@@ -164,6 +164,9 @@ class App:
         self.dirty.set()
         while not self.quit:
             if self.dirty.wait(0.5):
+                # TUIs repaint in bursts of many small writes; wait for the burst
+                # to settle so we never paint a half-drawn (blank) frame.
+                time.sleep(0.03)
                 self.dirty.clear()
                 self.draw()
             self.handle_keys()
@@ -240,7 +243,6 @@ class App:
     def draw(self) -> None:
         scr = self.scr
         h, w = scr.getmaxyx()
-        scr.erase()
         self.draw_sidebar(h, w)
         for y in range(h - 1):
             try: scr.addstr(y, SIDEBAR_W, "│", curses.color_pair(self.pair(8, -1)))
@@ -249,12 +251,17 @@ class App:
         self.draw_status(h, w)
         if self.help:
             self.draw_help(h, w)
-        scr.refresh()
+        scr.noutrefresh()
+        curses.doupdate()
 
     def draw_sidebar(self, h: int, w: int) -> None:
         scr = self.scr
         dim = curses.color_pair(self.pair(8, -1))
         lime = curses.color_pair(self.pair(10, -1)) | curses.A_BOLD
+        blank = " " * SIDEBAR_W
+        for y in range(h - 1):
+            try: scr.addstr(y, 0, blank)
+            except curses.error: pass
         scr.addstr(0, 1, " KANBOT ", curses.color_pair(self.pair(0, 10)) | curses.A_BOLD)
         scr.addstr(0, 10, f"{len([a for a in self.agents if a['alive']])} live", dim)
         if not self.runner_ok:
@@ -298,6 +305,9 @@ class App:
         y0, x0, rows, cols = self.pane_geom()
         scr = self.scr
         if not self.attach:
+            for y in range(rows):
+                try: scr.addstr(y0 + y, x0, " " * cols)
+                except curses.error: pass
             hint = "select an agent · Enter to focus · n to start one" if self.agents else "press n to start an agent"
             try: scr.addstr(y0 + rows // 2, x0 + max(0, (cols - len(hint)) // 2), hint, curses.color_pair(self.pair(8, -1)))
             except curses.error: pass
@@ -395,7 +405,7 @@ class App:
         if not data:
             return
         if self.help:
-            self.help = False; self.dirty.set(); return
+            self.help = False; self.scr.clear(); self.dirty.set(); return
         if self.mode == "agent":
             if b"\x1d" in data:                 # Ctrl-]
                 before, _, _ = data.partition(b"\x1d")
