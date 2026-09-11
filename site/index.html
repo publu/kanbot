@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>KanBot — every coding agent, one screen</title>
-<meta name="description" content="KanBot owns a real terminal for every coding agent you run — Claude Code, Codex, Gemini and friends — with exact working/blocked/idle state, a web board you can type into from anywhere, and a task queue that drives them. Open source, pipx install kanbot.">
+<meta name="description" content="A tmux for coding agents. KanBot owns a real terminal for every coding agent you run — Claude Code, Codex, Gemini and friends — with exact working/blocked/idle state, a web board you can type into from anywhere, and a task queue that drives them. Open source, pipx install kanbot.">
 <meta property="og:title" content="KanBot — every coding agent, one screen">
 <meta property="og:description" content="Live terminals for all your coding agents. Know who's blocked. Answer from your phone. Leave them running.">
 <meta property="og:type" content="website">
@@ -118,9 +118,9 @@ footer .sp{margin-left:auto}footer a{color:var(--muted);text-decoration:none}foo
   <header class="hero">
     <div>
       <h1 class="r r2">Every agent.<br>One screen.<br><em>Leave them running.</em></h1>
-      <p class="lede r r3">KanBot owns a real terminal for every coding agent you run — Claude Code, Codex, Gemini, and anything with a CLI. <b>See who is working and who is stuck. Type into any of them from the board or your phone. Hand them a queue and walk away.</b></p>
+      <p class="lede r r3">A tmux for coding agents. KanBot owns a real terminal for every agent you run — Claude Code, Codex, Gemini, anything with a CLI — and shows them all in one terminal app or one web board. <b>See who is working and who is stuck. Type into any of them, from a terminal or your phone. Hand them a queue and walk away.</b></p>
       <div class="r r4">
-        <div class="install"><span class="d">$</span><span class="p" id="cmd">pipx install kanbot && kanbot up</span><button id="copy">copy</button></div>
+        <div class="install"><span class="d">$</span><span class="p" id="cmd">pipx install kanbot && kanbot</span><button id="copy">copy</button></div>
         <p class="alt">zero-install: <code>uvx kanbot</code> · MIT · Python 3.9+ · macOS &amp; Linux</p>
       </div>
       <div class="stats r r5">
@@ -146,7 +146,7 @@ footer .sp{margin-left:auto}footer a{color:var(--muted);text-decoration:none}foo
       <div class="cell"><span class="n">01</span><h3>Panes that outlive you</h3><p>Each agent gets a real pseudo-terminal held by the runner, not by your browser tab. Attach from the web board, from your phone, or with <code>kanbot attach</code>. <kbd>Ctrl-]</kbd> detaches; the agent keeps going.</p></div>
       <div class="cell"><span class="n">02</span><h3>Exact state, not spinners</h3><p>Claude Code reports <code>working</code> / <code>blocked</code> / <code>idle</code> through its own lifecycle hooks — no guessing. Every other CLI is classified from what is on its screen.</p></div>
       <div class="cell"><span class="n">03</span><h3>Blocked comes to you</h3><p>An agent waiting on a permission prompt jumps to the top of the board, flashes the tab, and pings you: a macOS banner by default, or any command you configure — Telegram, ntfy, Slack.</p></div>
-      <div class="cell"><span class="n">04</span><h3>Type from anywhere</h3><p>A real xterm in the browser, plus one-tap keys — <kbd>⏎</kbd> <kbd>y</kbd> <kbd>n</kbd> <kbd>esc</kbd> <kbd>^C</kbd> — so you can answer "Allow this command?" from a phone at dinner.</p></div>
+      <div class="cell"><span class="n">04</span><h3>Two front doors</h3><p><code>kanbot</code> opens a terminal app: agents on the left, the live agent on the right, <kbd>Enter</kbd> to type into it, <kbd>Ctrl-]</kbd> back. <code>kanbot up</code> opens the web board with one-tap <kbd>y</kbd> <kbd>n</kbd> <kbd>esc</kbd> keys — for answering "Allow this command?" from a phone at dinner.</p></div>
       <div class="cell"><span class="n">05</span><h3>An API your agents can drive</h3><p>The CLI and the local socket are one surface: <code>agent.start</code>, <code>agent.wait --until idle</code>, <code>agent.read</code>, <code>agent.prompt</code>. Scripts and other agents orchestrate agents without faking keystrokes.</p></div>
       <div class="cell"><span class="n">06</span><h3>Still a queue</h3><p>Cards, multi-step workflows, review gates, and a 10-hour <em>goal spree</em> with a real shell stop condition. All of it runs inside panes now, so unattended runs are watchable and interruptible live.</p></div>
     </div>
@@ -167,7 +167,8 @@ footer .sp{margin-left:auto}footer a{color:var(--muted);text-decoration:none}foo
       <tbody>
         <tr><td>Processes survive disconnect</td><td class="y">yes</td><td class="y">yes</td><td class="y">yes</td></tr>
         <tr><td>Agent state (working / blocked / idle)</td><td class="n">—</td><td class="y">yes</td><td class="y">yes, hook-exact for Claude Code</td></tr>
-        <tr><td>Web board, works on a phone</td><td class="n">—</td><td class="n">TUI only</td><td class="y">yes</td></tr>
+        <tr><td>Terminal app (sidebar + live agent)</td><td class="p">panes, no state</td><td class="y">yes</td><td class="y">yes</td></tr>
+        <tr><td>Web board, works on a phone</td><td class="n">—</td><td class="n">—</td><td class="y">yes</td></tr>
         <tr><td>Notified when an agent is blocked</td><td class="n">—</td><td class="p">in-app</td><td class="y">banner, or any command (Telegram, ntfy…)</td></tr>
         <tr><td>Socket API + CLI for scripts and agents</td><td class="p">send-keys</td><td class="y">yes</td><td class="y">yes</td></tr>
         <tr><td>Task queue, workflows, gates, long autonomous runs</td><td class="n">—</td><td class="n">—</td><td class="y">yes</td></tr>
@@ -183,8 +184,8 @@ footer .sp{margin-left:auto}footer a{color:var(--muted);text-decoration:none}foo
     <p class="eyebrow">Quickstart</p>
     <h2>Three commands. <em>Then go do something else.</em></h2>
     <div class="steps">
-      <div class="step"><div class="k">1</div><p>Install and start. The board opens at localhost:8787 with a runner attached.</p><pre>pipx install kanbot
-kanbot up</pre></div>
+      <div class="step"><div class="k">1</div><p>Install and open the terminal app. It starts the runner in the background on first run.</p><pre>pipx install kanbot
+kanbot</pre></div>
       <div class="step"><div class="k">2</div><p>Give an agent a task — from the board (press <kbd>n</kbd>) or the CLI. It opens as a live pane.</p><pre>kanbot agent start claude \
   "fix the flaky test" --cwd ~/repo</pre></div>
       <div class="step"><div class="k">3</div><p>Leave. Come back from any terminal or any browser; answer a prompt; leave again.</p><pre>kanbot ps
@@ -197,7 +198,8 @@ kanbot agent keys 3f2a y Enter</pre></div>
     <p class="eyebrow">CLI</p>
     <h2>Herdr-shaped commands, <em>so the muscle memory transfers.</em></h2>
     <div class="cli">
-      <div><code>kanbot up</code><span>server + local runner, opens the board</span></div>
+      <div><code>kanbot</code><span>the terminal app · Enter focus · Ctrl-] back · n new · q quit</span></div>
+      <div><code>kanbot up</code><span>server + local runner in the foreground, opens the web board</span></div>
       <div><code>kanbot runner --server http://host:8787</code><span>add another machine</span></div>
       <div><code>kanbot ps</code><span>every agent here: state · agent · cwd · title</span></div>
       <div><code>kanbot attach &lt;id&gt;</code><span>your terminal becomes that pane · Ctrl-] detaches</span></div>

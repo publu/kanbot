@@ -66,11 +66,14 @@ def detect_agents(cfg: Config) -> Dict[str, ResolvedAgent]:
             continue
         env = dict(spec.env)
         env.update(cfg.key_env_for(spec.name))  # inject the configured provider API key
+        tui_argv = list(spec.tui_argv)
+        if spec.name == "shell":                # the user's own shell, not bash
+            tui_argv = [os.environ.get("SHELL") or "bash", "-l"]
         found[spec.name] = ResolvedAgent(
             name=spec.name, label=spec.label, argv=list(argv), env=env,
             resume_argv=list(spec.resume_argv),
             safe_argv=list(spec.safe_argv), safe_resume_argv=list(spec.safe_resume_argv),
-            tui_argv=list(spec.tui_argv), tui_resume_argv=list(spec.tui_resume_argv),
+            tui_argv=tui_argv, tui_resume_argv=list(spec.tui_resume_argv),
             safe_tui_argv=list(spec.safe_tui_argv),
             safe_tui_resume_argv=list(spec.safe_tui_resume_argv),
             claude_hooks=spec.claude_hooks,

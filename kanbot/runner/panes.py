@@ -444,8 +444,8 @@ def keys_to_bytes(tokens: List[str]) -> bytes:
     for t in tokens:
         if t in KEYS:
             out += KEYS[t]
-        elif len(t) == 3 and t[:2] == "C-" and t[2].isalpha():
-            out += bytes([ord(t[2].lower()) - 96])
+        elif len(t) == 3 and t[:2] == "C-":
+            out += bytes([ord(t[2].upper()) & 0x1F])     # C-c → 0x03, C-] → 0x1d
         else:
             out += t.encode()
     return out

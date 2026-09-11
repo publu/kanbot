@@ -1,5 +1,6 @@
 """KanBot command-line interface.
 
+  kanbot               # the terminal app: agents on the left, live agent on the right
   kanbot up            # start server + a local runner together (best first run)
   kanbot server        # just the web server / API / board
   kanbot runner        # just the background runner (connects to a server)
@@ -317,6 +318,32 @@ def cmd_agent(args) -> int:
     return 1
 
 
+def cmd_tui(args) -> int:
+    """The terminal app. Starts the stack in the background first if needed."""
+    from .tui import ensure_stack, main as tui_main, runner_alive
+    if not runner_alive():
+        import socket as _s
+        port = args.port
+        with _s.socket() as probe:
+            probe.settimeout(0.3)
+            busy = probe.connect_ex(("127.0.0.1", port)) == 0
+        if busy:
+            try:
+                import httpx
+                ok = httpx.get(f"http://127.0.0.1:{port}/api/health", timeout=1).json().get("ok")
+            except Exception:  # noqa: BLE001
+                ok = False
+            if not ok:
+                print(f"port {port} is taken by something that isn't KanBot. "
+                      f"Free it, or run: kanbot --port {port + 1}", file=sys.stderr)
+                return 2
+        print("starting the KanBot server + runner in the background…")
+        if not ensure_stack(port):
+            print("could not start a runner (see ~/.kanbot/up.log)", file=sys.stderr)
+            return 2
+    return tui_main()
+
+
 def cmd_hook(args) -> int:
     """Claude Code lifecycle hook → runner state. Must be fast and never fail."""
     pane = os.environ.get("KANBOT_PANE_ID")
@@ -417,6 +444,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--server", default=None)
     sp.set_defaults(func=cmd_open)
 
+    sp = sub.add_parser("tui", help="the terminal app (what bare `kanbot` runs)")
+    sp.add_argument("--port", type=int, default=8787, help="server port if the stack must be started")
+    sp.set_defaults(func=cmd_tui)
+
     sp = sub.add_parser("ps", help="live agents on this machine")
     sp.add_argument("--json", action="store_true")
     sp.set_defaults(func=cmd_ps)
@@ -469,11 +500,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     parser = build_parser()
-    # Bare `kanbot` (or `uvx kanbot`) just launches the one-command demo — that's
-    # the intended first-run experience. Use a subcommand for anything else.
+    # Bare `kanbot` (or `uvx kanbot`) opens the terminal app, starting the
+    # server + runner in the background if they aren't up. `kanbot --port N` too.
     raw = sys.argv[1:] if argv is None else argv
-    if not raw:
-        raw = ["up"]
+    if not raw or raw[0] == "--port":
+        raw = ["tui"] + raw
     args = parser.parse_args(raw)
     if not getattr(args, "cmd", None):
         parser.print_help()

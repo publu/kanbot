@@ -2,7 +2,7 @@
 
 **One screen for every coding agent you run — live terminals you can type into from anywhere, exact working / blocked / idle state, and a task queue that drives them.**
 
-**Run instantly:** `uvx kanbot` (or `pipx install kanbot && kanbot up`) · **Live demo:** https://kanbot-gamma.vercel.app
+**Run instantly:** `pipx install kanbot && kanbot` (or `uvx kanbot`) · **Site:** https://kanbot-gamma.vercel.app
 
 You run a lot of terminal coding agents (Claude Code, Codex, Gemini, …). KanBot's
 runner *owns a real terminal for each one*, so the agents keep running when you
@@ -63,9 +63,36 @@ kanbot up                             # server + local runner, board at :8787
 > Don't use bare `pip install` on macOS Homebrew Python — it errors with
 > `externally-managed-environment` (PEP 668). `pipx`/`uv` handle the env for you.
 
-Press **+** (or `n`), give an agent a task, and it opens as a live pane you can
-watch and type into. Your recent Claude/Codex sessions from disk show under
-**Pick up a session** — one click resumes any of them in a pane.
+Bare `kanbot` opens **the terminal app** (below) and starts the server + runner
+in the background if they aren't up. `kanbot up` runs them in the foreground
+and opens the **web board** at http://127.0.0.1:8787 instead — same agents,
+same panes, pick whichever screen you're in front of.
+
+## The terminal app — a tmux for agents
+
+```
+ KANBOT  3 live          │ ❯ Reply with exactly the single word: pong.
+                         │
+ NEEDS YOU               │ ⏺ pong
+ ◆ migrate to app router │
+   codex · web · 3m      │ ❯ █
+ AGENTS                  │
+ ● fix the flaky test    │
+   claude · api · 14m    │
+ ○ write the runbook     │
+   gemini · infra · 41m  │
+ j/k move · Enter focus · n new · x kill · ? help · q quit              Ctrl-] sidebar
+```
+
+Left: every agent on this machine, blocked ones first. Right: the selected
+agent's real terminal, live, with colours. Press **Enter** and you are typing
+into the agent; **Ctrl-]** brings you back to the sidebar. **n** starts a new
+agent (agent · prompt · cwd), **x** kills one, **q** quits — the agents keep
+running, because the runner owns them, not the app. Open it again from any
+terminal, or on another machine with `ssh box kanbot`.
+
+Everything in the app is also a command, so scripts and other agents can do
+what you do:
 
 ## Live terminals — the Herdr part
 
@@ -74,6 +101,7 @@ The runner owns a PTY per agent. Panes outlive every client: close the browser,
 scrollback replays and you are back where it left off.
 
 ```bash
+kanbot                                        # the terminal app
 kanbot ps                                     # every agent on this machine, with state
 kanbot agent start claude "fix the flaky test" --cwd ~/repo   # open a live Claude Code TUI
 kanbot agent start codex --headless "run the suite" --cwd ~/repo
@@ -300,7 +328,8 @@ a **custom command** (e.g. `pytest -q`).
 ## CLI
 
 ```
-kanbot up         server + local runner (best first run)
+kanbot            the terminal app (starts the stack in the background if needed)
+kanbot up         server + local runner in the foreground, opens the web board
 kanbot server     board / API only
 kanbot runner     background runner only  (--server, --name, --concurrency)
 kanbot ps         live agents on this machine (state · agent · cwd · title)
