@@ -18,7 +18,7 @@ let term = null, fit = null;
 function ensureTerm(){
   if(term) return term;
   term = new window.Terminal({cursorBlink:true, fontFamily:"'DM Mono', Menlo, monospace", fontSize:12.5, lineHeight:1.25,
-    theme:{background:'#10120f', foreground:'#d9ddd2', cursor:'#c9f35b', selectionBackground:'#3a4d1a'}, scrollback:5000, allowProposedApi:true});
+    theme:{background:'#0a0c09', foreground:'#d9ddd2', cursor:'#c9f35b', selectionBackground:'#3a4d1a', black:'#0a0c09', brightBlack:'#5d635a'}, scrollback:5000, allowProposedApi:true});
   fit = new window.FitAddon.FitAddon(); term.loadAddon(fit);
   const host=$('#terminal'); host.innerHTML=''; term.open(host); fit.fit();
   term.onData(d => { if(state.attached) send({type:'pane.input', pane_id:state.attached, data:b64.enc(d)}) });
@@ -59,22 +59,29 @@ function fillAgentSelect(){
   if([...sel.options].some(o=>o.value===cur)) sel.value=cur;
 }
 async function loadPanes(){ try{ state.panes=(await api('/api/panes')).panes }catch{ state.panes=[] } render(); updateTitle() }
+const isPhone=()=>matchMedia('(max-width:820px)').matches;
 async function loadExternal(){ try{ state.sessions=(await api('/api/agent-sessions')).sessions.slice(0,14) }catch{} render() }
-function updateTitle(){ const n=state.panes.filter(p=>p.state==='blocked').length; document.title=(n?`◆ ${n} need${n>1?'':'s'} you · `:'')+'KanBot' }
+function updateTitle(){ const live=state.panes.filter(p=>p.alive), n=live.filter(p=>p.state==='blocked').length, w=live.filter(p=>p.state==='working').length;
+  document.title=(n?`◆ ${n} need${n>1?'':'s'} you · `:'')+'KanBot';
+  const s=$('#summary'); if(!live.length) s.innerHTML='<em>no agents running</em>';
+  else s.innerHTML=`${live.length} agent${live.length>1?'s':''} <em>· ${w} working${n?` · <span class="b">${n} need${n>1?'':'s'} you</span>`:''}</em>` }
+function setView(v){ document.body.dataset.view=v; document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('on', b.dataset.view===v)); if(v==='term' && term) setTimeout(()=>{ try{fit.fit()}catch{} }, 50) }
+$('#tabs').onclick=e=>{ const b=e.target.closest('button'); if(b) setView(b.dataset.view) };
+setView('rail');
 
 // ---- rail -------------------------------------------------------------------
 function render(){
   const lanes=$('#lanes'); lanes.innerHTML='';
   const live=state.panes.filter(p=>p.alive), blocked=live.filter(p=>p.state==='blocked'), rest=live.filter(p=>p.state!=='blocked');
   const finished=state.panes.filter(p=>!p.alive).sort((a,b)=>(b.ended_at||0)-(a.ended_at||0)).slice(0,6);
-  const lane=(name, nodes, extra)=>{ if(!nodes.length && !extra) return; const l=document.createElement('section'); l.className='lane';
+  const lane=(name, nodes, extra)=>{ if(!nodes.length && !extra) return; const l=document.createElement('section'); l.className='lane'+(name==='Needs you'?' urgent':'');
     l.innerHTML=`<div class="lane-title"><span>${name}</span><b>${nodes.length}</b></div>`; nodes.forEach(n=>l.append(n)); if(extra) l.append(extra); lanes.append(l) };
-  lane('NEEDS YOU', blocked.map(paneNode));
-  lane('AGENTS', rest.map(paneNode), !rest.length && !blocked.length ? hintNode(state.runnerOnline ? 'No agents running. Press n, or: kanbot agent start claude "…"' : 'Start a runner: kanbot up') : null);
+  lane('Needs you', blocked.map(paneNode));
+  lane('Agents', rest.map(paneNode), !rest.length && !blocked.length ? hintNode(state.runnerOnline ? 'No agents running. Press n, or: kanbot agent start claude "…"' : 'Start a runner: kanbot up') : null);
   const queued=state.cards.filter(c=>['queued','idle'].includes(c.status) && !c.resume_of || c.status==='review');
-  lane('QUEUE', queued.map(cardNode));
-  lane('FINISHED', [...finished.map(paneNode), ...state.cards.filter(c=>['done','failed','cancelled'].includes(c.status) && !finished.some(p=>p.card_id===c.id)).sort((a,b)=>b.updated_at-a.updated_at).slice(0,4).map(cardNode)]);
-  lane('PICK UP A SESSION', state.sessions.filter(s=>!live.some(p=>p.session_id===s.session_id)).slice(0,8).map(sessionNode));
+  lane('Queue', queued.map(cardNode));
+  lane('Finished', [...finished.map(paneNode), ...state.cards.filter(c=>['done','failed','cancelled'].includes(c.status) && !finished.some(p=>p.card_id===c.id)).sort((a,b)=>b.updated_at-a.updated_at).slice(0,4).map(cardNode)]);
+  lane('Pick up a session', state.sessions.filter(s=>!live.some(p=>p.session_id===s.session_id)).slice(0,8).map(sessionNode));
 }
 function hintNode(t){ const d=document.createElement('div'); d.className='rail-hint'; d.textContent=t; return d }
 function paneNode(p){
@@ -114,7 +121,7 @@ function head(title, path, pane){
     $('#attachHint').onclick=()=>{ navigator.clipboard?.writeText(`kanbot attach ${pane.id}`); toast(`copied: kanbot attach ${pane.id}`) } }
 }
 function selectPane(p){
-  state.selPane=p.id; state.selected=p.card_id||null; state.preview=null; render(); history.replaceState(null,'',`#pane=${p.id}`);
+  state.selPane=p.id; state.selected=p.card_id||null; state.preview=null; render(); history.replaceState(null,'',`#pane=${p.id}`); if(isPhone()) setView('term');
   const card=state.cards.find(c=>c.id===p.card_id);
   head(card?card.title:p.title, `${p.cwd||''}${p.runner_name?'  ·  '+p.runner_name:''}  ·  ${p.id}`, p);
   attach(p.id);
@@ -122,7 +129,7 @@ function selectPane(p){
 async function selectCard(c){
   const pane=state.panes.find(p=>p.card_id===c.id && p.alive) || state.panes.filter(p=>p.card_id===c.id).sort((a,b)=>b.started_at-a.started_at)[0];
   if(pane) return selectPane(pane);
-  state.selected=c.id; state.selPane=null; state.preview=null; detach(); render();
+  state.selected=c.id; state.selPane=null; state.preview=null; detach(); render(); if(isPhone()) setView('term');
   head(c.title, c.cwd||state.board.repo_path||'default working directory', null);
   const runs=(await api(`/api/sessions?card_id=${c.id}`)).sessions;
   $('#stopBtn').classList.toggle('hidden', !['running','queued'].includes(c.status));
@@ -131,7 +138,7 @@ async function selectCard(c){
   const x=await api(`/api/sessions/${runs[0].id}`); state.activeSession=runs[0].id; state.events=x.events; renderLog();
 }
 function previewSession(s){
-  state.selected=null; state.selPane=null; state.preview=s; detach(); render();
+  state.selected=null; state.selPane=null; state.preview=s; detach(); render(); if(isPhone()) setView('term');
   head(s.name||'session', s.cwd||'no working directory', null);
   const btn=$('#resumeBtn'); btn.classList.remove('hidden'); btn.textContent=`Open ${s.agent} here →`; btn.onclick=()=>resumeSession(s);
   state.activeSession=null; state.events=(s.tail||[]).map((m,i)=>({id:i, stream:m.role==='assistant'?'stdout':'system', text:`${m.role==='assistant'?s.agent:'❯'}  ${m.text||''}`}));

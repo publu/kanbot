@@ -1,8 +1,12 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <title>KanBot — agent console</title>
+  <meta name="theme-color" content="#0e100d">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23171815'/><text x='50' y='72' font-size='60' font-family='monospace' font-weight='800' text-anchor='middle' fill='%23c9f35b'>K</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css">
   <link rel="stylesheet" href="/styles.css">
 </head>
@@ -10,10 +14,12 @@
   <div class="shell">
     <header>
       <a class="brand" href="#"><span class="logo">K</span><span>KANBOT</span></a>
-      <div class="hint" id="hint">every agent, one screen · <kbd>n</kbd> new · <kbd>j</kbd>/<kbd>k</kbd> switch</div>
+      <div class="summary" id="summary"><em>—</em></div>
+      <div class="hint" id="hint"><kbd>n</kbd> new · <kbd>j</kbd><kbd>k</kbd> switch</div>
+      <div class="tabs" id="tabs"><button data-view="rail" class="on">Agents</button><button data-view="term">Terminal</button></div>
       <div class="connection"><i id="dot"></i><span id="connection">connecting</span></div>
       <div class="runner" id="runner">No runner</div>
-      <button class="square" id="composeBtn" title="New task (n)">+</button>
+      <button class="square" id="composeBtn" title="New agent (n)">+</button>
     </header>
     <main>
       <section class="rail">
@@ -21,7 +27,6 @@
       </section>
       <section class="workspace">
         <div class="terminal-head">
-          <div class="traffic"><i></i><i></i><i></i></div>
           <div class="terminal-title"><b id="termTitle">Nothing selected</b><span id="termPath">Pick an agent on the left, or press n</span></div>
           <span class="state-badge hidden" id="stateBadge"></span>
           <div class="keys hidden" id="keys">
@@ -35,12 +40,12 @@
           </div>
           <button class="resume hidden" id="resumeBtn">Open here →</button>
           <button class="stop hidden" id="stopBtn">Stop</button>
-          <button class="ghost hidden" id="attachHint" title="copy the attach command">⌘ attach</button>
+          <button class="ghost hidden" id="attachHint" title="copy the attach command">attach</button>
         </div>
         <div class="terminal" id="terminal"><div class="empty"><span>❯_</span><h2>Nothing selected</h2><p>Every agent on every runner shows up on the left. Click one to watch it live and type into it.</p></div></div>
         <pre class="logview hidden" id="logview"></pre>
         <form class="typebar" id="typebar">
-          <input id="typeInput" placeholder="Type to the agent… (Enter sends)" autocomplete="off" disabled>
+          <input id="typeInput" placeholder="Type to the agent… Enter sends" autocomplete="off" disabled>
           <button id="typeSend" disabled>Send</button>
         </form>
       </section>
@@ -48,15 +53,15 @@
   </div>
   <dialog id="composer">
     <form id="taskForm">
-      <div class="modal-head"><div><p class="eyebrow">NEW AGENT</p><h2>Give an agent a task</h2></div><button type="button" class="close" id="closeComposer">×</button></div>
+      <div class="modal-head"><div><p class="eyebrow">NEW AGENT</p><h2>Give an agent <em>a task.</em></h2></div><button type="button" class="close" id="closeComposer" aria-label="close">×</button></div>
       <label>Task name<input id="taskTitle" required placeholder="Refactor the authentication flow"></label>
-      <label>Instructions<textarea id="taskPrompt" rows="7" placeholder="Describe the outcome, constraints, and how to verify the work…"></textarea></label>
+      <label>Instructions<textarea id="taskPrompt" rows="6" placeholder="Describe the outcome, constraints, and how to verify the work…"></textarea></label>
       <div class="two">
         <label>Working directory<input id="taskCwd" placeholder="/path/to/repository"></label>
         <label>Agent<select id="taskAgent"></select></label>
       </div>
-      <div class="plan-row"><label class="switch"><input id="interactive" type="checkbox" checked><span></span></label><div><b>⌨ Live terminal</b><p>Open the agent's own TUI in a pane you can watch and type into, here or from <code>kanbot attach</code>. Off = headless print mode with logs.</p></div></div>
-      <div class="plan-row"><label class="switch"><input id="isolate" type="checkbox"><span></span></label><div><b>⑃ Isolate in a git worktree</b><p>Run on its own <code>deckhand/*</code> branch in a throwaway checkout. Merge it back when you're happy.</p></div></div>
+      <div class="plan-row"><label class="switch"><input id="interactive" type="checkbox" checked><span></span></label><div><b>Live terminal</b><p>Open the agent's own TUI in a pane you can watch and type into, here or with <code>kanbot attach</code>. Off = headless print mode with logs.</p></div></div>
+      <div class="plan-row"><label class="switch"><input id="isolate" type="checkbox"><span></span></label><div><b>Isolate in a git worktree</b><p>Run on its own <code>deckhand/*</code> branch in a throwaway checkout. Merge it back when you're happy.</p></div></div>
       <div class="plan-row" id="planRow"><label class="switch"><input id="planMode" type="checkbox"><span></span></label><div><b>Plan before execution</b><p>Headless only. A read-only plan first; the queue pauses until you approve it.</p></div></div>
       <div class="plan-row sub hidden" id="autoRow"><label class="switch"><input id="planAuto" type="checkbox"><span></span></label><div><b>Auto-approve &amp; run</b><p>Skip the pause — run the plan the moment it's written.</p></div></div>
       <div class="modal-actions"><button type="button" class="secondary" id="cancelComposer">Cancel</button><button class="primary">Start <span>⌘↵</span></button></div>
