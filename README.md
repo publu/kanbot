@@ -1,5 +1,9 @@
 # KanBot
 
+**Swarm connection:** `kanbot swarm connect` connects this runner directly to
+Truffle, with named Claude/Codex/Kimi agents, peer delegation, parallel execution
+and durable replies. See [swarm setup and commands](docs/swarm.md).
+
 **One screen for every coding agent you run — live terminals you can type into from anywhere, exact working / blocked / idle state, and a task queue that drives them.**
 
 **Run instantly:** `pipx install kanbot && kanbot` (or `uvx kanbot`) · **Site:** https://kanbot-gamma.vercel.app

@@ -14,7 +14,7 @@ keywords = ["kanban", "agents", "claude", "codex", "automation", "cli"]
 dependencies = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
-    "websockets>=12.0",
+    "websockets>=14.0",
     "httpx>=0.27",
     "rich>=13.0",
     "pyte>=0.8",
@@ -32,4 +32,4 @@ Demo = "https://kanbot-gamma.vercel.app"
 packages = ["kanbot"]
 # Static UI ships automatically as it lives inside the kanbot package; no
 # force-include needed (and adding one double-adds the files and breaks the build).
-artifacts = ["kanbot/server/static/**"]
+artifacts = ["kanbot/server/static/**", "kanbot/swarm_runtime/**"]

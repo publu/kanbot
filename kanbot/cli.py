@@ -397,6 +397,8 @@ def build_parser() -> argparse.ArgumentParser:
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--version", action="version", version=f"kanbot {__version__}")
     sub = p.add_subparsers(dest="cmd")
+    from .swarm_cli import add_parser as add_swarm_parser
+    add_swarm_parser(sub)
 
     sp = sub.add_parser("up", help="start server + local runner (recommended first run)")
     sp.add_argument("--host", default="127.0.0.1")

@@ -40,13 +40,35 @@ def sock_path() -> str:
 
 
 class ApiServer:
-    def __init__(self, panes: PaneManager, starter: Optional[Starter] = None, path: str = ""):
+    def __init__(self, panes: PaneManager, starter: Optional[Starter] = None, path: str = "", extension=None):
         self.panes = panes
         self.starter = starter
         self.path = path or sock_path()
         self._server: Optional[asyncio.AbstractServer] = None
+        self.extension = extension
+        self._lock = None
 
     async def start(self) -> None:
+        # Never unlink a live runner's socket. Hold the lock for the complete
+        # server lifetime, including configuration and swarm ownership.
+        import fcntl
+        self._lock = open(self.path + ".lock", "a")
+        try:
+            fcntl.flock(self._lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            self._lock.close()
+            self._lock = None
+            raise RuntimeError("A Kanbot runner already owns this socket")
+        try:
+            _, writer = await asyncio.open_unix_connection(self.path)
+        except (FileNotFoundError, ConnectionRefusedError):
+            pass
+        else:
+            writer.close()
+            await writer.wait_closed()
+            self._lock.close()
+            self._lock = None
+            raise RuntimeError("A Kanbot runner already owns this socket")
         try:
             os.unlink(self.path)
         except FileNotFoundError:
@@ -58,10 +80,13 @@ class ApiServer:
         if self._server:
             self._server.close()
             await self._server.wait_closed()
-        try:
-            os.unlink(self.path)
-        except OSError:
-            pass
+            try:
+                os.unlink(self.path)
+            except OSError:
+                pass
+        if self._lock:
+            self._lock.close()
+            self._lock = None
 
     # -- one client -----------------------------------------------------------
     async def _client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -99,8 +124,10 @@ class ApiServer:
 
     async def handle(self, method: str, p: dict) -> dict:
         pm = self.panes
+        if method.startswith("swarm.") and self.extension:
+            return await self.extension(method, p)
         if method == "ping":
-            return {"pong": True, "panes": len(pm.panes)}
+            return {"pong": True, "panes": len(pm.panes), "pid": os.getpid()}
         if method == "agent.list":
             return {"agents": pm.list()}
         if method == "pane.report_state":

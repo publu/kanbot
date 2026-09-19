@@ -56,6 +56,7 @@ class Runner:
         self.panes: Optional[PaneManager] = None      # created inside the event loop
         self.api: Optional[ApiServer] = None
         self._server_subs: Dict[str, object] = {}      # pane_id -> subscriber callback
+        self.swarm = None
 
     def log(self, *a):
         if self.verbose:
@@ -76,6 +77,19 @@ class Runner:
                 pass
 
     async def run_forever(self) -> None:
+        try:
+            await self._run_forever()
+        finally:
+            if self.swarm:
+                await self.swarm.stop()
+            if self.panes:
+                for pane in list(self.panes.panes.values()):
+                    if pane.alive:
+                        await pane.terminate()
+            if self.api:
+                await self.api.stop()
+
+    async def _run_forever(self) -> None:
         if not self.agents:
             self.log("WARNING: no CLI agents detected on PATH. The runner will "
                      "advertise nothing to run. Install one of: claude, codex, "
@@ -126,12 +140,21 @@ class Runner:
         from .api import sock_path
         self.panes = PaneManager(on_line=self._pane_line, on_state=self._pane_state,
                                  sock_path=sock_path())
-        self.api = ApiServer(self.panes, starter=self._api_start)
+        from ..swarm import Swarm
+        self.swarm = Swarm(self.panes)
+        self.api = ApiServer(self.panes, starter=self._api_start, extension=self.swarm.handle)
         try:
             await self.api.start()
             self.log(f"socket API at {self.api.path}  (kanbot agent list · kanbot attach)")
         except OSError as e:
             self.log(f"socket API unavailable: {e}")
+            raise
+        if self.swarm.store.config and not self.swarm.store.get("config", "paused", True):
+            try:
+                await self.swarm.start()
+            except Exception as error:
+                self.swarm.last_error = str(error)
+                self.log("swarm connection unavailable; use kanbot swarm start after resolving it")
 
     async def _send_panes(self) -> None:
         if self.panes:
@@ -175,7 +198,7 @@ class Runner:
                    command: str = "") -> Pane:
         """Open an agent in a new pane right now (no card, no queue)."""
         assert self.panes is not None
-        agent = self.agents.get(agent_name) or self.agents.get("shell")
+        agent = self.agents.get(agent_name)
         if not agent:
             raise LookupError(f"agent '{agent_name}' is not available on this runner")
         argv = build_argv(agent, prompt, resume_of, auto_approve=self.cfg.auto_approve,
