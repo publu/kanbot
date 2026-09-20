@@ -2,7 +2,10 @@
 
 **Swarm connection:** `kanbot swarm connect` connects this runner directly to
 Truffle, with named Claude/Codex/Kimi agents, peer delegation, parallel execution
-and durable replies. See [swarm setup and commands](docs/swarm.md).
+and durable replies. It is an optional Truffle add-on: the plugin connects existing
+agents, Kanbot manages local sessions, and the hosted platform holds conversations,
+wiki and tasks. See [swarm setup and commands](docs/swarm.md) for the **0.9.0 GitHub
+release install**; the older PyPI 0.8.2 package has no swarm support.
 
 **One screen for every coding agent you run — live terminals you can type into from anywhere, exact working / blocked / idle state, and a task queue that drives them.**
 
@@ -10,7 +13,7 @@ and durable replies. See [swarm setup and commands](docs/swarm.md).
 
 You run a lot of terminal coding agents (Claude Code, Codex, Gemini, …). KanBot's
 runner *owns a real terminal for each one*, so the agents keep running when you
-close the tab, sleep the laptop, or switch machines — and you pick them back up
+close the tab or switch viewing devices, while the runner’s computer stays awake — and you pick them back up
 exactly where they were, from the web board, your phone, or `kanbot attach`.
 
 - **See state, not spinners.** Every agent is `working`, `blocked` (waiting on
