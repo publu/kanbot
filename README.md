@@ -101,7 +101,7 @@ terminal, or on another machine with `ssh box kanbot`.
 Everything in the app is also a command, so scripts and other agents can do
 what you do:
 
-## Live terminals — the Herdr part
+## Live terminals
 
 The runner owns a PTY per agent. Panes outlive every client: close the browser,
 `kanbot attach` from another terminal, or open the board from your phone — the
