@@ -56,7 +56,7 @@ Easiest (isolated, sidesteps Homebrew's PEP 668 `externally-managed` error):
 pipx install kanbot && kanbot up     # or zero-install:  uvx kanbot up
 ```
 
-From source (until it's on PyPI):
+From source:
 
 ```bash
 python3 -m venv .venv && . .venv/bin/activate

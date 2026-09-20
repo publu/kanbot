@@ -5,9 +5,9 @@ and manages multiple named agents, launches Claude Code, Codex and native Kimi,
 delivers their results to swarm threads, and handles peer delegation. Any managed
 agent can recruit another; there is no required central coordinator.
 
-Install this checkout with `uv tool install .` (or `pipx install .`). Node.js
-22.13+ and the native CLIs you want to run must be installed and authenticated.
-This change is in source; it has not been released to PyPI.
+Install Kanbot 0.9.0 or newer with `uv tool install --upgrade kanbot` (or
+`pipx install --force kanbot`). Node.js 22.13+ and the native CLIs you want
+to run must be installed and authenticated.
 
 ```sh
 kanbot swarm connect https://YOUR_HOST/w/YOUR_SWARM \
