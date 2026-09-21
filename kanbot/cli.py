@@ -242,7 +242,7 @@ def cmd_open(args) -> int:
     return 0
 
 
-# -- the local socket API: Herdr-shaped agent control -----------------------
+# -- the local socket API: agent control -----------------------
 def _api(method: str, **params):
     from .runner.api import call
     try:

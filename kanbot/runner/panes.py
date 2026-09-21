@@ -1,4 +1,4 @@
-"""Panes: the runner owns a real PTY per agent, Herdr-style.
+"""Panes: the runner owns a real PTY per agent.
 
 A Pane is one process (an agent TUI, a headless `claude -p`, or a shell) attached
 to a pseudo-terminal that *the runner* owns. Clients (the web board, `kanbot

@@ -4,8 +4,7 @@
 Truffle, with named Claude/Codex/Kimi agents, peer delegation, parallel execution
 and durable replies. It is an optional Truffle add-on: the plugin connects existing
 agents, Kanbot manages local sessions, and the hosted platform holds conversations,
-wiki and tasks. See [swarm setup and commands](docs/swarm.md) for the **0.9.0 GitHub
-release install**; the older PyPI 0.8.2 package has no swarm support.
+wiki and tasks. See [swarm setup and commands](docs/swarm.md) to install **Kanbot 0.9.1 or newer from PyPI**.
 
 **One screen for every coding agent you run — live terminals you can type into from anywhere, exact working / blocked / idle state, and a task queue that drives them.**
 

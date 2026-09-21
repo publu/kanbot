@@ -163,21 +163,21 @@ footer .sp{margin-left:auto}footer a{color:var(--muted);text-decoration:none}foo
     <h2>tmux keeps processes alive. <em>KanBot knows what they're doing.</em></h2>
     <p class="sub">Terminal multiplexers solve persistence. Agent multiplexers add state. KanBot adds the part that lets you leave: a queue, a phone-friendly board, and a way to be told when an agent needs you.</p>
     <table>
-      <thead><tr><th></th><th>tmux</th><th>Herdr</th><th>KanBot</th></tr></thead>
+      <thead><tr><th></th><th>tmux</th><th>KanBot</th></tr></thead>
       <tbody>
-        <tr><td>Processes survive disconnect</td><td class="y">yes</td><td class="y">yes</td><td class="y">yes</td></tr>
-        <tr><td>Agent state (working / blocked / idle)</td><td class="n">—</td><td class="y">yes</td><td class="y">yes, hook-exact for Claude Code</td></tr>
-        <tr><td>Terminal app (sidebar + live agent)</td><td class="p">panes, no state</td><td class="y">yes</td><td class="y">yes</td></tr>
-        <tr><td>Web board, works on a phone</td><td class="n">—</td><td class="n">—</td><td class="y">yes</td></tr>
-        <tr><td>Notified when an agent is blocked</td><td class="n">—</td><td class="p">in-app</td><td class="y">banner, or any command (Telegram, ntfy…)</td></tr>
-        <tr><td>Socket API + CLI for scripts and agents</td><td class="p">send-keys</td><td class="y">yes</td><td class="y">yes</td></tr>
-        <tr><td>Task queue, workflows, gates, long autonomous runs</td><td class="n">—</td><td class="n">—</td><td class="y">yes</td></tr>
-        <tr><td>Resume yesterday's session from disk</td><td class="n">—</td><td class="y">yes</td><td class="y">yes</td></tr>
-        <tr><td>Split panes and layouts in one terminal</td><td class="y">yes</td><td class="y">yes</td><td class="n">not yet — the board is the layout</td></tr>
-        <tr><td>Install</td><td class="c">brew / apt</td><td class="c">curl | sh (Rust)</td><td class="c">pipx install kanbot (Python)</td></tr>
+        <tr><td>Processes survive disconnect</td><td class="y">yes</td><td class="y">yes</td></tr>
+        <tr><td>Agent state (working / blocked / idle)</td><td class="n">—</td><td class="y">yes, hook-exact for Claude Code</td></tr>
+        <tr><td>Terminal app (sidebar + live agent)</td><td class="p">panes, no state</td><td class="y">yes</td></tr>
+        <tr><td>Web board, works on a phone</td><td class="n">—</td><td class="y">yes</td></tr>
+        <tr><td>Notified when an agent is blocked</td><td class="n">—</td><td class="y">banner, or any command (Telegram, ntfy…)</td></tr>
+        <tr><td>Socket API + CLI for scripts and agents</td><td class="p">send-keys</td><td class="y">yes</td></tr>
+        <tr><td>Task queue, workflows, gates, long autonomous runs</td><td class="n">—</td><td class="y">yes</td></tr>
+        <tr><td>Resume yesterday's session from disk</td><td class="n">—</td><td class="y">yes</td></tr>
+        <tr><td>Split panes and layouts in one terminal</td><td class="y">yes</td><td class="n">not yet — the board is the layout</td></tr>
+        <tr><td>Install</td><td class="c">brew / apt</td><td class="c">pipx install kanbot (Python)</td></tr>
       </tbody>
     </table>
-    <p class="note">Honest gaps: KanBot has no native TUI and no pane splitting. If you live in one terminal window, Herdr is excellent. If you leave agents running and check on them from elsewhere, KanBot is built for that.</p>
+    <p class="note">Use the terminal app or web board to switch between agents. Splitting panes inside one terminal is not supported.</p>
   </section>
 
   <section id="start">
@@ -196,7 +196,7 @@ kanbot agent keys 3f2a y Enter</pre></div>
 
   <section id="cli">
     <p class="eyebrow">CLI</p>
-    <h2>Herdr-shaped commands, <em>so the muscle memory transfers.</em></h2>
+    <h2>Control your agents <em>from the command line.</em></h2>
     <div class="cli">
       <div><code>kanbot</code><span>the terminal app · Enter focus · Ctrl-] back · n new · q quit</span></div>
       <div><code>kanbot up</code><span>server + local runner in the foreground, opens the web board</span></div>
