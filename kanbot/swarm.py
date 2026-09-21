@@ -8,12 +8,15 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import json
 import os
 import re
 import shutil
 import sqlite3
 import subprocess
+import sys
+import tarfile
 import time
 import uuid
 from pathlib import Path
@@ -21,10 +24,12 @@ from urllib.parse import urlparse, parse_qs
 
 import httpx
 
+from . import __version__
 from .config import config_dir, Config
 
 RUNTIMES = {"claude", "codex", "kimi"}
 TERMINAL = {"done", "blocked", "uncertain", "cancelled"}
+REMOVABLE = {"done", "cancelled"}  # gc keeps blocked/uncertain worktrees for inspection
 
 
 def stable(*parts):
@@ -80,9 +85,10 @@ class Store:
 
 
 class SwarmHTTPError(RuntimeError):
-    def __init__(self, status):
+    def __init__(self, status, detail=""):
         self.status = status
-        super().__init__(f"Swarm API HTTP {status}")
+        self.detail = " ".join(detail[:200].split())
+        super().__init__(f"Swarm API HTTP {status}" + (": " + self.detail if self.detail else ""))
 
 
 class SwarmAPI:
@@ -100,7 +106,7 @@ class SwarmAPI:
                                              self.config["api"] + path,
                                              headers=headers, **({"json": body} if body is not None else {}))
         if response.status_code >= 300:
-            raise SwarmHTTPError(response.status_code)
+            raise SwarmHTTPError(response.status_code, response.text)
         return response.json()
 
     async def close(self):
@@ -109,15 +115,19 @@ class SwarmAPI:
 
 def parse_turn(text):
     """Plain final answers work too. Structured delegations never execute code."""
-    clean = text.strip()
-    if clean.startswith("```json") and clean.endswith("```"):
-        clean = clean[7:-3].strip()
-    try:
-        data = json.loads(clean)
-    except ValueError:
-        return {"message": text, "delegate": []}
-    if not isinstance(data, dict) or not ("message" in data or "delegate" in data):
-        return {"message": text, "delegate": []}
+    # Models add a lead sentence or a fence around the turn object. Take the
+    # first JSON object that is a turn; never look inside another object.
+    decoder, data, end = json.JSONDecoder(), None, 0
+    while data is None:
+        start = text.find("{", end)
+        if start == -1:
+            return {"message": text, "delegate": []}
+        try:
+            found, end = decoder.raw_decode(text, start)
+        except ValueError:
+            found, end = None, start + 1
+        if isinstance(found, dict) and ("message" in found or "delegate" in found):
+            data = found
     if not isinstance(data.get("message", ""), str):
         raise ValueError("Turn message must be text")
     delegated = data.get("delegate", [])
@@ -126,13 +136,122 @@ def parse_turn(text):
     for item in delegated:
         if not isinstance(item, dict) or not isinstance(item.get("request"), str) or not item["request"].strip():
             raise ValueError("Each delegation needs a request")
-        if len(item["request"]) > 6000:
-            raise ValueError("Delegation request exceeds 6000 characters")
+        if len(item["request"]) > 60000:
+            raise ValueError("Delegation request exceeds 60000 characters")
         if not item.get("to") and item.get("runtime") not in RUNTIMES:
             raise ValueError("Specify a registered peer or claude/codex/kimi runtime")
         if any(not isinstance(item[k], str) for k in ("to", "runtime", "model", "name") if k in item):
             raise ValueError("Delegation selectors must be strings")
-    return {"message": data.get("message", ""), "delegate": delegated}
+    # Text around the object is often the real report; the requester must get it too.
+    before = re.sub(r"```(?:json)?\s*$", "", text[:start]).strip()
+    after = re.sub(r"^\s*```", "", text[end:]).strip()
+    return {"message": "\n\n".join(part for part in (before, data.get("message", ""), after) if part),
+            "delegate": delegated}
+
+
+def file_digest(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def seat_files(worktree):
+    """Files an agent wrote or changed: untracked (ignored too) and modified."""
+    proc = subprocess.run(["git", "-C", str(worktree), "ls-files", "-z", "-o", "-m"], capture_output=True,
+                          env=dict(os.environ, GIT_OPTIONAL_LOCKS="0"))
+    if proc.returncode:
+        raise ValueError("Cannot list files in " + str(worktree) + ": " + proc.stderr.decode()[-200:])
+    names = sorted({n.decode("utf8", "surrogateescape") for n in proc.stdout.split(b"\0") if n})
+    return [n for n in names if (worktree / n).is_file() and not (worktree / n).is_symlink()]
+
+
+def gc_trees(store, roots=None, apply=False):
+    """Archive agent-written files of finished job trees, then remove their worktrees.
+
+    A tree qualifies only when every job under its root is terminal, so no
+    waiting parent can resume into a removed worktree. Only done/cancelled jobs
+    lose their worktree. Without apply this is a report and writes nothing.
+    """
+    project = store.config.get("directory")
+    base = (store.directory / "worktrees").resolve()
+    agents = {a["id"]: a["name"] for a in store.all("agent")}
+    trees = {}
+    for job in store.all("job"):
+        trees.setdefault(job["root"], []).append(job)
+    unknown = [r for r in roots or [] if not any(root.startswith(r) for root in trees)]
+    if unknown:
+        raise ValueError("Unknown root job: " + ", ".join(unknown))
+    report = {"apply": apply, "trees": [], "skipped": [], "worktrees": 0, "seatFiles": 0, "seatBytes": 0}
+    for root, tree in sorted(trees.items(), key=lambda item: min(j["created"] for j in item[1])):
+        if roots and not any(root.startswith(r) for r in roots):
+            continue
+        if any(j["status"] not in TERMINAL for j in tree):
+            report["skipped"].append({"root": root, "reason": "live", "statuses": sorted({j["status"] for j in tree})})
+            continue
+        todo = [j for j in tree if j["status"] in REMOVABLE and (base / j["id"]).is_dir()
+                and Path(os.path.realpath(j.get("directory") or "")) == base / j["id"]]
+        if not todo:
+            continue
+        manifest = []
+        for job in todo:
+            head = subprocess.run(["git", "-C", str(base / job["id"]), "rev-parse", "HEAD"], capture_output=True, text=True)
+            manifest.append({"job": job["id"], "agent": agents.get(job["agent"], job["agent"]), "status": job["status"],
+                             "parent": job.get("parent"), "base_commit": head.stdout.strip(),
+                             "files": {n: file_digest(base / job["id"] / n) for n in seat_files(base / job["id"])}})
+        count = sum(len(entry["files"]) for entry in manifest)
+        size = sum((base / entry["job"] / n).stat().st_size for entry in manifest for n in entry["files"])
+        item = {"root": root, "worktrees": len(todo), "seatFiles": count, "seatBytes": size,
+                "kept": sum(1 for j in tree if j["status"] not in REMOVABLE)}
+        report["trees"].append(item)
+        for key, value in (("worktrees", len(todo)), ("seatFiles", count), ("seatBytes", size)):
+            report[key] += value
+        if not apply:
+            continue
+        if shutil.disk_usage(store.directory).free < 200 << 20:
+            raise ValueError("Under 200 MB free; stopped before writing an archive")
+        archive = store.directory / "archive"
+        archive.mkdir(exist_ok=True, mode=0o700)
+        # Never overwrite an archive: a tree re-queued by hand gets a numbered one.
+        path, extra = archive / (root + ".tar.gz"), 1
+        while path.exists():
+            extra += 1
+            path = archive / f"{root}.{extra}.tar.gz"
+        part = path.with_name(path.name + ".part")
+        with tarfile.open(part, "w:gz") as tar:
+            blob = json.dumps(manifest, indent=1).encode()
+            info = tarfile.TarInfo("MANIFEST.json")
+            info.size = len(blob)
+            tar.addfile(info, io.BytesIO(blob))
+            for entry in manifest:
+                for name in entry["files"]:
+                    tar.add(base / entry["job"] / name, arcname=entry["job"] + "/" + name, recursive=False)
+        # Verify every member against the manifest AND the file still on disk
+        # before anything is removed.
+        try:
+            with tarfile.open(part, "r:gz") as tar:
+                for entry in manifest:
+                    for name, digest in entry["files"].items():
+                        saved = hashlib.sha256(tar.extractfile(entry["job"] + "/" + name).read()).hexdigest()
+                        if saved != digest or saved != file_digest(base / entry["job"] / name):
+                            raise ValueError("changed while archiving: " + entry["job"] + "/" + name)
+        except (ValueError, KeyError, OSError, tarfile.TarError) as error:
+            part.unlink(missing_ok=True)
+            raise ValueError(f"Archive check failed, nothing removed for {root}: {error}")
+        fd = os.open(part, os.O_RDONLY)
+        os.fsync(fd)
+        os.close(fd)
+        os.rename(part, path)
+        item["archive"] = str(path)
+        for job in todo:
+            proc = subprocess.run(["git", "-C", project, "worktree", "remove", "--force", str(base / job["id"])],
+                                  capture_output=True, text=True)
+            if proc.returncode:
+                item.setdefault("failed", []).append({"job": job["id"], "error": proc.stderr.strip()[-200:]})
+    if apply and report["trees"]:
+        subprocess.run(["git", "-C", project, "worktree", "prune"], capture_output=True)
+    return report
 
 
 class Swarm:
@@ -152,15 +271,30 @@ class Swarm:
         self.directory = []
         self.last_error = ""
         self.last_contact = None
+        self.beat = None
 
     def save_job(self, job):
         self.store.put("job", job["id"], job)
 
+    def note(self, where, error):
+        """Keep a failure visible in status and in swarm.log."""
+        self.last_error = (where + ": " + str(error))[:300]
+        try:
+            print(time.strftime("%Y-%m-%dT%H:%M:%S"), "swarm", self.last_error, file=sys.stderr, flush=True)
+        except OSError:
+            pass  # A full disk must not stop the caller as well.
+
     def task(self, coro):
         task = asyncio.create_task(coro)
         self.background.add(task)
-        task.add_done_callback(self.background.discard)
+        task.add_done_callback(self.finished)
         return task
+
+    def finished(self, task):
+        self.background.discard(task)
+        # No background task may stop without a trace.
+        if not task.cancelled() and task.exception():
+            self.note("Background task stopped", task.exception())
 
     async def start(self):
         async with self.lifecycle:
@@ -184,7 +318,13 @@ class Swarm:
             fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
             self.api = self.api or SwarmAPI(cfg)
             for agent in self.store.all("agent"):
-                await self.api.call(agent, "/me")
+                try:
+                    await self.api.call(agent, "/me")
+                except SwarmHTTPError as error:
+                    if error.status < 500:
+                        raise
+                    self.last_error = str(error)[:300]  # Transient; the watcher reconnects.
+                    continue
                 self.store.put("revoked", agent["id"], False)
         except BaseException:
             owner.close()
@@ -242,7 +382,9 @@ class Swarm:
                 "workspace": self.store.config.get("workspace"), "lastContact": self.last_contact,
                 "error": self.last_error or None, "jobs": counts,
                 "agents": [{k: a.get(k) for k in ("id", "name", "runtime", "model")} for a in self.store.all("agent")],
-                "active": len(self.active), "concurrency": self.store.config.get("concurrency")}
+                "active": len(self.active), "concurrency": self.store.config.get("concurrency"),
+                "version": __version__, "schedulerBeat": self.beat,
+                "diskFreeBytes": shutil.disk_usage(self.store.directory).free}
 
     def allowed(self, author):
         return author in self.store.config.get("allow", []) or any(a["id"] == author for a in self.store.all("agent"))
@@ -394,8 +536,8 @@ class Swarm:
     async def submit(self, target, text, request_id=None):
         if not self.running:
             raise ValueError("Swarm is paused; start it before submitting work")
-        if not isinstance(text, str) or not text.strip() or len(text) > 6000:
-            raise ValueError("Submit 1–6000 characters")
+        if not isinstance(text, str) or not text.strip() or len(text) > 60000:
+            raise ValueError("Submit 1–60000 characters")
         agent = next((a for a in self.store.all("agent") if target in (a["id"], a["name"])), None)
         if not agent:
             raise ValueError("Choose a managed agent from swarm status")
@@ -410,35 +552,56 @@ class Swarm:
         return {"job": key, "status": "queued"}
 
     async def scheduler(self):
+        failures = 0
         while self.running:
             self.wake.clear()
-            occupied = {self.store.get("job", key)["agent"] for key in self.active}
-            for job in self.store.all("job"):
-                if job["status"] == "remote" and job.get("deadline", float("inf")) < time.time():
-                    job.update(status="blocked", error="Peer did not return a result before the deadline")
-                    self.save_job(job)
-                if job["status"] == "waiting":
-                    children = [self.store.get("job", key) for key in job["children"]]
-                    if children and all(child and child["status"] in TERMINAL for child in children):
-                        job.update(status="queued", round=job["round"] + 1)
-                        self.save_job(job)
-                if (job["status"] not in ("queued", "delivering", "remote_sending") or job["id"] in self.active
-                        or job["agent"] in occupied or self.store.get("revoked", job["agent"])
-                        or job.get("retry_at", 0) > time.time()):
-                    continue
-                if len(self.active) >= self.store.config["concurrency"]:
-                    break
-                occupied.add(job["agent"])
-                task = self.task(self.process(job["id"]))
-                self.active[job["id"]] = task
-                def done(_, key=job["id"]):
-                    self.active.pop(key, None)
-                    self.wake.set()
-                task.add_done_callback(done)
+            self.beat = time.time()
+            # One bad pass (a full disk, a locked database) must not end scheduling.
+            try:
+                self.schedule()
+                failures = 0
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                failures += 1
+                self.note("Scheduler", error)
+                await asyncio.sleep(min(30, 2 ** min(failures - 1, 5)))
+                continue
             try:
                 await asyncio.wait_for(self.wake.wait(), timeout=2)
             except asyncio.TimeoutError:
                 pass  # Local outbox retry scheduling, not an HTTP inbox poll.
+
+    def schedule(self):
+        occupied = {self.store.get("job", key)["agent"] for key in self.active}
+        free, floor = shutil.disk_usage(self.store.directory).free, self.store.config.get("min_free_bytes", 1 << 30)
+        for job in self.store.all("job"):
+            if job["status"] == "remote" and job.get("deadline", float("inf")) < time.time():
+                job.update(status="blocked", error="Peer did not return a result before the deadline")
+                self.save_job(job)
+            if job["status"] == "waiting":
+                children = [self.store.get("job", key) for key in job["children"]]
+                if children and all(child and child["status"] in TERMINAL for child in children):
+                    job.update(status="queued", round=job["round"] + 1)
+                    self.save_job(job)
+            if (job["status"] not in ("queued", "delivering", "remote_sending") or job["id"] in self.active
+                    or job["agent"] in occupied or self.store.get("revoked", job["agent"])
+                    or job.get("retry_at", 0) > time.time()):
+                continue
+            if len(self.active) >= self.store.config["concurrency"]:
+                break
+            # A new turn writes a worktree and model output. Hold it on a nearly
+            # full disk; saved results still go out so finished work is not stuck.
+            if job["status"] == "queued" and free < floor:
+                self.last_error = f"Low disk: new jobs held ({free >> 20} MiB free, floor {floor >> 20} MiB); run kanbot swarm gc"
+                continue
+            occupied.add(job["agent"])
+            task = self.task(self.process(job["id"]))
+            self.active[job["id"]] = task
+            def done(_, key=job["id"]):
+                self.active.pop(key, None)
+                self.wake.set()
+            task.add_done_callback(done)
 
     async def heartbeat(self):
         while self.running:
@@ -456,6 +619,9 @@ class Swarm:
             return
         agent = self.store.get("agent", job.get("requester", job["agent"]))
         body = "@" + self.peer_name(job["agent"]) + " " + job["prompt"]
+        if len(body) > 7900 and self.store.get("agent", job["agent"]):
+            # A local agent reads its request from the store; the post is a copy for people.
+            body = body[:7800] + "\n[... full request delivered locally by Kanbot]"
         self.store.put("ownpost", job["thread"], True)
         await self.api.call(agent, "/posts", {"id": job["thread"], "room": job["room"], "body": body})
         job["thread_ready"] = True
@@ -530,7 +696,9 @@ class Swarm:
             self.wake.set()
 
     async def workdir(self, job):
-        if job.get("directory"):
+        # gc removes the worktrees of finished trees; a job queued again by hand
+        # gets a fresh checkout of its own branch at the same path.
+        if job.get("directory") and Path(job["directory"]).is_dir():
             return job["directory"]
         cfg = self.store.config
         if cfg["mode"] != "work":
@@ -540,8 +708,11 @@ class Swarm:
         branch = "swarm/" + job["id"]
         # Never fall back to shared writable cwd if isolation fails. Existing
         # uncommitted work is not silently copied/committed into child branches.
-        proc = await asyncio.create_subprocess_exec("git", "-C", cfg["directory"], "worktree", "add", "-b", branch,
-                                                     str(path), "HEAD", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        known = await asyncio.create_subprocess_exec("git", "-C", cfg["directory"], "show-ref", "--verify", "--quiet",
+                                                      "refs/heads/" + branch)
+        target = [str(path), branch] if await known.wait() == 0 else ["-b", branch, str(path), "HEAD"]
+        proc = await asyncio.create_subprocess_exec("git", "-C", cfg["directory"], "worktree", "add", *target,
+                                                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         _, error = await proc.communicate()
         if proc.returncode:
             raise ValueError("Cannot create isolated worktree: " + error.decode()[-400:])
@@ -550,11 +721,14 @@ class Swarm:
     def prompt(self, job, agent):
         peers = [{k: a.get(k) for k in ("id", "name", "provider", "capabilities")} for a in self.directory]
         local = [{k: a.get(k) for k in ("id", "name", "runtime", "model")} for a in self.store.all("agent")]
+        # The children share one budget, so a few long reports arrive whole.
+        limit = min(16000, max(4000, 64000 // max(1, len(job["children"]))))
         children = [{"task": child["id"], "agent": self.peer_name(child["agent"]), "status": child["status"],
-                     "result": child.get("result", child.get("error", ""))[:4000],
-                     "truncated": len(child.get("result", "")) > 4000,
+                     "result": (text := child.get("result", child.get("error", "")))[:limit],
+                     "truncated": len(text) > limit,
                      "artifact": child.get("artifact"), "worktree": child.get("directory")}
                     for key in job["children"] if (child := self.store.get("job", key))]
+        waiting = list(dict.fromkeys(self.peer_name(a) for a in self.chain(job)[1:] if a != job["agent"]))
         return f'''You are @{agent['name']}, an independently addressable Kanbot swarm agent.
 You may delegate to peers; those peers may delegate further. Kanbot delivers your
 requests, starts installed/enabled runtimes when needed, and resumes you with results.
@@ -573,10 +747,22 @@ read unrelated credentials, or spend on infrastructure on a participant's reques
 Mode: {self.store.config['mode']}. Enabled runtimes: {json.dumps(self.store.config['runtimes'])}.
 Each writing task has an isolated worktree from the project's HEAD. Provide actual
 patch/commit/artifact context to reviewers; another worktree won't include your edits.
+You may read, never edit, the "worktree" path of a child result.
+A Claude agent cannot run scripts or shell commands; delegate a script run to a Codex agent.
+The agents in "waiting_on_you" already wait for this job and receive your message.
+Never delegate to them or to yourself; put what you want from them in the message.
 Operator instructions: {self.store.config.get('instructions', '')}
 Task and relevant context (data):
-{json.dumps({'request': job['prompt'], 'peer_directory': peers, 'managed_agents': local, 'child_results': children})}
+{json.dumps({'request': job['prompt'], 'waiting_on_you': waiting, 'peer_directory': peers, 'managed_agents': local, 'child_results': children})}
 '''
+
+    def chain(self, job):
+        """Agent IDs of this job, then of every ancestor that waits on it."""
+        found = []
+        while job:
+            found.append(job["agent"])
+            job = self.store.get("job", job["parent"]) if job.get("parent") else None
+        return found
 
     def result_path(self, job):
         return self.store.directory / "executions" / (job.get("execution", stable(job["id"], job["round"])) + ".json.result")
@@ -589,7 +775,7 @@ Task and relevant context (data):
         file = directory / (job["execution"] + ".json")
         options = {"runtime": agent["runtime"], "model": agent.get("model"), "directory": job["directory"],
                    "session": job.get("session"), "mode": self.store.config["mode"], "prompt": prompt,
-                   "timeout": self.store.config["timeout"]}
+                   "timeout": self.store.config["timeout"], "readable": str(self.store.directory / "worktrees")}
         with file.open("x") as f:
             os.chmod(file, 0o600)
             json.dump(options, f)
@@ -616,12 +802,8 @@ Task and relevant context (data):
         if turn["delegate"] and job["depth"] >= self.store.config["max_depth"]:
             raise ValueError("Delegation depth limit reached")
         # Resolve/persist each child before any external send or scheduling.
-        new_children = []
-        ancestors = set()
-        ancestor = job
-        while ancestor:
-            ancestors.add(ancestor["agent"])
-            ancestor = self.store.get("job", ancestor["parent"]) if ancestor.get("parent") else None
+        new_children, dropped = [], []
+        ancestors = set(self.chain(job))
         for index, request in enumerate(turn["delegate"]):
             key = stable(job["id"], job["round"], index)
             child = self.store.get("job", key)
@@ -642,7 +824,10 @@ Task and relevant context (data):
                                  and a["id"] not in ancestors and not request.get("name")), None)
                     peer = peer or await self.register(request.get("name") or runtime + "-" + key[:8], runtime, model)
                 if peer["id"] in ancestors:
-                    raise ValueError("Cyclic delegation to an ancestor; choose another peer")
+                    # Reporting up is not a delegation. Drop this one request, keep the turn.
+                    dropped.append("[Not delegated: @" + peer["name"] + " is already waiting on this job and receives"
+                                   " this message. Request was: " + request["request"] + "]")
+                    continue
                 child = self.new_job(key, peer["id"], request["request"], stable(key, "thread"), job["room"], parent=job)
                 child["requester"] = agent["id"]
                 # Stage children; none may run until the parent has durably
@@ -650,29 +835,38 @@ Task and relevant context (data):
                 child["status"] = "staged" if self.store.get("agent", peer["id"]) else "staged_remote"
                 self.save_job(child)
             new_children.append(key)
+        if dropped:
+            turn["message"] = (turn["message"] + "\n\n" + "\n".join(dropped)).strip()
         body = turn["message"].strip()
         if body and body != "BOTSPACE_NO_REPLY":
             # Escape mention tokens; prose is observable, not executable.
             body = re.sub(r"(?<![\w@])@(?=[a-zA-Z])", "@\u200b", body)
             if len(body) > 7500:
                 page_id = "kanbot/" + job["id"] + "-" + str(job["round"])
-                # Current wiki bodies have a finite limit; retain oversized
-                # output locally and fail visibly instead of truncating it.
-                if len(body) > 80000:
-                    raise ValueError("Result too large; saved locally for review")
-                try:
-                    await self.api.call(agent, "/wiki", {"id": page_id, "title": "Agent result", "body": body,
-                                                          "expectedRevision": 0, "sources": []})
-                except SwarmHTTPError as error:
-                    if error.status != 409:
-                        raise
-                    from urllib.parse import quote
-                    saved = await self.api.call(agent, "/wiki/page?id=" + quote(page_id, safe=""))
-                    if saved.get("body") != body:
-                        raise ValueError("Shared result artifact conflicts with another revision")
-                body = "Result saved to shared wiki: " + page_id
-                job["artifact"] = page_id
-                self.save_job(job)
+                # The wiki page is a copy for people; the requester reads the
+                # result from the local store. A body the wiki refuses (over its
+                # size limit: HTTP 400 or 413) stays local and never blocks the job.
+                shared = len(body) <= 15000
+                if shared:
+                    try:
+                        await self.api.call(agent, "/wiki", {"id": page_id, "title": "Agent result", "body": body,
+                                                              "expectedRevision": 0, "sources": []})
+                    except SwarmHTTPError as error:
+                        if error.status in (400, 413):
+                            shared = False
+                        elif error.status != 409:
+                            raise
+                        else:
+                            from urllib.parse import quote
+                            saved = await self.api.call(agent, "/wiki/page?id=" + quote(page_id, safe=""))
+                            if saved.get("body") != body:
+                                raise ValueError("Shared result artifact conflicts with another revision")
+                if shared:
+                    body = "Result saved to shared wiki: " + page_id
+                    job["artifact"] = page_id
+                    self.save_job(job)
+                else:
+                    body = f"Result kept locally ({len(body)} characters)"
             post_id = stable(job["id"], job["round"], "result")
             self.store.put("ownpost", post_id, True)
             await self.api.call(agent, "/posts", {"id": post_id, "room": job["room"], "parent": job["thread"], "body": body})
@@ -683,6 +877,8 @@ Task and relevant context (data):
             if task["status"] != desired:
                 await self.api.call(agent, "/task-status", {"id": task["id"], "version": task["version"],
                                                            "status": desired, "result": "Waiting for delegated work" if new_children else body or "Completed"})
+        job.pop("error", None)  # A delivered job must not keep the text of a retried failure.
+        job.pop("retry_at", None)
         job.update(status="waiting" if new_children else "done", result=turn["message"], children=new_children)
         records = [("job", job["id"], job)]
         for key in new_children:

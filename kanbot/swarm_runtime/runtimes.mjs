@@ -4,7 +4,7 @@ import { createInterface } from "node:readline";
 // Each invocation owns a dedicated session. Never use --last or attach to a TUI.
 export function runtimeCommand(
   runtime,
-  { session, mode = "read", model } = {},
+  { session, mode = "read", model, readable } = {},
 ) {
   if (runtime === "codex")
     return [
@@ -32,6 +32,16 @@ export function runtimeCommand(
         "--permission-mode",
         mode === "work" ? "acceptEdits" : "dontAsk",
         ...(mode === "read" ? ["--tools", "Read,Grep,Glob"] : []),
+        // A work seat may read web pages and the other job worktrees. No Bash:
+        // a Claude seat has no sandbox, and web text must never reach a shell.
+        ...(mode === "work"
+          ? [
+              "--allowedTools",
+              "WebFetch",
+              "WebSearch",
+              ...(readable ? ["--add-dir", readable] : []),
+            ]
+          : []),
         ...(model ? ["--model", model] : []),
         ...(session ? ["--resume", session] : []),
       ],
@@ -248,7 +258,7 @@ export async function runRuntime(options) {
       await chain;
       if (code !== 0)
         throw Error(
-          `${runtime} exited (${code}). Check runtime login and local connector logs.`,
+          `${runtime} exited (${code}). Check runtime login and local connector logs. ${stderr.slice(-300)}`.trim(),
         );
     }
     if (signal?.aborted) throw Error("Runtime interrupted or timed out.");

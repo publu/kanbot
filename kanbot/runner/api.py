@@ -73,7 +73,9 @@ class ApiServer:
             os.unlink(self.path)
         except FileNotFoundError:
             pass
-        self._server = await asyncio.start_unix_server(self._client, path=self.path)
+        # asyncio's default line limit is 64 KiB; a 60000-character swarm request
+        # with escaped non-ASCII text is larger and would drop the connection.
+        self._server = await asyncio.start_unix_server(self._client, path=self.path, limit=1 << 20)
         os.chmod(self.path, 0o600)
 
     async def stop(self) -> None:

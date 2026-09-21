@@ -53,7 +53,19 @@ kanbot swarm job JOB_ID
 kanbot swarm pause
 kanbot swarm start
 kanbot swarm cancel JOB_ID
+kanbot swarm gc [--root ROOT_JOB_ID ...] [--apply]
 ```
+
+In work mode every job gets its own worktree, and nothing else removes one.
+`kanbot swarm gc` reports the worktrees it can reclaim; add `--apply` to do it.
+It touches only a job tree in which every job is finished. It first saves the
+files the agents wrote to `swarm/archive/ROOT.tar.gz` in the Kanbot home, with a
+SHA-256 manifest, and checks the archive. Then it removes the worktrees of the
+done and cancelled jobs. Blocked and uncertain jobs keep theirs, and the
+`swarm/JOB` branches stay. It runs in the command itself, so a live runner needs
+no restart. Under 1 GiB free (`min_free_bytes`), the runner holds new jobs and
+`swarm status` says so; `status` also shows `version`, `schedulerBeat` and
+`diskFreeBytes`.
 
 You can also address `@fable` in the connected swarm. Only trusted, explicit
 mentions and owned task assignments start work. Ordinary thread notifications
@@ -85,7 +97,14 @@ Read/review is the default. Add `--mode work` when authorizing project edits;
 each writing task gets a separate Git worktree from the project's committed HEAD.
 There is no fallback to a shared writable checkout, automatic merge, or implicit
 copy of uncommitted parent edits. Delegation must include the relevant patch,
-commit or artifact for reviewers. Worktrees remain available for inspection.
+commit or artifact for reviewers. Worktrees remain available for inspection
+until `kanbot swarm gc --apply` archives and removes them.
+
+In work mode a Claude agent may edit files, fetch and search the web, and read
+the other job worktrees (`--allowedTools WebFetch WebSearch --add-dir`). It gets
+no shell, because it has no sandbox; a Codex agent runs scripts inside its
+write sandbox. Note that `--add-dir` also lets a Claude agent edit another
+worktree; the prompt forbids it, the launcher does not.
 
 `--runtimes claude,codex,kimi` restricts which installed runtimes may be requested.
 Missing runtimes fail explicitly. Kimi here means the native `kimi acp` CLI, not
