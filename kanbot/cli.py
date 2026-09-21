@@ -24,6 +24,7 @@ import webbrowser
 
 from . import __version__
 from .config import Config, config_path, db_path
+from .update import update_notice
 
 
 def _rich():
@@ -43,6 +44,8 @@ def cmd_server(args) -> int:
     print(f"KanBot server v{__version__}  →  {url}")
     print(f"  db:    {args.db or db_path()}")
     print(f"  open:  {url}  (then run `kanbot runner` on any machine)")
+    if notice := update_notice():
+        print(f"  {notice}")
     uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
     return 0
 
@@ -99,6 +102,8 @@ def cmd_up(args) -> int:
 
     print(f"KanBot is up  →  {base}")
     print(f"  open:  {base}")
+    if notice := update_notice():
+        print(f"  {notice}")
     if not args.no_open:
         try:
             # Open the local board directly: the server serves the UI and the API

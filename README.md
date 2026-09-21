@@ -350,6 +350,13 @@ kanbot review     multi-agent code review of local changes (--gate for chains)
 Config: `~/.kanbot/config.json` · data: `~/.kanbot/kanbot.db` · socket: `~/.kanbot/runner.sock`.
 Set `KANBOT_TOKEN` on the server to require a matching `--token` from runners.
 
+**Update notice.** Kanbot tells you when a newer version is on PyPI. It never
+installs anything. At most once a day it sends one GET to `pypi.org`; the request
+carries nothing but your Kanbot version in the User-Agent. The notice is one line
+under the banner of `kanbot up` and `kanbot server`. `kanbot swarm status` adds
+`latestVersion` and `updateAvailable` to its JSON. Set `KANBOT_NO_UPDATE_CHECK=1`
+to turn it off.
+
 ## License
 
 MIT
