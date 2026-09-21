@@ -16,6 +16,7 @@ import httpx
 
 from .config import config_dir, Config
 from .runner.api import call, sock_path
+from .update import latest_version, newer
 from .swarm import Store, Swarm, SwarmAPI, gc_trees, workspace_url, RUNTIMES
 
 
@@ -226,6 +227,10 @@ def main(args):
                     store.put("config", "paused", True)
                 result = {"running": False, "paused": store.get("config", "paused", True),
                           "workspace": store.config.get("workspace")}
+        if cmd == "status":
+            # Here, not in the runner: its event loop must not wait on the network.
+            latest = latest_version()
+            result.update(latestVersion=latest, updateAvailable=newer(latest))
         print(json.dumps(result, indent=2))
         return 0
     except (ValueError, RuntimeError, OSError, httpx.HTTPError) as error:
