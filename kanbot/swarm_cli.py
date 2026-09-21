@@ -81,9 +81,9 @@ async def configure(args):
     runtimes = [r for r in requested if shutil.which(r)]
     if args.runtime not in runtimes:
         raise ValueError("Entry runtime must be installed and enabled")
-    if not (1 <= args.concurrency <= args.max_agents <= 100 and 1 <= args.max_turns <= 10000
+    if not (1 <= args.concurrency <= 100 and args.concurrency <= args.max_agents <= 10000 and 1 <= args.max_turns <= 10000
             and 1 <= args.max_depth <= 20 and 10 <= args.timeout <= 3600):
-        raise ValueError("Use concurrency <= max-agents <= 100, max-turns 1–10000, depth 1–20, timeout 10–3600")
+        raise ValueError("Use concurrency <= 100, concurrency <= max-agents <= 10000, max-turns 1–10000, depth 1–20, timeout 10–3600")
     store = Store()
     old = store.config
     if old:

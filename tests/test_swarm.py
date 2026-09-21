@@ -12,6 +12,7 @@ import sqlite3
 import subprocess
 import tarfile
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -43,7 +44,7 @@ class FakeAPI:
         pass
 
     async def call(self, agent, path, body=None, invite=False):
-        if path == "/agents":
+        if path.split("?")[0] == "/agents":
             if body is None:
                 return {"agents": list(self.agents.values())}
             self.starts += 1
@@ -81,7 +82,7 @@ class FakeAPI:
         if path.startswith("/wiki/page"):
             from urllib.parse import unquote
             return self.pages[unquote(path.split("=", 1)[1])]
-        if path == "/tasks":
+        if path.split("?")[0] == "/tasks":
             if body:
                 self.tasks.setdefault(body["id"], {**body, "status": "todo", "version": 1})
                 return self.tasks[body["id"]]
@@ -630,6 +631,111 @@ class SwarmTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(out.getvalue())["apply"], False)
 
 
+    async def test_run_reports_preserve_state_and_authorized_cancel(self):
+        job = self.swarm.new_job("reported", self.agent["id"], "Review", "thread")
+        job.update(task="task", status="running")
+        self.swarm.save_job(job)
+        captured = []
+        original = self.api.call
+        async def call(agent, path, body=None, invite=False):
+            if path == "/runs":
+                captured.extend(body["runs"])
+                return {"commands": [{"run": "reported", "id": "cancel-1", "action": "cancel", "actor": "human-owner", "expires": time.time() * 1000 + 60000}]}
+            return await original(agent, path, body, invite)
+        self.api.call = call
+        await self.swarm.report_runs()
+        self.assertEqual(self.store.get("job", "reported")["status"], "cancelled")
+        self.assertEqual(self.store.get("job", "reported")["acknowledgedCommand"], "cancel-1")
+        await self.swarm.report_runs()
+        self.assertEqual(captured[-1]["state"], "cancelled")
+        self.assertGreater(captured[-1]["sequence"], captured[0]["sequence"])
+
+    async def test_old_server_disables_optional_reports_without_stopping_work(self):
+        job = self.swarm.new_job("old-server", self.agent["id"], "Review", "thread")
+        job.update(task="task")
+        self.swarm.save_job(job)
+        async def call(*args, **kwargs):
+            raise SwarmHTTPError(404)
+        self.api.call = call
+        await self.swarm.report_runs()
+        self.assertFalse(self.swarm.reports_supported)
+        self.assertEqual(self.store.get("job", "old-server")["status"], "queued")
+
+    async def test_reporting_does_not_overwrite_progress_during_prior_batch(self):
+        for i in range(21):
+            job = self.swarm.new_job(str(i), self.agent["id"], "Review", "thread")
+            job.update(task="task", status="running")
+            self.swarm.save_job(job)
+        captured = []
+        async def call(agent, path, body=None, invite=False):
+            captured.extend(body["runs"])
+            latest = self.store.get("job", "20")
+            latest.update(status="done", result="Completed while reporting")
+            self.swarm.save_job(latest)
+            return {"commands": []}
+        self.api.call = call
+        await self.swarm.report_runs()
+        self.assertEqual(self.store.get("job", "20")["result"], "Completed while reporting")
+        self.assertEqual(captured[-1]["state"], "done")
+
+    async def test_receipt_sequence_advances_when_execution_holds_an_older_job(self):
+        job = self.swarm.new_job("sequence", self.agent["id"], "Review", "thread")
+        self.swarm.save_job(job)
+        executing = dict(job)
+        for _ in range(5):
+            self.swarm.save_job(job)
+        executing["status"] = "done"
+        self.swarm.save_job(executing)
+        self.assertGreater(executing["reportSequence"], job["reportSequence"])
+
+    async def test_directory_pages_are_complete_and_repeated_cursor_is_rejected(self):
+        calls = []
+        async def call(agent, path, body=None, invite=False):
+            calls.append(path)
+            if "after=next" in path:
+                return {"agents": [{"id": "b"}], "next": None}
+            return {"agents": [{"id": "a"}], "next": "next"}
+        self.api.call = call
+        await self.swarm.refresh_directory()
+        self.assertEqual([a["id"] for a in self.swarm.directory], ["a", "b"])
+        self.assertEqual(len(calls), 2)
+        async def broken(*args, **kwargs):
+            return {"agents": [], "next": "same"}
+        self.api.call = broken
+        with self.assertRaisesRegex(ValueError, "did not advance"):
+            await self.swarm.refresh_directory()
+        self.assertEqual(len(self.swarm.directory), 2)
+
+    async def test_inbox_is_drained_when_websocket_capacity_is_full(self):
+        from unittest.mock import AsyncMock
+        self.swarm.running = True
+        class Unavailable:
+            async def __aenter__(self):
+                raise SwarmHTTPError(429)
+            async def __aexit__(self, *args):
+                pass
+        async def drain(agent_id):
+            self.assertEqual(agent_id, self.agent["id"])
+            self.swarm.running = False
+        self.swarm.drain = AsyncMock(side_effect=drain)
+        with patch("websockets.asyncio.client.connect", return_value=Unavailable()), patch("asyncio.sleep", new_callable=AsyncMock):
+            await self.swarm.watch(self.agent["id"])
+        self.swarm.drain.assert_awaited_once()
+
+    async def test_task_brief_and_thousands_of_peers_do_not_bloat_prompt(self):
+        self.api.tasks["rich"] = {"id": "rich", "title": "Short title", "request": "Full task request", "room": "general", "owner": self.agent["id"], "status": "todo", "intent": "review", "criteria": ["Check evidence"], "version": 2}
+        await self.swarm.ingest(self.agent, {"id": 80, "actor": "human-owner", "objectId": "rich", "type": "task.created"})
+        job = self.store.all("job")[0]
+        self.swarm.directory = [{"id": str(i), "name": "peer-" + str(i), "provider": "Codex"} for i in range(5000)]
+        prompt = self.swarm.prompt(job, self.agent)
+        data = json.loads(prompt.split("Task and relevant context (data):\n")[-1])
+        self.assertEqual(data["request"], "Full task request")
+        self.assertEqual(data["brief"]["criteria"], ["Check evidence"])
+        self.assertEqual(len(data["peer_directory"]), 30)
+        self.assertEqual(data["directory_omitted"], 4970)
+        self.assertLess(len(prompt), 15000)
+
+
 class SocketTests(unittest.IsolatedAsyncioTestCase):
     async def test_two_servers_cannot_replace_live_socket(self):
         # Keep under macOS's Unix socket path length limit.
@@ -750,6 +856,7 @@ class LauncherTests(unittest.TestCase):
     def test_exit_error_keeps_the_end_of_stderr(self):
         Path("test-results").mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir="test-results") as temp:
+            temp = str(Path(temp).resolve())
             fake = Path(temp) / "codex"
             fake.write_text("#!/bin/sh\necho 'stream error: no space left on device' >&2\nexit 1\n")
             fake.chmod(0o755)

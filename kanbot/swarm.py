@@ -20,7 +20,7 @@ import tarfile
 import time
 import uuid
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, urlencode
 
 import httpx
 
@@ -286,8 +286,12 @@ class Swarm:
         self.last_error = ""
         self.last_contact = None
         self.beat = None
+        self.reported = {}
+        self.reports_supported = True
 
     def save_job(self, job):
+        saved = self.store.get("job", job["id"], {})
+        job["reportSequence"] = max(job.get("reportSequence", 0), saved.get("reportSequence", 0)) + 1
         self.store.put("job", job["id"], job)
 
     def note(self, where, error):
@@ -406,8 +410,20 @@ class Swarm:
     async def refresh_directory(self):
         agents = self.store.all("agent")
         if agents:
-            response = await self.api.call(agents[0], "/agents")
-            self.directory = [a for a in response["agents"] if not a.get("demo")]
+            directory, after, seen = {}, "", set()
+            while True:
+                response = await self.api.call(agents[0], "/agents?" + urlencode({"limit": 100, "after": after}))
+                for agent in response["agents"]:
+                    if not agent.get("demo"):
+                        directory[agent["id"]] = agent
+                after = response.get("next")
+                # Older servers ignore paging and return the complete directory.
+                if not after:
+                    break
+                if after in seen:
+                    raise ValueError("Agent directory cursor did not advance")
+                seen.add(after)
+            self.directory = list(directory.values())
             self.last_contact = time.time()
 
     async def register(self, name, runtime, model=""):
@@ -476,6 +492,20 @@ class Swarm:
                         if self.store.get("job", job_id)["agent"] == agent_id:
                             task.cancel()
                     return
+                # The durable inbox remains usable when live capacity is full
+                # or a proxy blocks WebSockets. Cursor/ack rules are unchanged.
+                try:
+                    await self.drain(agent_id)
+                except SwarmHTTPError as inbox_error:
+                    if inbox_error.status in (401, 403):
+                        self.store.put("revoked", agent_id, True)
+                        for job_id, task in list(self.active.items()):
+                            if self.store.get("job", job_id)["agent"] == agent_id:
+                                task.cancel()
+                        return
+                    self.last_error = str(inbox_error)[:300]
+                except Exception as inbox_error:
+                    self.last_error = str(inbox_error)[:300]
                 await asyncio.sleep(min(30, 2 ** min(failures, 5)))
                 failures += 1
 
@@ -533,11 +563,12 @@ class Swarm:
                 return
             if not self.allowed(event["actor"]):
                 return
-            tasks = (await self.api.call(agent, "/tasks"))["tasks"]
+            tasks = (await self.api.call(agent, "/tasks?" + urlencode({"id": event["objectId"]})))["tasks"]
             work = next((t for t in tasks if t["id"] == event["objectId"]), None)
             if not work or work.get("owner") != agent["id"] or work["status"] != "todo":
                 return
-            job = self.new_job(job_id, agent["id"], work["title"], stable(job_id, "thread"), work["room"])
+            job = self.new_job(job_id, agent["id"], work.get("request") or work["title"], stable(job_id, "thread"), work["room"])
+            job["brief"] = {k: work[k] for k in ("intent", "criteria", "version") if k in work}
             job["task"] = work["id"]
         self.save_job(job)
 
@@ -617,10 +648,53 @@ class Swarm:
                 self.wake.set()
             task.add_done_callback(done)
 
+    async def report_runs(self):
+        if not self.reports_supported:
+            return
+        jobs = self.store.all("job")
+        now = time.time()
+        for agent in self.store.all("agent"):
+            owned = [j for j in jobs if j["agent"] == agent["id"] and j.get("task")]
+            pending = [j for j in owned if self.reported.get(j["id"], (None, 0))[0] != (j.get("reportSequence", 1), j["status"], j.get("acknowledgedCommand"))
+                       or (j["status"] not in TERMINAL and now - self.reported.get(j["id"], (None, 0))[1] >= 30)]
+            for start in range(0, len(pending), 20):
+                # Earlier batches await HTTP while jobs continue running. Reload
+                # before persisting a receipt so a snapshot cannot undo progress.
+                batch = [self.store.get("job", j["id"]) for j in pending[start:start + 20]]
+                payload = []
+                for job in batch:
+                    # Every heartbeat gets a monotonic receipt even if work has not changed.
+                    self.save_job(job)
+                    payload.append({"id": job["id"], "task": job["task"], "state": job["status"],
+                        "sequence": job["reportSequence"], "runner": "Kanbot", "parent": job.get("parent"),
+                        "thread": job.get("thread"), "summary": job.get("error", "")[:2000],
+                        "controllers": self.store.config.get("allow", []),
+                        "acknowledgedCommand": job.get("acknowledgedCommand")})
+                try:
+                    result = await self.api.call(agent, "/runs", {"runs": payload})
+                except SwarmHTTPError as error:
+                    if error.status == 404:
+                        self.reports_supported = False  # Older servers retain the existing task flow.
+                        return
+                    raise
+                for job in batch:
+                    self.reported[job["id"]] = ((job["reportSequence"], job["status"], job.get("acknowledgedCommand")), now)
+                for command in result.get("commands", []):
+                    job = self.store.get("job", command.get("run"))
+                    if (job and job["agent"] == agent["id"] and command.get("action") == "cancel"
+                            and command.get("actor") in self.store.config.get("allow", [])
+                            and command.get("expires", 0) > time.time() * 1000
+                            and job.get("acknowledgedCommand") != command.get("id")):
+                        await self.cancel(job["id"])
+                        latest = self.store.get("job", job["id"])
+                        latest["acknowledgedCommand"] = command["id"]
+                        self.save_job(latest)
+
     async def heartbeat(self):
         while self.running:
             try:
                 await self.refresh_directory()
+                await self.report_runs()
                 for agent in self.store.all("agent"):
                     busy = any(self.store.get("job", k)["agent"] == agent["id"] for k in self.active)
                     await self.api.call(agent, "/heartbeat", {"status": "working" if busy else "waiting"})
@@ -733,8 +807,11 @@ class Swarm:
         return str(path)
 
     def prompt(self, job, agent):
-        peers = [{k: a.get(k) for k in ("id", "name", "provider", "capabilities")} for a in self.directory]
-        local = [{k: a.get(k) for k in ("id", "name", "runtime", "model")} for a in self.store.all("agent")]
+        # Keep the prompt bounded as the shared directory grows. Prefer named or active peers.
+        requested = job["prompt"].lower()
+        directory = sorted(self.directory, key=lambda a: (a.get("name", "").lower() not in requested, a.get("status") != "working"))
+        peers = [{k: a.get(k) for k in ("id", "name", "provider", "capabilities")} for a in directory[:30]]
+        local = [{k: a.get(k) for k in ("id", "name", "runtime", "model")} for a in self.store.all("agent")[:30]]
         # The children share one budget, so a few long reports arrive whole.
         limit = min(16000, max(4000, 64000 // max(1, len(job["children"]))))
         children = [{"task": child["id"], "agent": self.peer_name(child["agent"]), "status": child["status"],
@@ -746,6 +823,14 @@ class Swarm:
         return f'''You are @{agent['name']}, an independently addressable Kanbot swarm agent.
 You may delegate to peers; those peers may delegate further. Kanbot delivers your
 requests, starts installed/enabled runtimes when needed, and resumes you with results.
+First identify the requested outcome and completion criteria. Inspect existing work
+before starting overlapping work. Explore tasks return evidence and open questions;
+build tasks return changes and validation; reviews return prioritized findings with evidence.
+Delegate only a bounded independent or specialist contribution, supplying its input
+artifacts and expected output. A reviewer should inspect the artifact against criteria
+before adopting another agent's verdict. Resolve conflicting findings against evidence.
+Continue from the current checkpoint and child results; do not repeat completed work.
+State unverified criteria and blockers honestly. A reply delivered is not a test passed.
 Return a JSON object (no Markdown) with "message" and optional "delegate" array.
 Each delegation has "request" and either "to" (registered peer name/ID), or
 "runtime" (claude/codex/kimi) with optional "model" and "name" for a new peer.
@@ -767,7 +852,7 @@ The agents in "waiting_on_you" already wait for this job and receive your messag
 Never delegate to them or to yourself; put what you want from them in the message.
 Operator instructions: {self.store.config.get('instructions', '')}
 Task and relevant context (data):
-{json.dumps({'request': job['prompt'], 'waiting_on_you': waiting, 'peer_directory': peers, 'managed_agents': local, 'child_results': children})}
+{json.dumps({'request': job['prompt'], 'brief': job.get('brief', {}), 'directory_omitted': max(0, len(self.directory) - len(peers)), 'waiting_on_you': waiting, 'peer_directory': peers, 'managed_agents': local, 'child_results': children})}
 '''
 
     def chain(self, job):
