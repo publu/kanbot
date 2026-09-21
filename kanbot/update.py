@@ -30,32 +30,34 @@ def _ask(answer: list) -> None:
 
 
 def latest_version() -> str | None:
-    """Newest version on PyPI, asked at most once a day. Never raises, never prints."""
+    """Newest version on PyPI, asked at most once a day (once an hour after a miss). Never raises, never prints."""
     if os.environ.get("KANBOT_NO_UPDATE_CHECK"):
         return None
     latest = None
     try:
         path = config_dir() / "update-check.json"
-        checked = 0.0
+        checked, wait = 0.0, 86400
         try:
             cache = json.loads(path.read_text())
             if cache["latest"] is None or _sane(cache["latest"]):  # None: never got an answer yet
                 latest, checked = cache["latest"], float(cache["checked"])
+                wait = 86400 if cache.get("ok", True) else 3600  # no answer last time: ask again in an hour
         except Exception:
             pass  # no cache, or a corrupt one
-        if 0 <= time.time() - checked < 86400:
+        if 0 <= time.time() - checked < wait:
             return latest
         # urlopen's timeout is per socket step and skips DNS, so the thread is the
-        # real limit. No answer counts as checked: wait 2 s once a day, not on every command.
+        # real limit. No answer counts as checked too: wait 2 s once an hour, not on every command.
         answer: list = []
         thread = threading.Thread(target=_ask, args=(answer,), daemon=True)
         thread.start()
         thread.join(LIMIT)
-        if answer and _sane(answer[0]):
+        ok = bool(answer and _sane(answer[0]))
+        if ok:
             latest = answer[0]
         # Replace, not write: a second command never reads a half-written file.
         tmp = path.with_suffix(f".{os.getpid()}.tmp")
-        tmp.write_text(json.dumps({"checked": time.time(), "latest": latest}))
+        tmp.write_text(json.dumps({"checked": time.time(), "latest": latest, "ok": ok}))
         os.replace(tmp, path)
     except Exception:
         pass

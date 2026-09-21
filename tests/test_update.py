@@ -76,6 +76,11 @@ class UpdateTest(unittest.TestCase):
         saved = json.loads(self.cache.read_text())
         self.assertEqual(saved["latest"], "1.0.0")
         self.assertGreater(saved["checked"], time.time() - 60)
+        # A miss is good for one hour, not one day.
+        self.cache.write_text(json.dumps({**saved, "checked": time.time() - 7200}))
+        with patch("urllib.request.urlopen", side_effect=OSError("offline")) as urlopen:
+            self.assertEqual(update.latest_version(), "1.0.0")
+        urlopen.assert_called_once()
 
     def test_failed_request_without_a_cache_returns_none_once_a_day(self):
         with patch("urllib.request.urlopen", side_effect=RuntimeError("anything")) as urlopen:

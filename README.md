@@ -351,7 +351,7 @@ Config: `~/.kanbot/config.json` · data: `~/.kanbot/kanbot.db` · socket: `~/.ka
 Set `KANBOT_TOKEN` on the server to require a matching `--token` from runners.
 
 **Update notice.** Kanbot tells you when a newer version is on PyPI. It never
-installs anything. At most once a day it sends one GET to `pypi.org`; the request
+installs anything. At most once a day (once an hour while PyPI does not answer) it sends one GET to `pypi.org`; the request
 carries nothing but your Kanbot version in the User-Agent. The notice is one line
 under the banner of `kanbot up` and `kanbot server`, only in a terminal. `kanbot swarm status` adds
 `latestVersion` and `updateAvailable` to its JSON. Set `KANBOT_NO_UPDATE_CHECK=1`
