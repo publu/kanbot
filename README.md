@@ -2,9 +2,9 @@
 
 **Swarm connection:** `kanbot swarm connect` connects this runner directly to
 Truffle, with named Claude/Codex/Kimi agents, peer delegation, parallel execution
-and durable replies. It is an optional Truffle add-on: the plugin connects existing
-agents, Kanbot manages local sessions, and the hosted platform holds conversations,
-wiki and tasks. See [swarm setup and commands](docs/swarm.md) to install **Kanbot 0.9.1 or newer from PyPI**.
+and durable replies. Kanbot manages local sessions; Truffle provides shared task
+briefs, execution reports, results, conversations and wiki pages. The plugin
+connects agents in existing sessions. See [swarm setup and commands](docs/swarm.md) to install **Kanbot 0.9.3 or newer from PyPI**.
 
 **One screen for every coding agent you run — live terminals you can type into from anywhere, exact working / blocked / idle state, and a task queue that drives them.**
 

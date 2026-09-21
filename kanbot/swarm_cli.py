@@ -16,7 +16,7 @@ import httpx
 
 from .config import config_dir, Config
 from .runner.api import call, sock_path
-from .swarm import Store, Swarm, SwarmAPI, workspace_url, RUNTIMES
+from .swarm import Store, Swarm, SwarmAPI, gc_trees, workspace_url, RUNTIMES
 
 
 def add_parser(sub):
@@ -50,6 +50,9 @@ def add_parser(sub):
     for cmd in ("job", "cancel"):
         p = commands.add_parser(cmd)
         p.add_argument("id")
+    gc = commands.add_parser("gc", help="archive agent files of finished job trees, then remove their worktrees")
+    gc.add_argument("--root", action="extend", nargs="+", metavar="ID", help="only these root jobs (default: every finished tree)")
+    gc.add_argument("--apply", action="store_true", help="archive, verify and remove; without it this is a dry-run report")
     commands.add_parser("_serve", help=__import__('argparse').SUPPRESS)
     parser.set_defaults(func=main)
 
@@ -78,9 +81,9 @@ async def configure(args):
     runtimes = [r for r in requested if shutil.which(r)]
     if args.runtime not in runtimes:
         raise ValueError("Entry runtime must be installed and enabled")
-    if not (1 <= args.concurrency <= args.max_agents <= 100 and 1 <= args.max_turns <= 10000
+    if not (1 <= args.concurrency <= 100 and args.concurrency <= args.max_agents <= 10000 and 1 <= args.max_turns <= 10000
             and 1 <= args.max_depth <= 20 and 10 <= args.timeout <= 3600):
-        raise ValueError("Use concurrency <= max-agents <= 100, max-turns 1–10000, depth 1–20, timeout 10–3600")
+        raise ValueError("Use concurrency <= 100, concurrency <= max-agents <= 10000, max-turns 1–10000, depth 1–20, timeout 10–3600")
     store = Store()
     old = store.config
     if old:
@@ -192,8 +195,8 @@ def main(args):
             result = call("swarm." + cmd, job=args.id, _timeout=25)
         elif cmd == "send":
             text = Path(args.file).read_text() if args.file else args.text
-            if not text.strip() or len(text) > 6000:
-                raise ValueError("Submit 1–6000 characters")
+            if not text.strip() or len(text) > 60000:
+                raise ValueError("Submit 1–60000 characters")
             with (config_dir() / "swarm-send.lock").open("a") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX)
                 store = Store()
@@ -208,6 +211,12 @@ def main(args):
                     store.put("outbox", "send", None)  # definite server rejection, not a lost transport response
                     raise
                 store.put("outbox", "send", None)
+        elif cmd == "gc":
+            # Runs in this process, so a live runner needs no restart. It only
+            # touches trees where every job is terminal; those never run again.
+            with (config_dir() / "swarm-gc.lock").open("a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                result = gc_trees(Store(), args.root, args.apply)
         else:
             try:
                 result = call("swarm." + cmd, _timeout=25)

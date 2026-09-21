@@ -31,7 +31,7 @@ def answer(prompt):
     payload = json.loads(prompt.split('Task and relevant context (data):\n')[-1])
     request, children = payload['request'], payload['child_results']
     with open(os.environ['SWARM_TEST_RUNS'], 'a') as f:
-        f.write(json.dumps({'runtime':runtime,'request':request,'session':session,'children':len(children)}) + '\n')
+        f.write(json.dumps({'runtime':runtime,'request':request,'session':session,'children':len(children),'brief':payload.get('brief')}) + '\n')
     time.sleep(0.15)
     if request.endswith('Integration root') and not children:
         return json.dumps({'message':'Splitting work','delegate':[
@@ -159,6 +159,25 @@ When that child result is present, return JSON with message exactly "Integration
         client.post(api + '/posts', json={'id':'thanks','room':'general','parent':'integration-root','body':'Thanks!'}).raise_for_status()
         time.sleep(0.4)
         assert len(receipts()) == expected_turns
+        if not live:
+            agent_id = next(a['id'] for a in status['agents'] if a['name'] == 'fable')
+            client.post(api + '/tasks', json={'id':'website-task','title':'Website request',
+                'request':'Review the existing setup without changing identities.', 'intent':'review',
+                'criteria':['Existing connections keep working'], 'room':'general','owner':agent_id}).raise_for_status()
+            for _ in range(500):
+                work = client.get(api + '/work?task=website-task').json()
+                if work['tasks'][0]['status'] == 'done' and any(r['state'] == 'done' for r in work['runs']):
+                    break
+                time.sleep(0.1)
+            else:
+                raise AssertionError('Website task did not complete and report: ' + json.dumps(work))
+            website_run = next(r for r in work['runs'] if r['state'] == 'done')
+            assert website_run['runner'] == 'Kanbot' and not website_run['canCancel']
+            assert work['tasks'][0]['result'] == 'Verified Review the existing setup without changing identities.'
+            runs = [json.loads(line) for line in (directory/'runs.jsonl').read_text().splitlines()]
+            assert runs[-1]['brief']['criteria'] == ['Existing connections keep working']
+            assert runs[-1]['brief']['intent'] == 'review'
+            expected_turns += 1
         paused = cli('pause')
         assert paused['paused'] and not paused['running']
         # Reconnect preserves all completed jobs and doesn't repeat tools.
@@ -170,7 +189,7 @@ When that child result is present, return JSON with message exactly "Integration
                           'runtimes':['claude','codex'] if live else ['claude','codex','kimi'],
                           'verified':['private registration','WebSocket inbox','peer delegation',
                                       'session continuation','thread return','no chatter loop','pause/reconnect']
-                                     + ([] if live else ['nested delegation','parallel PTY execution','exact session resume'])}, indent=2))
+                                     + ([] if live else ['nested delegation','parallel PTY execution','exact session resume','website task brief','run receipt','result in Work'])}, indent=2))
     except Exception:
         print('Integration diagnostics retained at ' + str(directory), file=sys.stderr)
         # Keep the small test receipt on failure.
