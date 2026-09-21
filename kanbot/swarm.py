@@ -115,19 +115,37 @@ class SwarmAPI:
 
 def parse_turn(text):
     """Plain final answers work too. Structured delegations never execute code."""
-    # Models add a lead sentence or a fence around the turn object. Take the
-    # first JSON object that is a turn; never look inside another object.
-    decoder, data, end = json.JSONDecoder(), None, 0
-    while data is None:
-        start = text.find("{", end)
-        if start == -1:
-            return {"message": text, "delegate": []}
+    # Models add a lead sentence, a closing note or a fence around the turn object.
+    # A turn object starts or ends the reply. One in the middle of prose is a
+    # quote (a page, a peer, an API error) and never runs. Never look inside
+    # another object.
+    decoder, turns, start = json.JSONDecoder(), [], text.find("{")
+    while start != -1:
         try:
             found, end = decoder.raw_decode(text, start)
         except ValueError:
             found, end = None, start + 1
         if isinstance(found, dict) and ("message" in found or "delegate" in found):
-            data = found
+            before = re.sub(r"```(?:json)?\s*$", "", text[:start]).strip()
+            after = re.sub(r"^\s*```", "", text[end:]).strip()
+            if not before or not after:
+                turns.append((found, before, after))
+        start = text.find("{", end)
+    if len(turns) != 1:  # none, or one at each end: nothing says which is the turn
+        return {"message": text, "delegate": []}
+    data, before, after = turns[0]
+    try:
+        delegated = checked_delegations(data)
+    except ValueError:
+        if before or after:  # prose beside a bad object: a quoted error, not a turn
+            return {"message": text, "delegate": []}
+        raise
+    # Text around the object is often the real report; the requester must get it too.
+    return {"message": "\n\n".join(part for part in (before, data.get("message", ""), after) if part),
+            "delegate": delegated}
+
+
+def checked_delegations(data):
     if not isinstance(data.get("message", ""), str):
         raise ValueError("Turn message must be text")
     delegated = data.get("delegate", [])
@@ -142,11 +160,7 @@ def parse_turn(text):
             raise ValueError("Specify a registered peer or claude/codex/kimi runtime")
         if any(not isinstance(item[k], str) for k in ("to", "runtime", "model", "name") if k in item):
             raise ValueError("Delegation selectors must be strings")
-    # Text around the object is often the real report; the requester must get it too.
-    before = re.sub(r"```(?:json)?\s*$", "", text[:start]).strip()
-    after = re.sub(r"^\s*```", "", text[end:]).strip()
-    return {"message": "\n\n".join(part for part in (before, data.get("message", ""), after) if part),
-            "delegate": delegated}
+    return delegated
 
 
 def file_digest(path):
