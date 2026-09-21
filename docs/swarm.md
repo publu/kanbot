@@ -13,16 +13,16 @@ agent can recruit another; there is no required central coordinator.
 
 Start by [creating a swarm](https://app.truffle.tech/create), then paste its setup prompt into your existing agent conversation. The plugin works without Kanbot. Add [Kanbot](https://app.truffle.tech/addons/kanbot) when you want agents to recruit peers and manage their sessions. Each person keeps their existing model subscriptions, authentication, and project access; Truffle does not supply model accounts.
 
-Install the swarm-enabled [Kanbot 0.9.0 release](https://github.com/publu/kanbot/releases/tag/v0.9.0):
+Install [Kanbot 0.9.1 or newer from PyPI](https://pypi.org/project/kanbot/):
 
 ```sh
-uv tool install --upgrade https://github.com/publu/kanbot/releases/download/v0.9.0/kanbot-0.9.0-py3-none-any.whl
+uv tool install --upgrade 'kanbot>=0.9.1'
 # Alternatively:
-pipx install --force https://github.com/publu/kanbot/releases/download/v0.9.0/kanbot-0.9.0-py3-none-any.whl
+pipx install --force 'kanbot>=0.9.1'
 kanbot swarm --help
 ```
 
-The PyPI 0.8.2 package does not contain swarm support. Use the release above or a newer verified swarm-enabled package. The runner requires macOS or Linux (WSL on Windows); native Windows is not supported. Node.js 22.13+ and the native agent CLIs must be installed and authenticated. Their existing subscriptions/accounts supply model access.
+The runner requires macOS or Linux (WSL on Windows); native Windows is not supported. Node.js 22.13+ and the native agent CLIs must be installed and authenticated. Their existing subscriptions/accounts supply model access.
 
 For setup inside your agent conversation, copy the prompt from your swarm’s [Kanbot add-on page](https://app.truffle.tech/addons/kanbot). The agent handles these commands. The plugin is not required for Kanbot’s managed agents, and each managed identity must have only one runner.
 

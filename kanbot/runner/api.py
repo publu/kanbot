@@ -10,7 +10,7 @@ Two methods switch the connection into streaming mode:
                       first, then live); client→server stays JSON lines:
                       {"input": "<base64>"} and {"resize": [rows, cols]}.
 
-Methods (Herdr-shaped so their tutorials map 1:1):
+Agent control methods:
   ping · agent.list · agent.get · agent.read · agent.start · agent.prompt ·
   agent.send_keys · agent.wait · agent.kill · agent.remove · pane.report_state
 """
