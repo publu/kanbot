@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
 import urllib.request
 
@@ -11,6 +12,21 @@ from . import __version__
 from .config import config_dir
 
 URL = "https://pypi.org/pypi/kanbot/json"
+LIMIT = 2  # seconds, for the whole request
+
+
+def _sane(version) -> bool:
+    # The answer and the cache are outside input, and the notice prints this text.
+    return isinstance(version, str) and bool(re.fullmatch(r"[0-9A-Za-z.!+_-]{1,40}", version))
+
+
+def _ask(answer: list) -> None:
+    try:
+        request = urllib.request.Request(URL, headers={"User-Agent": f"kanbot/{__version__}"})
+        with urllib.request.urlopen(request, timeout=2) as response:
+            answer.append(json.loads(response.read(1 << 20))["info"]["version"])
+    except Exception:
+        pass
 
 
 def latest_version() -> str | None:
@@ -23,21 +39,24 @@ def latest_version() -> str | None:
         checked = 0.0
         try:
             cache = json.loads(path.read_text())
-            if isinstance(cache["latest"], (str, type(None))):  # None: never got an answer yet
+            if cache["latest"] is None or _sane(cache["latest"]):  # None: never got an answer yet
                 latest, checked = cache["latest"], float(cache["checked"])
         except Exception:
             pass  # no cache, or a corrupt one
         if 0 <= time.time() - checked < 86400:
             return latest
-        try:
-            request = urllib.request.Request(URL, headers={"User-Agent": f"kanbot/{__version__}"})
-            with urllib.request.urlopen(request, timeout=2) as response:
-                latest = str(json.load(response)["info"]["version"])
-        except Exception:
-            pass  # offline counts as checked: wait 2 s once a day, not on every command
-        # ponytail: plain write, no lock. Two commands at once can tear the file;
-        # a torn file reads as no cache and costs one more request.
-        path.write_text(json.dumps({"checked": time.time(), "latest": latest}))
+        # urlopen's timeout is per socket step and skips DNS, so the thread is the
+        # real limit. No answer counts as checked: wait 2 s once a day, not on every command.
+        answer: list = []
+        thread = threading.Thread(target=_ask, args=(answer,), daemon=True)
+        thread.start()
+        thread.join(LIMIT)
+        if answer and _sane(answer[0]):
+            latest = answer[0]
+        # Replace, not write: a second command never reads a half-written file.
+        tmp = path.with_suffix(f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps({"checked": time.time(), "latest": latest}))
+        os.replace(tmp, path)
     except Exception:
         pass
     return latest
@@ -61,4 +80,4 @@ def update_notice() -> str:
     if not newer(latest):
         return ""
     return (f"Kanbot {latest} is out (you have {__version__}). "
-            "Update: uv tool upgrade kanbot  (or: pipx upgrade kanbot)")
+            "Update: uv tool upgrade kanbot  (or: pipx upgrade kanbot, or: uvx kanbot@latest)")

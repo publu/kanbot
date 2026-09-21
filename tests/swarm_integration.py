@@ -102,7 +102,7 @@ def main():
             path = binaries / runtime
             path.write_text(FAKE.replace('PYTHON', sys.executable, 1))
             path.chmod(0o700)
-        env = {**os.environ, 'KANBOT_HOME':str(directory / 'home'),
+        env = {**os.environ, 'KANBOT_HOME':str(directory / 'home'), 'KANBOT_NO_UPDATE_CHECK':'1',
                'KANBOT_SOCK':str(directory.relative_to(root) / 'runner.sock'),
                'PATH':os.environ['PATH'] if live else str(binaries) + os.pathsep + os.environ['PATH'],
                'SWARM_TEST_RUNS':str(directory / 'runs.jsonl')}
