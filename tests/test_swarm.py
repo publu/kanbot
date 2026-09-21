@@ -449,8 +449,13 @@ class SwarmTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(status["error"].startswith("Low disk: new jobs held (5 MiB free, floor 1024 MiB)"))
             self.assertEqual(status["diskFreeBytes"], 5 << 20)
             self.assertEqual(self.runs, [])
-        self.swarm.wake.set()
-        await self.wait_status(sent["job"])
+            # A resumed turn reuses its own worktree, so a low disk must not hold it.
+            job = self.store.get("job", sent["job"])
+            job["directory"] = str(self.store.directory)
+            self.swarm.save_job(job)
+            self.swarm.wake.set()
+            await self.wait_status(sent["job"])
+        self.assertEqual(self.store.get("job", sent["job"])["status"], "done")
 
     async def test_start_tolerates_a_5xx_identity_check_but_not_a_refusal(self):
         self.api.me_status = 503
@@ -732,7 +737,7 @@ class LauncherTests(unittest.TestCase):
               rt.runtimeCommand("codex", {mode: "read"}),
             ]));""")
         self.assertEqual(claude_work, ["claude", ["-p", "--output-format", "json", "--permission-mode", "acceptEdits",
-                                                  "--allowedTools", "WebFetch", "WebSearch", "--add-dir", "/w/trees"]])
+                                                  "--allowedTools", "WebFetch", "WebSearch", "Read(//w/trees/**)"]])
         self.assertEqual(claude_resumed[1][-4:], ["--model", "haiku", "--resume", "s1"])
         self.assertNotIn("Bash", " ".join(claude_work[1]))  # a Claude seat has no sandbox
         self.assertEqual(claude_read, ["claude", ["-p", "--output-format", "json", "--permission-mode", "dontAsk",

@@ -194,7 +194,7 @@ def gc_trees(store, roots=None, apply=False):
     trees = {}
     for job in store.all("job"):
         trees.setdefault(job["root"], []).append(job)
-    unknown = [r for r in roots or [] if not any(root.startswith(r) for root in trees)]
+    unknown = [r for r in roots or [] if not r or not any(root.startswith(r) for root in trees)]
     if unknown:
         raise ValueError("Unknown root job: " + ", ".join(unknown))
     report = {"apply": apply, "trees": [], "skipped": [], "worktrees": 0, "seatFiles": 0, "seatBytes": 0}
@@ -606,7 +606,7 @@ class Swarm:
                 break
             # A new turn writes a worktree and model output. Hold it on a nearly
             # full disk; saved results still go out so finished work is not stuck.
-            if job["status"] == "queued" and free < floor:
+            if job["status"] == "queued" and free < floor and not os.path.isdir(job.get("directory") or ""):
                 self.last_error = f"Low disk: new jobs held ({free >> 20} MiB free, floor {floor >> 20} MiB); run kanbot swarm gc"
                 continue
             occupied.add(job["agent"])

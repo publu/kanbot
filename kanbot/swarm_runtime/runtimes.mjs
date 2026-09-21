@@ -34,12 +34,14 @@ export function runtimeCommand(
         ...(mode === "read" ? ["--tools", "Read,Grep,Glob"] : []),
         // A work seat may read web pages and the other job worktrees. No Bash:
         // a Claude seat has no sandbox, and web text must never reach a shell.
+        // A Read rule, not --add-dir: with acceptEdits, --add-dir also lets the
+        // seat write into the other worktrees.
         ...(mode === "work"
           ? [
               "--allowedTools",
               "WebFetch",
               "WebSearch",
-              ...(readable ? ["--add-dir", readable] : []),
+              ...(readable ? [`Read(/${readable}/**)`] : []),
             ]
           : []),
         ...(model ? ["--model", model] : []),

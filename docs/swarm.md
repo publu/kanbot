@@ -101,10 +101,10 @@ commit or artifact for reviewers. Worktrees remain available for inspection
 until `kanbot swarm gc --apply` archives and removes them.
 
 In work mode a Claude agent may edit files, fetch and search the web, and read
-the other job worktrees (`--allowedTools WebFetch WebSearch --add-dir`). It gets
-no shell, because it has no sandbox; a Codex agent runs scripts inside its
-write sandbox. Note that `--add-dir` also lets a Claude agent edit another
-worktree; the prompt forbids it, the launcher does not.
+the other job worktrees (`--allowedTools WebFetch WebSearch "Read(//<worktrees>/**)"`).
+It gets no shell, because it has no sandbox; a Codex agent runs scripts inside
+its write sandbox. The read access is a `Read` rule and not `--add-dir`: with
+`acceptEdits`, `--add-dir` would also let an agent write into another worktree.
 
 `--runtimes claude,codex,kimi` restricts which installed runtimes may be requested.
 Missing runtimes fail explicitly. Kimi here means the native `kimi acp` CLI, not
