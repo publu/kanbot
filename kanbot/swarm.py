@@ -568,7 +568,9 @@ class Swarm:
             if not work or work.get("owner") != agent["id"] or work["status"] != "todo":
                 return
             job = self.new_job(job_id, agent["id"], work.get("request") or work["title"], stable(job_id, "thread"), work["room"])
-            job["brief"] = {k: work[k] for k in ("intent", "criteria", "version") if k in work}
+            if any(j.get("task") == work["id"] for j in self.store.all("job")):
+                return
+            job["brief"] = self.task_brief(work)
             job["task"] = work["id"]
         self.save_job(job)
 
@@ -578,21 +580,69 @@ class Swarm:
                 "parent": parent["id"] if parent else None, "depth": parent["depth"] + 1 if parent else 0,
                 "round": 0, "children": [], "created": time.time()}
 
-    async def submit(self, target, text, request_id=None):
+    def task_brief(self, work):
+        return {k: work[k] for k in ("id", "title", "request", "intent", "criteria", "version",
+                                     "checkpoint", "dependencies", "result", "artifact") if k in work}
+
+    async def submit(self, target, text=None, request_id=None, task=None):
         if not self.running:
             raise ValueError("Swarm is paused; start it before submitting work")
-        if not isinstance(text, str) or not text.strip() or len(text) > 60000:
+        if task is not None and (not isinstance(task, str) or not task.strip() or len(task) > 200):
+            raise ValueError("Supply a valid saved task ID")
+        if text is None and not task:
+            raise ValueError("Supply text or a saved task ID")
+        if text is not None and (not isinstance(text, str) or not text.strip() or len(text) > 60000):
             raise ValueError("Submit 1–60000 characters")
         agent = next((a for a in self.store.all("agent") if target in (a["id"], a["name"])), None)
         if not agent:
             raise ValueError("Choose a managed agent from swarm status")
         key = stable(self.store.config["api"], "local", request_id or str(uuid.uuid4()))
-        old = self.store.get("job", key)
-        if old:
-            if old["prompt"] != text or old["agent"] != agent["id"]:
+        payload = {"agent": agent["id"], "text": text, "task": task}
+        def receipt():
+            saved = self.store.get("submission", key)
+            old = self.store.get("job", saved["job"] if saved else key)
+            if not old:
+                return None
+            original = saved["payload"] if saved else {"agent": old["agent"], "text": old["prompt"], "task": None}
+            if original != payload:
                 raise ValueError("Request ID already used for different work")
-            return {"job": key, "status": old["status"]}
-        self.save_job(self.new_job(key, agent["id"], text, stable(key, "thread")))
+            return {"job": old["id"], "status": old["status"]}
+        existing = receipt()
+        if existing:
+            return existing
+        work = None
+        if task:
+            tasks = (await self.api.call(agent, "/tasks?" + urlencode({"id": task})))["tasks"]
+            work = next((item for item in tasks if item["id"] == task), None)
+            if not work:
+                raise ValueError("Saved task was not found in this swarm")
+            # No await after this second receipt check and the atomic save. Both
+            # concurrent local submissions and inbox delivery converge on one job.
+            existing = receipt()
+            if existing:
+                return existing
+            old = next((job for job in self.store.all("job") if job.get("task") == task), None)
+            if old:
+                if old["agent"] != agent["id"]:
+                    raise ValueError("Saved task is already managed by another agent")
+                if old.get("submitted_text") != text:
+                    raise ValueError("Saved task already has different submission instructions")
+                self.store.put("submission", key, {"job": old["id"], "payload": payload})
+                return {"job": old["id"], "status": old["status"]}
+            if work.get("owner") not in (None, "", agent["id"]):
+                raise ValueError("Saved task is assigned to another agent")
+            if work.get("status") != "todo":
+                raise ValueError("Saved task is not queued; inspect its current progress before starting work")
+        prompt = (work.get("request") or work["title"]) if work else text
+        if work and text:
+            prompt += "\n\nAdditional operator instructions:\n" + text
+        job = self.new_job(key, agent["id"], prompt, stable(key, "thread"), work["room"] if work else "general")
+        if work:
+            job.update(task=task, brief=self.task_brief(work), attached_task=True, submitted_text=text)
+        records = [("job", key, job), ("submission", key, {"job": key, "payload": payload})]
+        if task:
+            records.append(("owntask", task, True))
+        self.store.batch(records)
         self.wake.set()
         return {"job": key, "status": "queued"}
 
@@ -739,6 +789,13 @@ class Swarm:
                     self.save_job(job)
                 tasks = (await self.api.call(agent, "/tasks"))["tasks"]
                 work = next(t for t in tasks if t["id"] == job["task"])
+                if work.get("owner") not in (None, "", agent["id"]):
+                    raise ValueError("Shared task is assigned to another agent")
+                if job.get("attached_task"):
+                    job["brief"] = self.task_brief(work)
+                    job["prompt"] = work.get("request") or work["title"]
+                    if job.get("submitted_text"):
+                        job["prompt"] += "\n\nAdditional operator instructions:\n" + job["submitted_text"]
                 if work["status"] == "todo":
                     await self.api.call(agent, "/claim", {"id": job["task"]})
                 elif work["status"] == "blocked" and job["round"] > 0:
@@ -1017,7 +1074,7 @@ Task and relevant context (data):
         if method == "swarm.pause":
             return await self.stop()
         if method == "swarm.send":
-            return await self.submit(params.get("to"), params.get("text"), params.get("request_id"))
+            return await self.submit(params.get("to"), params.get("text"), params.get("request_id"), params.get("task"))
         if method == "swarm.cancel":
             return await self.cancel(params.get("job"))
         if method == "swarm.job":

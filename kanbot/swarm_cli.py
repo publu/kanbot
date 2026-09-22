@@ -44,9 +44,10 @@ def add_parser(sub):
         commands.add_parser(cmd)
     send = commands.add_parser("send", help="give a managed agent work from any terminal or coding session")
     send.add_argument("to")
-    group = send.add_mutually_exclusive_group(required=True)
+    group = send.add_mutually_exclusive_group()
     group.add_argument("--text")
     group.add_argument("--file")
+    send.add_argument("--task", help="work on this saved swarm task instead of creating another task")
     send.add_argument("--request-id", help="reuse this ID to safely retry submission")
     for cmd in ("job", "cancel"):
         p = commands.add_parser(cmd)
@@ -196,18 +197,20 @@ def main(args):
             result = call("swarm." + cmd, job=args.id, _timeout=25)
         elif cmd == "send":
             text = Path(args.file).read_text() if args.file else args.text
-            if not text.strip() or len(text) > 60000:
+            if text is None and not args.task:
+                raise ValueError("Supply --text, --file, or --task")
+            if text is not None and (not text.strip() or len(text) > 60000):
                 raise ValueError("Submit 1–60000 characters")
             with (config_dir() / "swarm-send.lock").open("a") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX)
                 store = Store()
                 pending = store.get("outbox", "send")
-                if pending and not args.request_id and (pending["to"] != args.to or pending["text"] != text):
+                if pending and not args.request_id and (pending["to"] != args.to or pending["text"] != text or pending.get("task") != args.task):
                     raise ValueError("A previous submission is unresolved; repeat it or use an explicit --request-id")
                 request_id = args.request_id or (pending or {}).get("request_id") or str(__import__('uuid').uuid4())
-                store.put("outbox", "send", {"to": args.to, "text": text, "request_id": request_id})
+                store.put("outbox", "send", {"to": args.to, "text": text, "task": args.task, "request_id": request_id})
                 try:
-                    result = call("swarm.send", to=args.to, text=text, request_id=request_id, _timeout=25)
+                    result = call("swarm.send", to=args.to, text=text, task=args.task, request_id=request_id, _timeout=25)
                 except RuntimeError:
                     store.put("outbox", "send", None)  # definite server rejection, not a lost transport response
                     raise

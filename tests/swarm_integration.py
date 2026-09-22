@@ -118,7 +118,7 @@ def main():
         assert connected['service']['running'], connected
         # Get the exact test process PID for cleanup, not an unrelated runner.
         with socket.socket(socket.AF_UNIX) as sock:
-            sock.connect(str(root / env['KANBOT_SOCK']))
+            sock.connect(env['KANBOT_SOCK'])
             sock.sendall(b'{"method":"ping","id":1}\n')
             daemon = json.loads(sock.recv(65536))['pid']
         request = '@fable Integration root'
@@ -178,6 +178,32 @@ When that child result is present, return JSON with message exactly "Integration
             assert runs[-1]['brief']['criteria'] == ['Existing connections keep working']
             assert runs[-1]['brief']['intent'] == 'review'
             expected_turns += 1
+            # The website saves an unassigned first mission before any runner exists.
+            client.post(api + '/tasks', json={'id':'saved-first-mission','title':'Saved onboarding goal',
+                'request':'Read the saved onboarding context and verify the outcome.', 'intent':'review',
+                'criteria':['The original task gets the result'], 'room':'general','owner':''}).raise_for_status()
+            before_tasks = {t['id'] for t in client.get(api + '/tasks').json()['tasks']}
+            submitted = cli('send','fable','--task','saved-first-mission','--request-id','onboarding-once')
+            repeated = cli('send','fable','--task','saved-first-mission','--request-id','onboarding-once')
+            assert submitted['job'] == repeated['job']
+            for _ in range(500):
+                mission_work = client.get(api + '/work?task=saved-first-mission').json()
+                if mission_work['tasks'][0]['status'] == 'done' and any(r['state'] == 'done' for r in mission_work['runs']):
+                    break
+                time.sleep(0.1)
+            else:
+                raise AssertionError('Attached mission did not finish: ' + json.dumps(mission_work))
+            assert mission_work['tasks'][0]['owner'] == agent_id
+            assert mission_work['tasks'][0]['result'].startswith('Verified Read the saved onboarding context')
+            assert {t['id'] for t in client.get(api + '/tasks').json()['tasks']} == before_tasks
+            assert cli('send','fable','--task','saved-first-mission','--request-id','new-reconnect-id')['job'] == submitted['job']
+            conflicting = subprocess.run([sys.executable,'-m','kanbot','swarm','send','fable',
+                '--task','website-task','--request-id','onboarding-once'], cwd=root, env=env, capture_output=True,text=True,timeout=35)
+            assert conflicting.returncode and 'different work' in conflicting.stderr, conflicting.stderr
+            runs = [json.loads(line) for line in (directory/'runs.jsonl').read_text().splitlines()]
+            assert runs[-1]['brief']['id'] == 'saved-first-mission'
+            assert runs[-1]['brief']['criteria'] == ['The original task gets the result']
+            expected_turns += 1
         paused = cli('pause')
         assert paused['paused'] and not paused['running']
         # Reconnect preserves all completed jobs and doesn't repeat tools.
@@ -189,7 +215,7 @@ When that child result is present, return JSON with message exactly "Integration
                           'runtimes':['claude','codex'] if live else ['claude','codex','kimi'],
                           'verified':['private registration','WebSocket inbox','peer delegation',
                                       'session continuation','thread return','no chatter loop','pause/reconnect']
-                                     + ([] if live else ['nested delegation','parallel PTY execution','exact session resume','website task brief','run receipt','result in Work'])}, indent=2))
+                                     + ([] if live else ['nested delegation','parallel PTY execution','exact session resume','website task brief','run receipt','result in Work','saved mission attachment','no duplicate mission','submission task conflict'])}, indent=2))
     except Exception:
         print('Integration diagnostics retained at ' + str(directory), file=sys.stderr)
         # Keep the small test receipt on failure.
