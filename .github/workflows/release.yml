@@ -31,7 +31,8 @@ jobs:
           names = zipfile.ZipFile(whl).namelist()
           need = ["kanbot/server/static/app.js", "kanbot/server/static/index.html",
                   "kanbot/swarm.py", "kanbot/swarm_runtime/driver.mjs",
-                  "kanbot/swarm_runtime/runtimes.mjs"]
+                  "kanbot/swarm_runtime/runtimes.mjs",
+                  "kanbot/swarm_runtime/hermes-runtime.mjs", "kanbot/swarm_runtime/hermes-host.py"]
           missing = [n for n in need if n not in names]
           sys.exit("missing from wheel: " + ", ".join(missing) if missing else 0)
           PY

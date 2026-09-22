@@ -31,7 +31,7 @@ def add_parser(sub):
     connect.add_argument("--directory", default=os.getcwd())
     connect.add_argument("--mode", choices=["read", "work"], default="read")
     connect.add_argument("--allow-from", required=True, help="comma-separated trusted sender IDs or exact registered names")
-    connect.add_argument("--runtimes", default="claude,codex,kimi", help="installed runtimes agents may request")
+    connect.add_argument("--runtimes", default="claude,codex,kimi,hermes", help="installed runtimes agents may request")
     connect.add_argument("--invite-file", help="private invitation token or invitation URL in a file")
     connect.add_argument("--instructions", help="local project scope text file")
     connect.add_argument("--concurrency", type=int, default=4)
@@ -79,7 +79,7 @@ async def configure(args):
         raise ValueError("Node.js 22.13+ is required")
     requested = args.runtimes.split(",")
     if not set(requested) <= RUNTIMES:
-        raise ValueError("Supported swarm runtimes: claude,codex,kimi")
+        raise ValueError("Supported swarm runtimes: claude,codex,kimi,hermes")
     runtimes = [r for r in requested if shutil.which(r)]
     if args.runtime not in runtimes:
         raise ValueError("Entry runtime must be installed and enabled")
