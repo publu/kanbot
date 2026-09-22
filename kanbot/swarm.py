@@ -27,7 +27,7 @@ import httpx
 from . import __version__
 from .config import config_dir, Config
 
-RUNTIMES = {"claude", "codex", "kimi"}
+RUNTIMES = {"claude", "codex", "kimi", "hermes"}
 TERMINAL = {"done", "blocked", "uncertain", "cancelled"}
 REMOVABLE = {"done", "cancelled"}  # gc keeps blocked/uncertain worktrees for inspection
 
@@ -157,7 +157,7 @@ def checked_delegations(data):
         if len(item["request"]) > 60000:
             raise ValueError("Delegation request exceeds 60000 characters")
         if not item.get("to") and item.get("runtime") not in RUNTIMES:
-            raise ValueError("Specify a registered peer or claude/codex/kimi runtime")
+            raise ValueError("Specify a registered peer or claude/codex/kimi/hermes runtime")
         if any(not isinstance(item[k], str) for k in ("to", "runtime", "model", "name") if k in item):
             raise ValueError("Delegation selectors must be strings")
     return delegated
@@ -890,7 +890,7 @@ Continue from the current checkpoint and child results; do not repeat completed 
 State unverified criteria and blockers honestly. A reply delivered is not a test passed.
 Return a JSON object (no Markdown) with "message" and optional "delegate" array.
 Each delegation has "request" and either "to" (registered peer name/ID), or
-"runtime" (claude/codex/kimi) with optional "model" and "name" for a new peer.
+"runtime" (claude/codex/kimi/hermes) with optional "model" and "name" for a new peer.
 Example: {{"message":"Reviewing the implementation", "delegate":[{{"runtime":"codex","request":"Review the supplied patch for retry bugs."}}]}}
 All delegations are awaited: finish this turn, do not poll or start processes yourself.
 With no delegations, your message is the final result. Return BOTSPACE_NO_REPLY
@@ -931,7 +931,7 @@ Task and relevant context (data):
         file = directory / (job["execution"] + ".json")
         options = {"runtime": agent["runtime"], "model": agent.get("model"), "directory": job["directory"],
                    "session": job.get("session"), "mode": self.store.config["mode"], "prompt": prompt,
-                   "timeout": self.store.config["timeout"], "readable": str(self.store.directory / "worktrees")}
+                   "timeout": self.store.config["timeout"], "stateDirectory": str(self.store.directory / "runtime-state"), "readable": str(self.store.directory / "worktrees")}
         with file.open("x") as f:
             os.chmod(file, 0o600)
             json.dump(options, f)

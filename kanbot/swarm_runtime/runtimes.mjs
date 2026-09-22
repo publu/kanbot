@@ -1,10 +1,11 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
 
 // Each invocation owns a dedicated session. Never use --last or attach to a TUI.
 export function runtimeCommand(
   runtime,
-  { session, mode = "read", model, readable } = {},
+  { session, mode = "read", model, stateDirectory, readable } = {},
 ) {
   if (runtime === "codex")
     return [
@@ -32,25 +33,23 @@ export function runtimeCommand(
         "--permission-mode",
         mode === "work" ? "acceptEdits" : "dontAsk",
         ...(mode === "read" ? ["--tools", "Read,Grep,Glob"] : []),
-        // A work seat may read web pages and the other job worktrees. No Bash:
-        // a Claude seat has no sandbox, and web text must never reach a shell.
-        // A Read rule, not --add-dir: with acceptEdits, --add-dir also lets the
-        // seat write into the other worktrees.
         ...(mode === "work"
-          ? [
-              "--allowedTools",
-              "WebFetch",
-              "WebSearch",
-              ...(readable ? [`Read(/${readable}/**)`] : []),
-            ]
+          ? ["--allowedTools", "WebFetch", "WebSearch", ...(readable ? [`Read(/${readable}/**)`] : [])]
           : []),
         ...(model ? ["--model", model] : []),
         ...(session ? ["--resume", session] : []),
       ],
     ];
   if (runtime === "kimi") return ["kimi", ["acp"]];
-  throw Error("Choose --runtime kimi, codex, or claude.");
+  if (runtime === "hermes")
+    return [process.execPath, [fileURLToPath(new URL("./hermes-runtime.mjs", import.meta.url)), "--mode", mode, ...(stateDirectory ? ["--state", stateDirectory] : []), ...(readable ? ["--readable", readable] : [])]];
+  throw Error("Choose --runtime kimi, codex, claude, or hermes.");
 }
+
+// Set by a Claude Code session for its own children. Provider and login settings
+// (CLAUDE_CODE_USE_BEDROCK, CLAUDE_CODE_OAUTH_TOKEN, ...) are the operator's and stay.
+const sessionOnly =
+  /^CLAUDE_(PID|EFFORT|CODE_(CHILD_SESSION|SESSION_\w+|MESSAGING_\w+|ENTRYPOINT|EXECPATH|SSE_PORT))$/;
 
 export async function runRuntime(options) {
   const {
@@ -65,6 +64,8 @@ export async function runRuntime(options) {
   const env = { ...process.env, BOTSPACE_CONNECTOR: "1" };
   // Claude disallows accidental nesting; this is a separate connector-owned session.
   delete env.CLAUDECODE;
+  // A listener started inside a Claude session must not pass that session's identity to its turns.
+  for (const key of Object.keys(env)) if (sessionOnly.test(key)) delete env[key];
   const child = spawn(command, args, {
     cwd: directory,
     env,
@@ -107,7 +108,7 @@ export async function runRuntime(options) {
   exited.catch(() => {});
   const lines = createInterface({ input: child.stdout });
   try {
-    if (runtime === "kimi") {
+    if (runtime === "kimi" || runtime === "hermes") {
       let next = 1,
         collecting = false;
       const pending = new Map();
@@ -123,7 +124,7 @@ export async function runRuntime(options) {
         pending.clear();
       };
       exited.then(
-        () => fail(Error("Kimi ACP stopped before completing the request.")),
+        () => fail(Error(runtime + " ACP stopped before completing the request.")),
         fail,
       );
       lines.on("line", (line) => {
@@ -174,7 +175,7 @@ export async function runRuntime(options) {
           const p = pending.get(event.id);
           pending.delete(event.id);
           event.error
-            ? p.reject(Error("Kimi ACP: " + event.error.message))
+            ? p.reject(Error(runtime + " ACP request failed. Check the runtime login and project scope."))
             : p.resolve(event.result);
         }
       });
@@ -191,7 +192,7 @@ export async function runRuntime(options) {
         ...(session ? { sessionId: session } : {}),
       });
       session ||= opened.sessionId;
-      if (!session) throw Error("Kimi did not return a session ID.");
+      if (!session) throw Error(runtime + " did not return a session ID.");
       await onSession(session);
       if (options.model)
         await rpc("session/set_model", {
@@ -215,7 +216,7 @@ export async function runRuntime(options) {
         prompt: [{ type: "text", text: prompt }],
       });
       if (result.stopReason !== "end_turn")
-        throw Error("Kimi stopped: " + result.stopReason);
+        throw Error(runtime + " stopped: " + result.stopReason);
       child.stdin.end();
       kill();
     } else {

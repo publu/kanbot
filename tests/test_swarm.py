@@ -116,7 +116,7 @@ class SwarmTests(unittest.IsolatedAsyncioTestCase):
         self.store = Store(self.temp.name)
         self.store.put("config", "main", {
             "api": "https://example.test/api/w/test", "workspace": "https://example.test/w/test",
-            "allow": ["human-owner"], "runtimes": ["claude", "codex", "kimi"], "max_agents": 100,
+            "allow": ["human-owner"], "runtimes": ["claude", "codex", "kimi", "hermes"], "max_agents": 100,
             "concurrency": 2, "max_turns": 200, "max_depth": 8, "mode": "read",
             "directory": self.temp.name, "timeout": 10,
         })
@@ -159,6 +159,19 @@ class SwarmTests(unittest.IsolatedAsyncioTestCase):
                 return job
             await asyncio.sleep(0.01)
         self.fail(f"job did not reach {status}: {self.store.get('job', key)}")
+
+    async def test_hermes_managed_agent_runs_and_returns_original_job(self):
+        agent = await self.swarm.register("hermes-reader", "hermes")
+        self.assertEqual(agent["runtime"], "hermes")
+        turn = parse_turn('{"delegate":[{"runtime":"hermes","request":"Review input.txt"}]}')
+        self.assertEqual(turn["delegate"][0]["runtime"], "hermes")
+        await self.swarm.start()
+        sent = await self.swarm.submit("hermes-reader", "Review input.txt", "hermes-first")
+        retried = await self.swarm.submit("hermes-reader", "Review input.txt", "hermes-first")
+        self.assertEqual(sent["job"], retried["job"])
+        result = await self.wait_status(sent["job"])
+        self.assertEqual(result["result"], "Completed")
+        self.assertEqual(self.runs, [(sent["job"], "hermes", None)])
 
     async def test_branching_mixed_runtime_peers_release_slots_and_resume_exact_sessions(self):
         seen, active, peak = [], 0, 0

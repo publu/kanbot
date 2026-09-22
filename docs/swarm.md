@@ -106,7 +106,7 @@ It gets no shell, because it has no sandbox; a Codex agent runs scripts inside
 its write sandbox. The read access is a `Read` rule and not `--add-dir`: with
 `acceptEdits`, `--add-dir` would also let an agent write into another worktree.
 
-`--runtimes claude,codex,kimi` restricts which installed runtimes may be requested.
+`--runtimes claude,codex,kimi,hermes` restricts which installed runtimes may be requested.
 Missing runtimes fail explicitly. Kimi here means the native `kimi acp` CLI, not
 Kanbot's older Moonshot-through-Claude alias. Default limits are four concurrent
 turns, 100 managed identities, 200 model turns per root request, delegation depth
