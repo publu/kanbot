@@ -37,6 +37,7 @@ class FakeAPI:
         self.drop_result = False
         self.drop_registration = False
         self.tasks = {}
+        self.claims = []
         self.wiki_status = None
         self.me_status = None
 
@@ -89,6 +90,11 @@ class FakeAPI:
             return {"tasks": list(self.tasks.values())}
         if path in ("/claim", "/task-status"):
             item = self.tasks[body["id"]]
+            if path == "/claim":
+                if item.get("owner") not in (None, "", agent["id"]) or item["status"] != "todo":
+                    raise SwarmHTTPError(409)
+                self.claims.append(body["id"])
+                item["owner"] = agent["id"]
             item.update(status=body.get("status", "doing"), version=item["version"] + 1)
             return item
         return {"ok": True}
@@ -253,6 +259,102 @@ class SwarmTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(one["job"], two["job"])
         with self.assertRaisesRegex(ValueError, "different work"):
             await self.swarm.submit("fable", "different", "stable")
+
+    def saved_mission(self, task="mission", **changes):
+        work = {"id": task, "title": "Existing mission", "request": "Read the actual project brief.",
+                "room": "general", "owner": "", "status": "todo", "version": 1,
+                "intent": "review", "criteria": ["Evidence matches the saved outcome"],
+                "checkpoint": {"summary": "Prior investigation"}, **changes}
+        self.api.tasks[task] = work
+        return work
+
+    async def test_attached_mission_claims_once_and_finishes_original_task(self):
+        self.swarm.running = True
+        work = self.saved_mission()
+        result = await self.swarm.handle("swarm.send", {"to": "fable", "task": "mission", "request_id": "first"})
+        again = await self.swarm.submit("fable", None, "second", "mission")
+        self.assertEqual(result["job"], again["job"])
+        job = self.store.get("job", result["job"])
+        self.assertEqual(job["prompt"], work["request"])
+        self.assertEqual(job["brief"]["criteria"], work["criteria"])
+        self.assertEqual(job["brief"]["checkpoint"], work["checkpoint"])
+        await self.swarm.process(result["job"])
+        self.assertEqual(set(self.api.tasks), {"mission"})
+        self.assertEqual(self.api.claims, ["mission"])
+        self.assertEqual(self.api.tasks["mission"]["status"], "done")
+        self.assertEqual(len(self.runs), 1)
+        self.assertEqual((await self.swarm.submit("fable", None, "first", "mission"))["status"], "done")
+        self.assertEqual((await self.swarm.submit("fable", None, "third", "mission"))["job"], result["job"])
+        self.assertEqual(len(self.runs), 1)
+
+    async def test_attached_mission_rejects_request_payload_and_task_conflicts(self):
+        self.swarm.running = True
+        self.saved_mission()
+        self.saved_mission("other")
+        await self.swarm.submit("fable", "Keep the baseline", "same", "mission")
+        for text, task in [("Different", "mission"), ("Keep the baseline", "other"), ("Keep the baseline", None)]:
+            with self.assertRaisesRegex(ValueError, "different work"):
+                await self.swarm.submit("fable", text, "same", task)
+        with self.assertRaisesRegex(ValueError, "different submission"):
+            await self.swarm.submit("fable", "Changed", "new", "mission")
+        self.assertEqual(len(self.store.all("job")), 1)
+
+    async def test_attached_mission_rejects_wrong_owner_and_existing_progress(self):
+        self.swarm.running = True
+        for state in ("doing", "blocked", "review", "done"):
+            self.saved_mission(status=state, owner=self.agent["id"])
+            with self.assertRaisesRegex(ValueError, "not queued"):
+                await self.swarm.submit("fable", None, state, "mission")
+        self.saved_mission(owner="another-agent")
+        with self.assertRaisesRegex(ValueError, "another agent"):
+            await self.swarm.submit("fable", None, "wrong-owner", "mission")
+        with self.assertRaisesRegex(ValueError, "not found"):
+            await self.swarm.submit("fable", None, "missing", "missing")
+        self.assertEqual(self.store.all("job"), [])
+
+    async def test_attached_mission_rechecks_owner_before_execution(self):
+        self.swarm.running = True
+        work = self.saved_mission()
+        sent = await self.swarm.submit("fable", None, "one", "mission")
+        work["owner"] = "another-agent"
+        await self.swarm.process(sent["job"])
+        self.assertEqual(self.runs, [])
+        self.assertEqual(self.api.claims, [])
+        self.assertEqual(self.store.get("job", sent["job"])["status"], "blocked")
+
+    async def test_concurrent_attached_mission_and_inbox_share_one_job(self):
+        self.swarm.running = True
+        self.saved_mission(owner=self.agent["id"])
+        event = {"id": 70, "type": "task.created", "actor": "human-owner", "objectId": "mission"}
+        submitted, _ = await asyncio.gather(
+            self.swarm.submit("fable", None, "concurrent", "mission"),
+            self.swarm.ingest(self.agent, event))
+        self.assertEqual(len(self.store.all("job")), 1)
+        await self.swarm.process(submitted["job"])
+        self.assertEqual(len(self.runs), 1)
+
+    async def test_inbox_before_attachment_and_updated_brief_are_preserved(self):
+        self.swarm.running = True
+        self.saved_mission(owner=self.agent["id"])
+        await self.swarm.ingest(self.agent, {"id": 71, "type": "task.created", "actor": "human-owner", "objectId": "mission"})
+        sent = await self.swarm.submit("fable", None, "inbox-first", "mission")
+        self.assertEqual(len(self.store.all("job")), 1)
+        self.assertEqual(self.store.get("job", sent["job"])["task"], "mission")
+
+    async def test_attached_task_uses_latest_brief_without_losing_extra_instructions(self):
+        self.swarm.running = True
+        work = self.saved_mission()
+        sent = await self.swarm.submit("fable", "Verify twice", "latest", "mission")
+        work.update(request="Updated actual brief", criteria=["Latest criterion"], version=2)
+        prompts = []
+        async def capture(job, agent, prompt):
+            prompts.append(prompt)
+            return {"text": "Completed"}
+        self.swarm.driver = capture
+        await self.swarm.process(sent["job"])
+        self.assertIn("Updated actual brief", prompts[0])
+        self.assertIn("Latest criterion", prompts[0])
+        self.assertIn("Verify twice", prompts[0])
 
     async def test_concurrent_starts_share_one_scheduler_and_state_owner(self):
         await asyncio.gather(self.swarm.start(), self.swarm.start())

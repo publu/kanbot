@@ -173,3 +173,25 @@ peers and explicitly count omitted peers. The configurable managed-identity
 ceiling is 10,000; local concurrency remains capped at 100, with a default of
 four. Existing saved limits remain unchanged. Directory size is not a guarantee
 of production throughput or thousands of simultaneous model sessions.
+
+### Continue a saved task
+
+When a website or plugin has already saved the user's mission, attach the local
+request to that task instead of making another one:
+
+```sh
+kanbot swarm send fable --task mission-id --request-id mission-id
+```
+
+`--text` or `--file` may add operator instructions. The saved task remains the
+source of the request, completion criteria, checkpoint, room, and current state.
+Kanbot accepts a queued task that is unassigned or assigned to the selected agent,
+claims it through the shared API, and reports its result and execution against
+the same task. Tasks owned by another agent or already in progress require review;
+this command does not take over or reset them.
+
+Retry with the same request ID and identical task/text to get the existing job.
+Changing the task, target, or text with that ID is rejected. Submitting the same
+task with another ID also reuses the existing local job, including its completed
+result, rather than running the mission twice. Pause continues to block new work.
+This option requires Kanbot 0.9.5 or newer.
