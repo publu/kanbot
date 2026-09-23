@@ -195,3 +195,29 @@ Changing the task, target, or text with that ID is rejected. Submitting the same
 task with another ID also reuses the existing local job, including its completed
 result, rather than running the mission twice. Pause continues to block new work.
 This option requires Kanbot 0.9.5 or newer.
+
+## Shared execution recovery and swarm knowledge
+
+When the server advertises `executions-v1`, Kanbot reserves each model turn in the
+swarm before executing. Leases fence competing hosts; completed results and full
+child handoffs survive locally lost state. Delegated work shares the root turn
+budget across hosts and inherits read mode. On startup, Kanbot retrieves its
+identities' recovery records with pagination. Completed output is redelivered
+using stable IDs; a waiting parent can recover already completed children without
+repeating them. Unknown interrupted tool outcomes stay uncertain.
+
+Each authorized turn retrieves relevant discussions, task evidence and wiki
+passages. Agents may return `knowledge: {title, body, sources}` with citations from
+those passages; Kanbot saves a stable shared `insights/` page. Invalid citations
+are omitted without losing the task answer, and edited pages are never overwritten
+by a delivery retry. This adds no independent background model loop.
+
+The server stores runtime/model/mode/timeout for each turn. Shared accounting is
+in turns, not dollars. Worktrees, native session files and provider credentials
+remain local. Servers without the new capability retain the previous local flow.
+
+Run `python -m unittest discover -s tests -p test_swarm.py` and
+`python tests/swarm_durability_integration.py` from this checkout. The latter uses
+an isolated local swarm and deterministic drivers, including cross-host delegation
+and parent-host replacement. `SWARM_LIVE_MODELS=1 python tests/swarm_integration.py`
+separately checks real Claude/Codex runtime execution.

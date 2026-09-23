@@ -137,6 +137,47 @@ class SwarmTests(unittest.IsolatedAsyncioTestCase):
         self.store.db.close()
         self.temp.cleanup()
 
+    async def test_knowledge_citations_are_verified_and_retries_do_not_overwrite_pages(self):
+        job = self.swarm.new_job("knowledge-test", self.agent["id"], "Review", "thread")
+        job["knowledge_context"] = {"sources": [{"url": "https://example.test/evidence"}]}
+        self.swarm.save_job(job)
+        await self.swarm.save_knowledge(job, self.agent, {"title": "Finding", "body": "Invented", "sources": ["https://other.test/unread"]})
+        self.assertFalse(self.api.pages)
+        knowledge = {"title": "Finding", "body": "Verified", "sources": ["https://example.test/evidence"]}
+        await self.swarm.save_knowledge(job, self.agent, knowledge)
+        await self.swarm.save_knowledge(job, self.agent, knowledge)
+        self.assertEqual(len(self.api.pages), 1)
+        await self.swarm.save_knowledge(job, self.agent, {**knowledge, "body": "Conflicting"})
+        self.assertEqual(next(iter(self.api.pages.values()))["body"], "Verified")
+        self.assertIn("preserved", job["knowledge_warning"])
+
+    async def test_read_delegation_cannot_expand_to_work_on_another_host(self):
+        parent = self.swarm.new_job("read-root", self.agent["id"], "Review", "thread")
+        self.store.put("config", "main", {**self.store.config, "mode": "work"})
+        child = self.swarm.new_job("read-child", self.agent["id"], "Review", "child-thread", parent=parent)
+        self.assertEqual(child["mode"], "read")
+        self.assertEqual(self.swarm.effective_mode(child), "read")
+        self.assertEqual(await self.swarm.workdir(child), self.temp.name)
+        self.assertIn("Mode: read", self.swarm.prompt(child, self.agent))
+
+    async def test_lost_lease_stops_an_active_driver(self):
+        job = self.swarm.new_job("lease-test", self.agent["id"], "Review", "thread")
+        cancelled = asyncio.Event()
+        async def driver(*args):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+        async def lost(*args, **kwargs):
+            raise SwarmHTTPError(409, "Stale execution owner")
+        original_sleep = asyncio.sleep
+        async def immediate(_):
+            await original_sleep(0)
+        with patch.object(self.swarm, "driver", driver), patch.object(self.swarm, "execution_update", lost), patch("kanbot.swarm.asyncio.sleep", immediate):
+            with self.assertRaises(SwarmHTTPError):
+                await self.swarm.run_leased(job, self.agent, "Review")
+        self.assertTrue(cancelled.is_set())
+
     def work_repo(self):
         """Work mode over a real git project, so each job gets its own worktree."""
         repo = Path(self.temp.name) / "repo"
