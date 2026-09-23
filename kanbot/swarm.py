@@ -609,7 +609,8 @@ class Swarm:
                 "status": "queued", "root": parent["root"] if parent else job_id,
                 "parent": parent["id"] if parent else None, "depth": parent["depth"] + 1 if parent else 0,
                 "round": 0, "children": [], "created": time.time(),
-                "mode": parent.get("mode", self.store.config["mode"]) if parent else self.store.config["mode"]}
+                "mode": parent.get("mode", self.store.config["mode"]) if parent else self.store.config["mode"],
+                "knowledge_context": parent.get("knowledge_context", {}) if parent else {}}
 
     def task_brief(self, work):
         return {k: work[k] for k in ("id", "title", "request", "intent", "criteria", "version",
@@ -802,6 +803,26 @@ class Swarm:
         peer = local or next((a for a in self.directory if a["id"] == agent_id), None)
         return peer["name"] if peer else agent_id
 
+    @staticmethod
+    def merge_evidence(previous, current, task_id):
+        # New chatter must not evict the primary evidence already used by the
+        # parent/earlier turn. Refresh matching URLs, retain the bounded originals.
+        refreshed = {s["url"]: s for s in current.get("sources", [])}
+        task_sources = [s for s in current.get("sources", []) if s.get("id") == "task:" + task_id]
+        ordered = task_sources + [refreshed.get(s["url"], s) for s in previous.get("sources", [])] + current.get("sources", [])
+        sources, seen, remaining = [], set(), 18000
+        for source in ordered:
+            if source["url"] in seen:
+                continue
+            seen.add(source["url"])
+            text = source.get("text", "")[:min(3000, remaining)]
+            if len(sources) >= 12 or not text:
+                continue
+            remaining -= len(text)
+            sources.append({**source, "text": text, "truncated": source.get("truncated", False) or len(text) < len(source.get("text", ""))})
+        return {**current, "sources": sources, "characters": 18000 - remaining,
+                "omitted": current.get("omitted", 0) + len(seen) - len(sources)}
+
     async def shared_support(self, agent):
         if self.shared is None:
             context = await self.api.call(agent, "/context")
@@ -945,7 +966,8 @@ class Swarm:
                     raise ValueError("Root task turn limit reached")
                 if self.shared:
                     from urllib.parse import urlencode
-                    job["knowledge_context"] = await self.api.call(agent, "/knowledge?" + urlencode({"q": job["prompt"][:1000], "task": job["task"]}))
+                    fresh_evidence = await self.api.call(agent, "/knowledge?" + urlencode({"q": job["prompt"][:1000], "task": job["task"]}))
+                    job["knowledge_context"] = self.merge_evidence(job.get("knowledge_context", {}), fresh_evidence, job["task"])
                 job["execution"] = stable(job["id"], job["round"])
                 if self.shared:
                     entry = await self.execution_update(job, agent, "claim", task=job["task"], job=job["id"], root=job["root"],

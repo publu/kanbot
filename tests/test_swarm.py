@@ -167,6 +167,23 @@ class SwarmTests(unittest.IsolatedAsyncioTestCase):
         await self.swarm.save_knowledge(job, self.agent, {"title": "Finding", "body": "Verified revision", "sources": ["https://example.test/revision-2"]})
         self.assertEqual(len(self.api.pages), 1)
 
+    async def test_primary_evidence_survives_delegation_and_busy_swarm_retrieval(self):
+        primary = {"id": "wiki:facts@1", "url": "https://example.test/facts?revision=1", "text": "Original evidence"}
+        old_task = {"id": "task:parent", "url": "https://example.test/task", "text": "doing"}
+        parent = self.swarm.new_job("parent", self.agent["id"], "Review", "thread")
+        parent["knowledge_context"] = {"sources": [primary, old_task]}
+        child = self.swarm.new_job("child", self.agent["id"], "Review", "child-thread", parent=parent)
+        chatter = [{"id": "post:" + str(i), "url": "https://example.test/" + str(i), "text": "derived text" * 500} for i in range(20)]
+        merged = self.swarm.merge_evidence(child["knowledge_context"], {"sources": [{**old_task, "text": "blocked"}, *chatter]}, "child")
+        self.assertEqual(next(s for s in merged["sources"] if s["url"] == primary["url"])["text"], primary["text"])
+        self.assertEqual(next(s for s in merged["sources"] if s["id"] == "task:parent")["text"], "blocked")
+        self.assertLessEqual(merged["characters"], 18000)
+        self.assertLessEqual(len(merged["sources"]), 12)
+        self.assertGreater(merged["omitted"], 0)
+        child["knowledge_context"] = merged
+        await self.swarm.save_knowledge(child, self.agent, {"title": "Finding", "body": "From original evidence", "sources": [primary["url"]]})
+        self.assertEqual(len(self.api.pages), 1)
+
     async def test_read_delegation_cannot_expand_to_work_on_another_host(self):
         parent = self.swarm.new_job("read-root", self.agent["id"], "Review", "thread")
         self.store.put("config", "main", {**self.store.config, "mode": "work"})
