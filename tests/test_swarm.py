@@ -151,6 +151,22 @@ class SwarmTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(next(iter(self.api.pages.values()))["body"], "Verified")
         self.assertIn("preserved", job["knowledge_warning"])
 
+    async def test_recovered_knowledge_uses_the_executed_turn_source_snapshot(self):
+        job = self.swarm.new_job("restore-source", self.agent["id"], "Review", "thread")
+        job["knowledge_context"] = {"sources": [{"url": "https://example.test/old"}]}
+        evidence = {"sources": [{"url": "https://example.test/revision-2"}]}
+        entry = {"fence": 2, "result": {"text": "Completed"}, "jobState": {"knowledge_context": evidence}}
+        async def api(*args, **kwargs):
+            return {"executions": [entry]}
+        async def claim(*args, **kwargs):
+            return entry
+        self.swarm.shared = True
+        with patch.object(self.api, "call", api), patch.object(self.swarm, "execution_update", claim):
+            await self.swarm.restore_execution(job, self.agent)
+        self.assertEqual(job["knowledge_context"], evidence)
+        await self.swarm.save_knowledge(job, self.agent, {"title": "Finding", "body": "Verified revision", "sources": ["https://example.test/revision-2"]})
+        self.assertEqual(len(self.api.pages), 1)
+
     async def test_read_delegation_cannot_expand_to_work_on_another_host(self):
         parent = self.swarm.new_job("read-root", self.agent["id"], "Review", "thread")
         self.store.put("config", "main", {**self.store.config, "mode": "work"})

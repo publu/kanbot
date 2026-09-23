@@ -221,3 +221,14 @@ Run `python -m unittest discover -s tests -p test_swarm.py` and
 an isolated local swarm and deterministic drivers, including cross-host delegation
 and parent-host replacement. `SWARM_LIVE_MODELS=1 python tests/swarm_integration.py`
 separately checks real Claude/Codex runtime execution.
+
+The recovery integration also has an opt-in real-runtime mode:
+`SWARM_LIVE_MODELS=1 python tests/swarm_durability_integration.py` uses installed,
+authenticated Claude, Codex, Kimi and Hermes (five model turns). To verify a subset,
+set `SWARM_LIVE_RUNTIMES=claude,codex,hermes`; excluded runtimes use explicit fixtures
+and the report lists both sets. Subscription/provider rejections are failures,
+not a successful live-runtime check. Ensure each selected executable is on PATH.
+
+The detached round-trip test accepts `SWARM_ROOT_RUNTIME=hermes` and
+`SWARM_PEER_RUNTIME=codex` with `SWARM_LIVE_MODELS=1` to verify Hermes session
+continuation and managed pause/reconnect. Defaults remain Claude and Codex.

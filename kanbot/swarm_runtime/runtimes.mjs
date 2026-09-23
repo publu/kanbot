@@ -2,6 +2,16 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
+// Use bounded classifications, never echo raw provider errors or credentials.
+export function acpError(runtime, error) {
+  const message = typeof error?.message === "string" ? error.message.slice(0, 2000) : "";
+  if (/subscription/i.test(message) && /403|access|upgrade/i.test(message))
+    return Error(runtime + " account subscription does not grant access to this runtime. Check the account's plan or configured provider.");
+  if (/authentication required|unauthorized|invalid.{0,20}(api.?key|token)/i.test(message))
+    return Error(runtime + " authentication was rejected. Reconnect the runtime's configured account.");
+  return Error(runtime + " ACP request failed. Check the runtime login and project scope.");
+}
+
 // Each invocation owns a dedicated session. Never use --last or attach to a TUI.
 export function runtimeCommand(
   runtime,
@@ -175,7 +185,7 @@ export async function runRuntime(options) {
           const p = pending.get(event.id);
           pending.delete(event.id);
           event.error
-            ? p.reject(Error(runtime + " ACP request failed. Check the runtime login and project scope."))
+            ? p.reject(acpError(runtime, event.error))
             : p.resolve(event.result);
         }
       });

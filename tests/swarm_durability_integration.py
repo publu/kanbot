@@ -1,5 +1,6 @@
 """Real private swarm API; deterministic drivers and two independent host stores.
-No production identities, external sends or paid models. Tests dropped delivery,
+No production identities or external sends. Set SWARM_LIVE_MODELS=1 to use real
+installed Claude/Codex/Kimi/Hermes runtimes (five paid model turns). Tests dropped delivery,
 remote delegation/root accounting, cited synthesis, and fresh-host recovery.
 """
 import asyncio
@@ -7,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import shutil
 import subprocess
 import tempfile
 from unittest.mock import patch
@@ -15,6 +17,7 @@ import httpx
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from kanbot.swarm import Store, Swarm, SwarmAPI, stable
+from kanbot.runner.panes import PaneManager
 
 
 class DropResponse(SwarmAPI):
@@ -33,6 +36,10 @@ class DropResponse(SwarmAPI):
 
 
 async def scenario(origin, directory):
+    live = os.environ.get("SWARM_LIVE_MODELS") == "1"
+    selected = set(os.environ.get("SWARM_LIVE_RUNTIMES", "claude,codex,kimi,hermes").split(",")) if live else set()
+    assert selected <= {"claude", "codex", "kimi", "hermes"}
+    panes = PaneManager() if live else None
     async with httpx.AsyncClient(base_url=origin) as owner:
         response = await owner.post("/api/workspaces", json={"id": "durability", "name": "Durability fixture", "visibility": "private"})
         response.raise_for_status()
@@ -41,7 +48,7 @@ async def scenario(origin, directory):
         await owner.post(api_url + "/wiki", json={"id": "facts", "title": "Recovery evidence", "body": "Completed output must survive a lost response. Unknown effects require reconciliation.", "expectedRevision": 0, "sources": []})
         cfg = {"api": api_url, "workspace": origin + "/w/durability", "invite": invite,
                "allow": ["fixture-owner"], "runtimes": ["claude", "codex", "kimi", "hermes"], "max_agents": 10,
-               "concurrency": 4, "max_turns": 5, "max_depth": 5, "mode": "read", "directory": str(directory), "timeout": 30}
+               "concurrency": 4, "max_turns": 5, "max_depth": 5, "mode": "read", "directory": str(directory), "timeout": 180 if live else 30}
         stores = [Store(directory / name) for name in ("host-a", "host-b", "host-c")]
         for store in stores:
             store.put("config", "main", cfg)
@@ -52,6 +59,14 @@ async def scenario(origin, directory):
             evidence = job.get("knowledge_context", {}).get("sources", [])
             assert evidence, "Agent must receive sourced swarm information"
             assert "untrusted" in prompt
+            if agent["runtime"] in selected:
+                if job["prompt"] == "Recovery evidence synthesis" and not job["children"]:
+                    prompt += '\nTest operator request: Delegate exactly three independent bounded reviews now, one each to existing peers coder, researcher, reviewer. Each should synthesize the supplied swarm recovery evidence, return a useful finding, and include a knowledge object with title, body and exact supplied source URLs. Do not create other agents or call tools. End this turn after emitting the three delegations.'
+                else:
+                    prompt += '\nTest operator request: Synthesize the supplied recovery evidence and child results, if any. No tools or further delegation. Return one JSON object with message and knowledge (title, body, sources). The knowledge body must distinguish established findings from uncertainty and cite at least one exact URL supplied in swarm_sources. This is the final result.'
+                executor = b if agent["id"] == remote["id"] else (c if c and c.store.get("job", job["id"], {}).get("status") == "running" else a)
+                print("Running real " + agent["runtime"] + " round " + str(job["round"]), flush=True)
+                return await executor.run_pane(job, agent, prompt)
             if job["prompt"] == "Recovery evidence synthesis" and not job["children"]:
                 return {"text": json.dumps({"message": "Splitting recovery review", "delegate": [
                     {"to": "coder", "request": "Recovery evidence implementation"},
@@ -62,10 +77,11 @@ async def scenario(origin, directory):
                 "sources": [evidence[0]["url"]]}})}
 
         api_a, api_b = DropResponse(cfg), SwarmAPI(cfg)
-        a, b = Swarm(None, stores[0], api_a, driver), Swarm(None, stores[1], api_b, driver)
+        a, b = Swarm(panes, stores[0], api_a, driver), Swarm(panes, stores[1], api_b, driver)
         c = None
         try:
-            with patch("kanbot.swarm.shutil.which", return_value="/fixture/runtime"):
+            installed = shutil.which
+            with patch("kanbot.swarm.shutil.which", side_effect=lambda runtime: installed(runtime) if runtime in selected else "/fixture/runtime"):
                 root_agent = await a.register("lead", "claude")
                 await a.register("coder", "codex")
                 await a.register("researcher", "kimi")
@@ -78,11 +94,11 @@ async def scenario(origin, directory):
             assert stores[0].get("job", job["id"])["status"] == "delivering", stores[0].get("job", job["id"])
             assert len(calls) == 1
             # New runner instance reads the saved server result; no repeat model call.
-            a = Swarm(None, stores[0], api_a, driver)
+            a = Swarm(panes, stores[0], api_a, driver)
             await a.refresh_directory()
             await a.process(job["id"])
             assert stores[0].get("job", job["id"])["status"] == "delivering"
-            a = Swarm(None, stores[0], api_a, driver)
+            a = Swarm(panes, stores[0], api_a, driver)
             await a.refresh_directory()
             await a.process(job["id"])
             root = stores[0].get("job", job["id"])
@@ -105,7 +121,7 @@ async def scenario(origin, directory):
             # the parent identity recovers completed siblings from shared records.
             stores[2].put("agent", root_agent["id"], root_agent)
             api_c = SwarmAPI(cfg)
-            c = Swarm(None, stores[2], api_c, driver)
+            c = Swarm(panes, stores[2], api_c, driver)
             await c.recover_shared()
             await c.process(job["id"])
             waiting = stores[2].get("job", job["id"])
@@ -130,7 +146,10 @@ async def scenario(origin, directory):
             assert len(records["executions"]) == 5
             assert all(e["phase"] == "delivered" for e in records["executions"])
             pages = (await api_a.call(root_agent, "/wiki"))["pages"]
-            assert len([p for p in pages if p["id"].startswith("insights/")]) == 4
+            assert len([p for p in pages if p["id"].startswith("insights/")]) == 4, [
+                {"id": j["id"], "agent": j["agent"], "warning": j.get("knowledge_warning"),
+                 "page": j.get("knowledge_page"), "turn": j.get("turn", {}).get("text", "")[:400]}
+                for store in stores for j in store.all("job") if j.get("status") == "done"]
             assert all(p["sources"] for p in pages if p["id"].startswith("insights/"))
             # A fresh host can reconstruct and redeliver completed jobs from the API.
             await api_c.close()
@@ -139,7 +158,7 @@ async def scenario(origin, directory):
             for agent in stores[0].all("agent"):
                 stores[3].put("agent", agent["id"], agent)
             api_c = SwarmAPI(cfg)
-            c = Swarm(None, stores[3], api_c, driver)
+            c = Swarm(panes, stores[3], api_c, driver)
             await c.recover_shared()
             for recovered in stores[3].all("job"):
                 await c.process(recovered["id"])
@@ -147,7 +166,7 @@ async def scenario(origin, directory):
             assert len(calls) == 5, "Recovery repeated completed model work"
             thread = await api_a.call(root_agent, "/threads/root-thread")
             assert len(thread["replies"]) == 2, "Recovery duplicated a result post"
-            print(json.dumps({"passed": True, "hosts": 4, "runtime_fixtures": 4, "turns": 5,
+            print(json.dumps({"passed": True, "hosts": 4, "live_turns": sum(runtime in selected for _, _, runtime in calls), "fixture_turns": sum(runtime not in selected for _, _, runtime in calls), "live_models": live, "live_runtimes": sorted(selected), "fixture_runtimes": sorted({"claude", "codex", "kimi", "hermes"} - selected), "runtimes": ["claude", "codex", "kimi", "hermes"], "turns": 5,
                 "verified": ["lost completion response", "lost handoff response", "server result reuse", "cross-host delegation",
                 "shared root budget", "waiting parent host loss", "single parent continuation", "cited wiki synthesis", "fresh-host recovery", "idempotent redelivery"]}, indent=2))
         finally:
@@ -165,8 +184,9 @@ async def scenario(origin, directory):
 def main():
     root = Path(__file__).resolve().parent.parent
     (root / "test-results").mkdir(exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="durability-", dir=root / "test-results") as temp:
-        directory = Path(temp)
+    temp = tempfile.TemporaryDirectory(prefix="durability-", dir=root / "test-results")
+    try:
+        directory = Path(temp.name)
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0)); port = sock.getsockname()[1]
         origin = f"http://127.0.0.1:{port}"
@@ -183,6 +203,12 @@ def main():
                 asyncio.run(scenario(origin, directory))
             finally:
                 server.terminate(); server.wait(timeout=10)
+    except BaseException:
+        temp._finalizer.detach()
+        print("Private failure diagnostics retained at " + temp.name, file=sys.stderr)
+        raise
+    else:
+        temp.cleanup()
 
 
 if __name__ == "__main__":
