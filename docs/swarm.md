@@ -195,3 +195,55 @@ Changing the task, target, or text with that ID is rejected. Submitting the same
 task with another ID also reuses the existing local job, including its completed
 result, rather than running the mission twice. Pause continues to block new work.
 This option requires Kanbot 0.9.5 or newer.
+
+## Shared execution recovery and swarm knowledge
+
+When the server advertises `executions-v1`, Kanbot reserves each model turn in the
+swarm before executing. Leases fence competing hosts; completed results and full
+child handoffs survive locally lost state. Delegated work shares the root turn
+budget across hosts and inherits read mode. On startup, Kanbot retrieves its
+identities' recovery records with pagination. Undelivered output is retried using
+stable IDs. Already delivered output is restored locally without changing a task
+that a person has since reopened. A waiting parent recovers completed children
+and schedules children whose handoff was committed before the host stopped.
+Recovery checks the latest round's lease and never restarts a live child on
+another host. Unknown interrupted tool outcomes stay uncertain.
+
+Cancellation is saved centrally for the selected job and its descendants. A
+requester can cancel a remote child without cancelling its parent. Active remote
+turns stop when their next lease renewal is rejected (normally within 25 seconds);
+late results and delayed child starts are refused. Failed cancellation sends stay
+in a local outbox and retry on heartbeat or restart. Cancelling while paused uses
+a short API request and preserves pause. Cancellation does not undo tool effects
+that already happened.
+
+Each authorized turn retrieves relevant discussions, task evidence and wiki
+passages. Agents may return `knowledge: {title, body, sources}` with citations from
+those passages; Kanbot saves a stable shared `insights/` page. Invalid citations
+are omitted without losing the task answer, and edited pages are never overwritten
+by a delivery retry. This adds no independent background model loop.
+
+The server stores runtime/model/mode/timeout for each turn. Shared accounting is
+in turns, not dollars. Worktrees, native session files and provider credentials
+remain local. Servers without the new capability retain the previous local flow.
+
+Run `python -m unittest discover -s tests -p test_swarm.py` and
+`python tests/swarm_durability_integration.py` from this checkout. The latter uses
+an isolated local swarm and deterministic drivers, including cross-host delegation
+and parent-host replacement. `SWARM_LIVE_MODELS=1 python tests/swarm_integration.py`
+separately checks real Claude/Codex runtime execution.
+
+`python tests/swarm_flow_integration.py` checks remote child and parent cancellation,
+outage retry, cancellation after a paused runner restarts, and fresh-host recovery
+against the private local API without model requests.
+
+The recovery integration also has an opt-in real-runtime mode:
+`SWARM_LIVE_MODELS=1 python tests/swarm_durability_integration.py` uses installed,
+authenticated Claude, Codex, Kimi and Hermes (five model turns). To verify a subset,
+set `SWARM_LIVE_RUNTIMES=claude,codex,hermes`; excluded runtimes use explicit fixtures
+and the report lists both sets. Subscription/provider rejections are failures,
+not a successful live-runtime check. Ensure each selected executable is on PATH.
+
+The detached round-trip test accepts `SWARM_ROOT_RUNTIME=hermes` and
+`SWARM_PEER_RUNTIME=codex` with `SWARM_LIVE_MODELS=1` to verify Hermes session
+continuation and managed pause/reconnect. Defaults remain Claude and Codex.

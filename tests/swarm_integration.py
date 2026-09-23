@@ -68,6 +68,11 @@ else:
 
 def main():
     live = os.environ.get('SWARM_LIVE_MODELS') == '1'
+    root_runtime = os.environ.get('SWARM_ROOT_RUNTIME', 'claude') if live else 'claude'
+    peer_runtime = os.environ.get('SWARM_PEER_RUNTIME', 'codex') if live else 'codex'
+    assert root_runtime in ('claude', 'codex', 'kimi', 'hermes')
+    assert peer_runtime in ('claude', 'codex', 'kimi', 'hermes')
+    assert root_runtime != peer_runtime
     root = Path(__file__).resolve().parent.parent
     server_repo = Path(os.environ.get('SWARM_SERVER_REPO', root.parent / 'botspace'))
     (root / 'test-results').mkdir(exist_ok=True)
@@ -112,7 +117,7 @@ def main():
             if p.returncode:
                 raise AssertionError(f'{args[0]} failed: {p.stderr}')
             return json.loads(p.stdout)
-        connected = cli('connect', origin + '/w/' + slug, '--name','fable','--runtime','claude',
+        connected = cli('connect', origin + '/w/' + slug, '--name','fable','--runtime',root_runtime,
                         '--allow-from',owner,'--invite-file',str(directory/'invite'),
                         '--directory',str(directory),'--concurrency','2','--timeout','90' if live else '30')
         assert connected['service']['running'], connected
@@ -123,9 +128,9 @@ def main():
             daemon = json.loads(sock.recv(65536))['pid']
         request = '@fable Integration root'
         if live:
-            request += '''. This is a connection test: do not use tools or inspect files.
-On your first turn, delegate to runtime codex with this exact request:
-"Do not use any tools. Return JSON with message equal to Codex connection verified."
+            request += f'''. This is a connection test: do not use tools or inspect files.
+On your first turn, delegate to runtime {peer_runtime} with this exact request:
+"Do not use any tools. Return JSON with message equal to {peer_runtime} connection verified."
 When that child result is present, return JSON with message exactly "Integration complete" and no delegations.'''
         post = client.post(api + '/posts', json={'id':'integration-root','room':'general','body':request})
         post.raise_for_status()
@@ -154,7 +159,7 @@ When that child result is present, return JSON with message exactly "Integration
                 jobs = [json.loads(row[0]) for row in db.execute("SELECT data FROM records WHERE kind='job'")]
             root_job = next(j for j in jobs if not j.get('parent'))
             assert root_job['round'] == 1 and root_job.get('session')
-            assert any(j['result'] == 'Codex connection verified' for j in jobs)
+            assert any(j['result'] == peer_runtime + ' connection verified' for j in jobs)
         # Joining a thread does not let later chatter re-trigger paid turns.
         client.post(api + '/posts', json={'id':'thanks','room':'general','parent':'integration-root','body':'Thanks!'}).raise_for_status()
         time.sleep(0.4)
@@ -212,7 +217,7 @@ When that child result is present, return JSON with message exactly "Integration
         assert len(receipts()) == expected_turns
         cli('pause')
         print(json.dumps({'passed':True,'live_models':live,'agents':expected_agents,'runtime_turns':expected_turns,
-                          'runtimes':['claude','codex'] if live else ['claude','codex','kimi'],
+                          'runtimes':[root_runtime,peer_runtime] if live else ['claude','codex','kimi'],
                           'verified':['private registration','WebSocket inbox','peer delegation',
                                       'session continuation','thread return','no chatter loop','pause/reconnect']
                                      + ([] if live else ['nested delegation','parallel PTY execution','exact session resume','website task brief','run receipt','result in Work','saved mission attachment','no duplicate mission','submission task conflict'])}, indent=2))

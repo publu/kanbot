@@ -137,6 +137,110 @@ class SwarmTests(unittest.IsolatedAsyncioTestCase):
         self.store.db.close()
         self.temp.cleanup()
 
+    async def test_knowledge_citations_are_verified_and_retries_do_not_overwrite_pages(self):
+        job = self.swarm.new_job("knowledge-test", self.agent["id"], "Review", "thread")
+        job["knowledge_context"] = {"sources": [{"url": "https://example.test/evidence"}]}
+        self.swarm.save_job(job)
+        await self.swarm.save_knowledge(job, self.agent, {"title": "Finding", "body": "Invented", "sources": ["https://other.test/unread"]})
+        self.assertFalse(self.api.pages)
+        knowledge = {"title": "Finding", "body": "Verified", "sources": ["https://example.test/evidence"]}
+        await self.swarm.save_knowledge(job, self.agent, knowledge)
+        await self.swarm.save_knowledge(job, self.agent, knowledge)
+        self.assertEqual(len(self.api.pages), 1)
+        await self.swarm.save_knowledge(job, self.agent, {**knowledge, "body": "Conflicting"})
+        self.assertEqual(next(iter(self.api.pages.values()))["body"], "Verified")
+        self.assertIn("preserved", job["knowledge_warning"])
+
+    async def test_recovered_knowledge_uses_the_executed_turn_source_snapshot(self):
+        job = self.swarm.new_job("restore-source", self.agent["id"], "Review", "thread")
+        job["knowledge_context"] = {"sources": [{"url": "https://example.test/old"}]}
+        evidence = {"sources": [{"url": "https://example.test/revision-2"}]}
+        entry = {"fence": 2, "result": {"text": "Completed"}, "jobState": {"knowledge_context": evidence}}
+        async def api(*args, **kwargs):
+            return {"executions": [entry]}
+        async def claim(*args, **kwargs):
+            return entry
+        self.swarm.shared = True
+        with patch.object(self.api, "call", api), patch.object(self.swarm, "execution_update", claim):
+            await self.swarm.restore_execution(job, self.agent)
+        self.assertEqual(job["knowledge_context"], evidence)
+        await self.swarm.save_knowledge(job, self.agent, {"title": "Finding", "body": "Verified revision", "sources": ["https://example.test/revision-2"]})
+        self.assertEqual(len(self.api.pages), 1)
+
+    async def test_primary_evidence_survives_delegation_and_busy_swarm_retrieval(self):
+        primary = {"id": "wiki:facts@1", "url": "https://example.test/facts?revision=1", "text": "Original evidence"}
+        old_task = {"id": "task:parent", "url": "https://example.test/task", "text": "doing"}
+        parent = self.swarm.new_job("parent", self.agent["id"], "Review", "thread")
+        parent["knowledge_context"] = {"sources": [primary, old_task]}
+        child = self.swarm.new_job("child", self.agent["id"], "Review", "child-thread", parent=parent)
+        chatter = [{"id": "post:" + str(i), "url": "https://example.test/" + str(i), "text": "derived text" * 500} for i in range(20)]
+        merged = self.swarm.merge_evidence(child["knowledge_context"], {"sources": [{**old_task, "text": "blocked"}, *chatter]}, "child")
+        self.assertEqual(next(s for s in merged["sources"] if s["url"] == primary["url"])["text"], primary["text"])
+        self.assertEqual(next(s for s in merged["sources"] if s["id"] == "task:parent")["text"], "blocked")
+        self.assertLessEqual(merged["characters"], 18000)
+        self.assertLessEqual(len(merged["sources"]), 12)
+        self.assertGreater(merged["omitted"], 0)
+        child["knowledge_context"] = merged
+        await self.swarm.save_knowledge(child, self.agent, {"title": "Finding", "body": "From original evidence", "sources": [primary["url"]]})
+        self.assertEqual(len(self.api.pages), 1)
+
+    async def test_recovery_checks_the_latest_round_lease_before_restoring_a_job(self):
+        job = self.swarm.new_job("active-round", self.agent["id"], "Review", "thread")
+        old = {"id": "old", "job": job["id"], "agent": self.agent["id"], "host": "other-host",
+               "round": 0, "expires": 0, "phase": "delivered", "jobState": job,
+               "result": {"text": "Earlier turn"}}
+        latest = {**old, "id": "latest", "round": 1, "expires": (time.time() + 90) * 1000,
+                  "phase": "running", "jobState": {**job, "round": 1}}
+        latest.pop("result")
+        async def api(*args, **kwargs):
+            return {"executions": [old, latest]}
+        self.swarm.shared = True
+        with patch.object(self.api, "call", api):
+            await self.swarm.recover_shared()
+        self.assertIsNone(self.store.get("job", job["id"]), "An old receipt must not hide the active latest lease")
+
+    async def test_restored_parent_waits_for_a_child_with_a_live_foreign_lease(self):
+        peer = await self.swarm.register("peer", "codex")
+        parent = self.swarm.new_job("restore-parent", self.agent["id"], "Review", "thread")
+        child = self.swarm.new_job("restore-child", peer["id"], "Review", "child-thread", parent=parent)
+        entry = {"fence": 1, "phase": "delivered", "result": {"text": "Delegated"},
+                 "handoff": {"children": [self.swarm.recovery_state(child)]}}
+        running = {"round": 0, "host": "other-host", "expires": (time.time() + 90) * 1000}
+        async def api(agent, path, *args, **kwargs):
+            return {"executions": [running if "job=restore-child" in path else entry]}
+        self.swarm.shared = True
+        with patch.object(self.api, "call", api):
+            await self.swarm.restore_execution(parent, self.agent)
+        self.assertEqual(parent["status"], "waiting")
+        self.assertEqual(self.store.get("job", child["id"])["status"], "remote")
+
+    async def test_read_delegation_cannot_expand_to_work_on_another_host(self):
+        parent = self.swarm.new_job("read-root", self.agent["id"], "Review", "thread")
+        self.store.put("config", "main", {**self.store.config, "mode": "work"})
+        child = self.swarm.new_job("read-child", self.agent["id"], "Review", "child-thread", parent=parent)
+        self.assertEqual(child["mode"], "read")
+        self.assertEqual(self.swarm.effective_mode(child), "read")
+        self.assertEqual(await self.swarm.workdir(child), self.temp.name)
+        self.assertIn("Mode: read", self.swarm.prompt(child, self.agent))
+
+    async def test_lost_lease_stops_an_active_driver(self):
+        job = self.swarm.new_job("lease-test", self.agent["id"], "Review", "thread")
+        cancelled = asyncio.Event()
+        async def driver(*args):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+        async def lost(*args, **kwargs):
+            raise SwarmHTTPError(409, "Stale execution owner")
+        original_sleep = asyncio.sleep
+        async def immediate(_):
+            await original_sleep(0)
+        with patch.object(self.swarm, "driver", driver), patch.object(self.swarm, "execution_update", lost), patch("kanbot.swarm.asyncio.sleep", immediate):
+            with self.assertRaises(SwarmHTTPError):
+                await self.swarm.run_leased(job, self.agent, "Review")
+        self.assertTrue(cancelled.is_set())
+
     def work_repo(self):
         """Work mode over a real git project, so each job gets its own worktree."""
         repo = Path(self.temp.name) / "repo"
