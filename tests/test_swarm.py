@@ -941,6 +941,25 @@ class SwarmTests(unittest.IsolatedAsyncioTestCase):
             await self.swarm.watch(self.agent["id"])
         self.swarm.drain.assert_awaited_once()
 
+    async def test_ongoing_work_guidance_preserves_task_scope_without_creating_work(self):
+        self.swarm.running = True
+        work = self.saved_mission()
+        work["request"] = "Maintain my report; another swarm is reference only."
+        sent = await self.swarm.submit("fable", None, "ongoing", "mission")
+        job = self.store.get("job", sent["job"])
+        before = self.store.all("job")
+        prompt = self.swarm.prompt(job, self.agent)
+        for text in ("explicitly ongoing mission", "current, reviewable result",
+                     "does not pause unrelated authorized work", "configured budgets",
+                     "Product or tooling feedback does not authorize", "one-off request",
+                     "In read-only mode return this update for the owner to apply"):
+            self.assertIn(text, prompt)
+        self.assertIn("do not poll or start processes yourself", prompt)
+        self.assertEqual(self.prompt_data(job)["request"], work["request"])
+        self.assertEqual(self.prompt_data(job)["brief"]["criteria"], work["criteria"])
+        self.assertEqual(self.store.all("job"), before)
+        self.assertEqual(self.runs, [])
+
     async def test_task_brief_and_thousands_of_peers_do_not_bloat_prompt(self):
         self.api.tasks["rich"] = {"id": "rich", "title": "Short title", "request": "Full task request", "room": "general", "owner": self.agent["id"], "status": "todo", "intent": "review", "criteria": ["Check evidence"], "version": 2}
         await self.swarm.ingest(self.agent, {"id": 80, "actor": "human-owner", "objectId": "rich", "type": "task.created"})
