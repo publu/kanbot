@@ -23,6 +23,7 @@ from kanbot.runner.panes import PaneManager
 class DropResponse(SwarmAPI):
     dropped = False
     dropped_handoff = False
+    dropped_delivered = False
 
     async def call(self, agent, path, body=None, invite=False):
         result = await super().call(agent, path, body, invite)
@@ -32,6 +33,9 @@ class DropResponse(SwarmAPI):
         if path == "/executions" and body.get("action") == "handoff" and not self.dropped_handoff:
             self.dropped_handoff = True
             raise httpx.ReadError("Injected lost handoff response")
+        if path == "/executions" and body.get("action") == "delivered" and not self.dropped_delivered:
+            self.dropped_delivered = True
+            raise httpx.ReadError("Injected lost delivered response")
         return result
 
 
@@ -89,11 +93,18 @@ async def scenario(origin, directory):
             stores[1].put("config", "main", {**cfg, "allow": [root_agent["id"]]})
             await a.refresh_directory()
             job = a.new_job("root-job", root_agent["id"], "Recovery evidence synthesis", "root-thread")
+            created = await owner.post(api_url + "/tasks", json={"id": "root-job", "title": "Recovery evidence synthesis", "room": "general", "owner": root_agent["id"]})
+            created.raise_for_status()
+            job.update(task="root-job", attached_task=True)
             a.save_job(job)
             await a.process(job["id"])
             assert stores[0].get("job", job["id"])["status"] == "delivering", stores[0].get("job", job["id"])
             assert len(calls) == 1
             # New runner instance reads the saved server result; no repeat model call.
+            a = Swarm(panes, stores[0], api_a, driver)
+            await a.refresh_directory()
+            await a.process(job["id"])
+            assert stores[0].get("job", job["id"])["status"] == "delivering"
             a = Swarm(panes, stores[0], api_a, driver)
             await a.refresh_directory()
             await a.process(job["id"])
@@ -151,6 +162,11 @@ async def scenario(origin, directory):
                  "page": j.get("knowledge_page"), "turn": j.get("turn", {}).get("text", "")[:400]}
                 for store in stores for j in store.all("job") if j.get("status") == "done"]
             assert all(p["sources"] for p in pages if p["id"].startswith("insights/"))
+            # A person can reopen completed work. Restoring a runner must not
+            # redeliver an already delivered turn and silently close it again.
+            completed = next(t for t in (await owner.get(api_url + "/tasks")).json()["tasks"] if t["id"] == "root-job")
+            reopened = await owner.post(api_url + "/task-status", json={"id": "root-job", "version": completed["version"], "status": "todo"})
+            reopened.raise_for_status()
             # A fresh host can reconstruct and redeliver completed jobs from the API.
             await api_c.close()
             stores.append(Store(directory / "host-d"))
@@ -164,11 +180,13 @@ async def scenario(origin, directory):
                 await c.process(recovered["id"])
                 assert stores[3].get("job", recovered["id"])["status"] == "done"
             assert len(calls) == 5, "Recovery repeated completed model work"
+            restored_task = next(t for t in (await owner.get(api_url + "/tasks")).json()["tasks"] if t["id"] == "root-job")
+            assert restored_task["status"] == "todo", "Recovery overwrote the person's reopened task"
             thread = await api_a.call(root_agent, "/threads/root-thread")
             assert len(thread["replies"]) == 2, "Recovery duplicated a result post"
             print(json.dumps({"passed": True, "hosts": 4, "live_turns": sum(runtime in selected for _, _, runtime in calls), "fixture_turns": sum(runtime not in selected for _, _, runtime in calls), "live_models": live, "live_runtimes": sorted(selected), "fixture_runtimes": sorted({"claude", "codex", "kimi", "hermes"} - selected), "runtimes": ["claude", "codex", "kimi", "hermes"], "turns": 5,
-                "verified": ["lost completion response", "lost handoff response", "server result reuse", "cross-host delegation",
-                "shared root budget", "waiting parent host loss", "single parent continuation", "cited wiki synthesis", "fresh-host recovery", "idempotent redelivery"]}, indent=2))
+                "verified": ["lost completion response", "lost handoff response", "lost delivered response", "server result reuse", "cross-host delegation",
+                "shared root budget", "waiting parent host loss", "single parent continuation", "cited wiki synthesis", "fresh-host recovery", "human reopen preserved", "idempotent redelivery"]}, indent=2))
         finally:
             for swarm in (a, b, c):
                 if swarm:

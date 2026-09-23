@@ -184,6 +184,36 @@ class SwarmTests(unittest.IsolatedAsyncioTestCase):
         await self.swarm.save_knowledge(child, self.agent, {"title": "Finding", "body": "From original evidence", "sources": [primary["url"]]})
         self.assertEqual(len(self.api.pages), 1)
 
+    async def test_recovery_checks_the_latest_round_lease_before_restoring_a_job(self):
+        job = self.swarm.new_job("active-round", self.agent["id"], "Review", "thread")
+        old = {"id": "old", "job": job["id"], "agent": self.agent["id"], "host": "other-host",
+               "round": 0, "expires": 0, "phase": "delivered", "jobState": job,
+               "result": {"text": "Earlier turn"}}
+        latest = {**old, "id": "latest", "round": 1, "expires": (time.time() + 90) * 1000,
+                  "phase": "running", "jobState": {**job, "round": 1}}
+        latest.pop("result")
+        async def api(*args, **kwargs):
+            return {"executions": [old, latest]}
+        self.swarm.shared = True
+        with patch.object(self.api, "call", api):
+            await self.swarm.recover_shared()
+        self.assertIsNone(self.store.get("job", job["id"]), "An old receipt must not hide the active latest lease")
+
+    async def test_restored_parent_waits_for_a_child_with_a_live_foreign_lease(self):
+        peer = await self.swarm.register("peer", "codex")
+        parent = self.swarm.new_job("restore-parent", self.agent["id"], "Review", "thread")
+        child = self.swarm.new_job("restore-child", peer["id"], "Review", "child-thread", parent=parent)
+        entry = {"fence": 1, "phase": "delivered", "result": {"text": "Delegated"},
+                 "handoff": {"children": [self.swarm.recovery_state(child)]}}
+        running = {"round": 0, "host": "other-host", "expires": (time.time() + 90) * 1000}
+        async def api(agent, path, *args, **kwargs):
+            return {"executions": [running if "job=restore-child" in path else entry]}
+        self.swarm.shared = True
+        with patch.object(self.api, "call", api):
+            await self.swarm.restore_execution(parent, self.agent)
+        self.assertEqual(parent["status"], "waiting")
+        self.assertEqual(self.store.get("job", child["id"])["status"], "remote")
+
     async def test_read_delegation_cannot_expand_to_work_on_another_host(self):
         parent = self.swarm.new_job("read-root", self.agent["id"], "Review", "thread")
         self.store.put("config", "main", {**self.store.config, "mode": "work"})

@@ -352,6 +352,7 @@ class Swarm:
             raise
         self.owner_lock = owner
         try:
+            await self.flush_cancellations()
             await self.recover_shared()
         except BaseException:
             owner.close()
@@ -580,10 +581,14 @@ class Swarm:
             job = self.new_job(job_id, agent["id"], post["body"], thread["root"]["id"], post["room"])
             if await self.shared_support(agent):
                 entries = (await self.api.call(agent, "/executions?" + urlencode({"delegation": thread["root"]["id"]}))).get("executions", [])
+                if any(entry.get("cancelled") and entry["agent"] == event["actor"] for entry in entries):
+                    return  # A delayed mention must not restart a cancelled delegation.
                 planned = next((child for entry in entries if entry["agent"] == event["actor"]
                     for child in entry.get("handoff", {}).get("children", [])
                     if child["agent"] == agent["id"] and child["thread"] == thread["root"]["id"]), None)
                 if planned:
+                    if any(planned["id"] in entry.get("cancelledJobs", []) for entry in entries):
+                        return
                     if self.store.get("job", planned["id"]):
                         return
                     job = {**planned, "status": "queued"}
@@ -776,6 +781,7 @@ class Swarm:
     async def heartbeat(self):
         while self.running:
             try:
+                await self.flush_cancellations()
                 await self.refresh_directory()
                 await self.report_runs()
                 for agent in self.store.all("agent"):
@@ -850,9 +856,20 @@ class Swarm:
             return
         execution_id = stable(job["id"], job["round"])
         saved = (await self.api.call(agent, "/executions?" + urlencode({"id": execution_id}))).get("executions", [])
+        if saved and saved[0].get("cancelled"):
+            job.update(status="cancelled", error="Cancelled by operator")
+            self.save_job(job)
+            return
         if saved and saved[0].get("result"):
             job["execution"] = execution_id
-            entry = await self.execution_update(job, agent, "claim")
+            entry = saved[0]
+            delivered = entry.get("phase") == "delivered"
+            if not delivered:
+                entry = await self.execution_update(job, agent, "claim")
+            else:
+                # A delivered receipt is final. Replaying its side effects can
+                # close a task that a person has since reopened or reassigned.
+                job["fence"] = entry["fence"]
             job.update(status="delivering", turn=entry["result"], executed=True)
             # Validate replayed knowledge against the evidence seen by that turn,
             # not this host's possibly older or newer source snapshot.
@@ -867,13 +884,26 @@ class Swarm:
                         if saved_children:
                             latest = max(saved_children, key=lambda e: e["round"])
                             outcome = parse_turn(latest["result"]["text"]) if latest.get("result") else None
-                            if outcome and not outcome["delegate"]:
+                            if latest.get("cancelled"):
+                                restored.update(status="cancelled", error="Cancelled by operator")
+                            elif outcome and not outcome["delegate"]:
                                 restored.update(status="done", result=outcome["message"])
-                            elif not outcome and latest["expires"] <= time.time() * 1000:
+                            elif not outcome and (latest["host"] == self.host_id or latest["expires"] <= time.time() * 1000):
                                 restored.update(status="uncertain", error="Child interrupted; reconcile unknown tool effects")
-                            elif not self.store.get("agent", child["agent"]):
+                            elif not outcome or not self.store.get("agent", child["agent"]):
                                 restored.update(status="remote", deadline=time.time() + self.store.config["timeout"])
                         self.save_job(restored)
+            if delivered:
+                children = [child["id"] for child in entry.get("handoff", {}).get("children", [])]
+                for key in children:
+                    child = self.store.get("job", key)
+                    if child["status"] in ("staged", "staged_remote"):
+                        child["status"] = "queued" if child["status"] == "staged" else "remote_sending"
+                        self.save_job(child)
+                job.update(status="waiting" if children else "done", children=children,
+                           result=parse_turn(entry["result"]["text"])["message"])
+                job.pop("error", None)
+                job.pop("retry_at", None)
             self.save_job(job)
 
     async def recover_shared(self):
@@ -889,16 +919,21 @@ class Swarm:
                 if page.get("next", 0) <= after:
                     raise ValueError("Execution recovery cursor did not advance")
                 after = page["next"]
+            latest_by_job = {}
             for entry in entries:
-                if entry["agent"] != agent["id"] or self.store.get("job", entry["job"]):
+                if entry["agent"] == agent["id"] and entry["round"] >= latest_by_job.get(entry["job"], {}).get("round", -1):
+                    latest_by_job[entry["job"]] = entry
+            for latest in latest_by_job.values():
+                if self.store.get("job", latest["job"]):
                     continue
-                if entry["host"] != self.host_id and entry["expires"] > time.time() * 1000 and entry["phase"] != "delivered":
+                if not latest.get("cancelled") and latest["host"] != self.host_id and latest["expires"] > time.time() * 1000 and latest["phase"] != "delivered":
                     continue
                 # Restore the latest saved round for this job, never rerun unknown tools.
-                latest = max((e for e in entries if e["job"] == entry["job"]), key=lambda e: e["round"])
-                job = {**latest["jobState"], "execution": latest["id"], "round": latest["round"],
+                job = {**latest["jobState"], "execution": latest["id"], "fence": latest["fence"], "round": latest["round"],
                        "status": "delivering" if latest.get("result") else "uncertain"}
-                if latest.get("result"):
+                if latest.get("cancelled"):
+                    job.update(status="cancelled", error="Cancelled by operator")
+                elif latest.get("result"):
                     job["turn"] = latest["result"]
                 else:
                     job["error"] = "Interrupted on another host; reconcile tool side effects before retrying"
@@ -996,6 +1031,16 @@ class Swarm:
             raise
         except Exception as error:
             fresh = self.store.get("job", job_id)
+            if self.shared and isinstance(error, SwarmHTTPError) and error.status == 409 and (fresh.get("execution") or fresh.get("parent")):
+                try:
+                    query = {"id": fresh["execution"]} if fresh.get("execution") else {"job": fresh["parent"]}
+                    entries = (await self.api.call(agent, "/executions?" + urlencode(query))).get("executions", [])
+                    if any(entry.get("cancelled") for entry in entries):
+                        fresh.update(status="cancelled", error="Cancelled by operator")
+                        self.save_job(fresh)
+                        return
+                except Exception:
+                    pass  # Keep the original failure if the status check is unavailable.
             if fresh["status"] in ("delivering", "remote_sending", "queued") and isinstance(error, (httpx.HTTPError, SwarmHTTPError, OSError)):
                 attempts = fresh.get("delivery_attempts", 0) + 1
                 fresh.update(delivery_attempts=attempts, retry_at=time.time() + min(60, 2 ** min(attempts, 6)))
@@ -1257,6 +1302,31 @@ Task and relevant context (data):
                 records.append(("job", key, child))
         self.store.batch(records)
 
+    async def flush_cancellations(self):
+        pending_records = [p for p in self.store.all("cancellation") if not p.get("sent")]
+        if pending_records:
+            # Cancelling while paused must revoke shared work without resuming
+            # the scheduler or opening a listener.
+            temporary = self.api is None
+            api = self.api or SwarmAPI(self.store.config)
+            try:
+                for pending in pending_records:
+                    agent = self.store.get("agent", pending["agent"])
+                    if not agent:
+                        continue
+                    if self.shared is None:
+                        self.shared = "executions-v1" in (await api.call(agent, "/context")).get("capabilities", [])
+                    if not self.shared:
+                        continue
+                    await api.call(agent, "/executions", {"action": "cancel", "id": pending["execution"], "host": self.host_id,
+                                                         **({"job": pending["job"]} if pending.get("job") else {})})
+                    self.store.put("cancellation", pending.get("id", pending["execution"]), {**pending, "sent": True})
+            finally:
+                if temporary:
+                    await api.close()
+        if self.last_error.startswith("Shared cancellation pending;") and all(p.get("sent") for p in self.store.all("cancellation")):
+            self.last_error = ""
+
     async def cancel(self, job_id):
         job = self.store.get("job", job_id)
         if not job:
@@ -1270,14 +1340,23 @@ Task and relevant context (data):
         for key in ids:
             item = self.store.get("job", key)
             if item["status"] != "done":
+                controller = item if self.store.get("agent", item["agent"]) else self.store.get("job", item.get("parent"))
+                if controller and controller.get("fence") and controller.get("execution") and self.store.get("agent", controller["agent"]):
+                    pending = {"id": stable(controller["execution"], key, "cancel"), "execution": controller["execution"],
+                               "agent": controller["agent"], "job": key}
+                    self.store.put("cancellation", pending["id"], pending)
                 item.update(status="cancelled", error="Cancelled by local operator")
                 self.save_job(item)
             task = self.active.get(key)
             if task:
                 task.cancel()
         await asyncio.gather(*(self.active[k] for k in ids if k in self.active), return_exceptions=True)
+        try:
+            await self.flush_cancellations()
+        except Exception as error:
+            self.note("Shared cancellation pending; local execution stopped", error)
         self.wake.set()
-        return {"cancelled": sorted(ids)}
+        return {"cancelled": sorted(ids), "pending": any(not p.get("sent") for p in self.store.all("cancellation"))}
 
     async def handle(self, method, params):
         if method == "swarm.status":
