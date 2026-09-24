@@ -952,7 +952,10 @@ class SwarmTests(unittest.IsolatedAsyncioTestCase):
         for text in ("explicitly ongoing mission", "current, reviewable result",
                      "does not pause unrelated authorized work", "configured budgets",
                      "Product or tooling feedback does not authorize", "one-off request",
-                     "In read-only mode return this update for the owner to apply"):
+                     "In read-only mode return this update for the owner to apply",
+                     "no separate skill invocation", "current revision immediately",
+                     "A task checkpoint or a new isolated insights page does not replace",
+                     "omit the knowledge field"):
             self.assertIn(text, prompt)
         self.assertIn("do not poll or start processes yourself", prompt)
         self.assertEqual(self.prompt_data(job)["request"], work["request"])

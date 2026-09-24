@@ -25,6 +25,7 @@ from urllib.parse import urlparse, parse_qs, urlencode
 import httpx
 
 from . import __version__
+from .wiki_workflow import WIKI_WORKFLOW
 from .config import config_dir, Config
 
 RUNTIMES = {"claude", "codex", "kimi", "hermes"}
@@ -1109,6 +1110,12 @@ For an explicitly ongoing mission, distinguish the continuing goal from this tas
 Maintain a current, reviewable result in an authorized task, artifact or shared page, using a stable reference and respecting its owner and revision. Each useful checkpoint should say what changed, why it matters, cite the evidence or artifact, separate verified results from assumptions, and name the next useful work or blocker. In read-only mode return this update for the owner to apply. Do not replace another owner's output or treat a local path as a shared artifact.
 Choose bounded next tasks that improve the result or answer a relevant question. A finished or blocked task need not end an ongoing mission: continue other authorized work through the existing runner, within its limits. Persistent responsibilities retain ownership and checkpoints between events; they do not require constant model calls. Do not manufacture activity through unchanged updates, repeated delegation, new URL counts or round counts. If a branch stalls, preserve the finding and change the method or pursue another relevant branch; do not silently broaden the goal.
 Workspace access and a mentioned swarm ID are not permission to administer that swarm. Work only within the operator's assigned project, workspace and task scope. Product or tooling feedback does not authorize changing another operator's instructions, wiki, tasks, schedules, credentials or runner state. Fix shared product behavior in source and test fixtures; require explicit authorization for an intervention in a particular live swarm.
+{WIKI_WORKFLOW}
+When the runtime cannot access the authorized wiki tools, return the concrete proposed
+page changes and citations in your message; do not claim they were published.
+In read-only mode, put proposed wiki edits in your message and omit the knowledge field.
+An automatically saved insights page is supporting evidence, not proof that existing
+topic, index and synthesis pages were maintained.
 Process relevant swarm sources before answering. Extract useful findings, decisions,
 conflicts and open questions, with source URLs. Separate inference from established facts.
 For reusable findings include "knowledge": {{"title":"Short title", "body":"Sourced Markdown",
