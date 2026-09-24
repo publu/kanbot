@@ -137,6 +137,32 @@ class SwarmTests(unittest.IsolatedAsyncioTestCase):
         self.store.db.close()
         self.temp.cleanup()
 
+    async def test_api_release_receipts_use_the_existing_heartbeat_and_survive_status_reads(self):
+        original = self.api.call
+        paths = []
+        async def receipt(agent, path, body=None, invite=False):
+            paths.append(path)
+            if path == "/heartbeat":
+                return {"ok": True, "releases": {"protocol": 1, "plugin": "99.0.0", "kanbot": "99.1.0", "command": "EVIL"}}
+            return await original(agent, path, body, invite)
+        self.swarm.running = True
+        with patch.dict(os.environ, {"KANBOT_NO_UPDATE_CHECK": ""}), patch.object(self.api, "call", receipt), patch("kanbot.swarm.asyncio.sleep", side_effect=asyncio.CancelledError):
+            with self.assertRaises(asyncio.CancelledError):
+                await Swarm.heartbeat(self.swarm)
+            notice = self.swarm.status()["updates"]
+            self.assertTrue(notice["updateAvailable"])
+            self.assertEqual(notice["source"], "swarm-api")
+            self.assertEqual(paths.count("/heartbeat"), 1)
+            self.assertFalse(any("release" in p for p in paths))
+            self.assertEqual(self.runs, [])
+            saved = self.store.get("meta", "releases")
+            self.swarm.capture_releases({"releases": {"protocol": 2, "plugin": "1.0.0", "kanbot": "1.0.0"}})
+            self.assertEqual(saved, self.store.get("meta", "releases"))
+            job = self.swarm.new_job("update-context", self.agent["id"], "Review", "thread")
+            self.assertEqual(self.prompt_data(job)["updates"]["latest"], "99.1.0")
+            self.assertNotIn("EVIL", self.swarm.prompt(job, self.agent))
+            self.assertEqual(QuietSwarm(None, self.store, self.api, self.driver).status()["updates"], notice)
+
     async def test_knowledge_citations_are_verified_and_retries_do_not_overwrite_pages(self):
         job = self.swarm.new_job("knowledge-test", self.agent["id"], "Review", "thread")
         job["knowledge_context"] = {"sources": [{"url": "https://example.test/evidence"}]}
