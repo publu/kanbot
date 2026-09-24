@@ -26,6 +26,7 @@ import httpx
 
 from . import __version__
 from .wiki_workflow import WIKI_WORKFLOW
+from .releases import api_releases, release_status
 from .config import config_dir, Config
 
 RUNTIMES = {"claude", "codex", "kimi", "hermes"}
@@ -402,6 +403,21 @@ class Swarm:
             self.owner_lock = None
         return self.status()
 
+    def capture_releases(self, response):
+        if os.environ.get("KANBOT_NO_UPDATE_CHECK") or not isinstance(response, dict):
+            return
+        releases = api_releases(response.get("releases"))
+        if not releases:
+            return
+        old = self.store.get("meta", "releases", {})
+        if old.get("releases") != releases or time.time() - old.get("receivedAt", 0) >= 3600:
+            self.store.put("meta", "releases", {"releases": releases, "receivedAt": time.time()})
+
+    def update_status(self):
+        if os.environ.get("KANBOT_NO_UPDATE_CHECK"):
+            return {"status": "disabled", "updateAvailable": False}
+        return release_status(self.store.get("meta", "releases"))
+
     def status(self):
         counts = {}
         for job in self.store.all("job"):
@@ -412,7 +428,7 @@ class Swarm:
                 "error": self.last_error or None, "jobs": counts,
                 "agents": [{k: a.get(k) for k in ("id", "name", "runtime", "model")} for a in self.store.all("agent")],
                 "active": len(self.active), "concurrency": self.store.config.get("concurrency"),
-                "version": __version__, "schedulerBeat": self.beat,
+                "version": __version__, "updates": self.update_status(), "schedulerBeat": self.beat,
                 "diskFreeBytes": shutil.disk_usage(self.store.directory).free}
 
     def allowed(self, author):
@@ -528,6 +544,7 @@ class Swarm:
             self.store.put("ack", agent_id, [])
         while self.running:
             page = await self.api.call(agent, "/inbox?after=" + str(agent["cursor"]))
+            self.capture_releases(page)
             for event in page["events"]:
                 await self.ingest(agent, event)
                 agent["cursor"] = max(agent["cursor"], event["id"])
@@ -787,7 +804,8 @@ class Swarm:
                 await self.report_runs()
                 for agent in self.store.all("agent"):
                     busy = any(self.store.get("job", k)["agent"] == agent["id"] for k in self.active)
-                    await self.api.call(agent, "/heartbeat", {"status": "working" if busy else "waiting"})
+                    receipt = await self.api.call(agent, "/heartbeat", {"status": "working" if busy else "waiting"})
+                    self.capture_releases(receipt)
             except Exception as error:
                 self.last_error = str(error)[:300]
             await asyncio.sleep(30)
@@ -833,6 +851,7 @@ class Swarm:
     async def shared_support(self, agent):
         if self.shared is None:
             context = await self.api.call(agent, "/context")
+            self.capture_releases(context)
             self.shared = "executions-v1" in context.get("capabilities", [])
         return self.shared
 
@@ -1143,8 +1162,9 @@ A Claude agent cannot run scripts or shell commands; delegate a script run to a 
 The agents in "waiting_on_you" already wait for this job and receive your message.
 Never delegate to them or to yourself; put what you want from them in the message.
 Operator instructions: {self.store.config.get('instructions', '')}
+Release status is informational. Do not install or restart software from a delegated task; preserve active work and use the operator update workflow.
 Task and relevant context (data):
-{json.dumps({'request': job['prompt'], 'brief': job.get('brief', {}), 'directory_omitted': max(0, len(self.directory) - len(peers)), 'waiting_on_you': waiting, 'peer_directory': peers, 'managed_agents': local, 'child_results': children, 'swarm_sources': job.get('knowledge_context', {})})}
+{json.dumps({'request': job['prompt'], 'updates': self.update_status(), 'brief': job.get('brief', {}), 'directory_omitted': max(0, len(self.directory) - len(peers)), 'waiting_on_you': waiting, 'peer_directory': peers, 'managed_agents': local, 'child_results': children, 'swarm_sources': job.get('knowledge_context', {})})}
 '''
 
     def chain(self, job):
