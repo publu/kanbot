@@ -267,6 +267,31 @@ class SwarmTests(unittest.IsolatedAsyncioTestCase):
                 await self.swarm.run_leased(job, self.agent, "Review")
         self.assertTrue(cancelled.is_set())
 
+    async def test_current_api_guidance_reaches_managed_turn_once_and_is_identity_scoped(self):
+        original = self.api.call
+        captured = []
+        async def call(agent, path, body=None, invite=False):
+            response = await original(agent, path, body, invite)
+            if path == "/claim":
+                response = {**response, "guidance": {"version": 1, "actor": agent["id"], "stage": "task_claimed"}}
+            return response
+        async def driver(job, agent, prompt):
+            captured.append(json.loads(prompt.split("Task and relevant context (data):\n", 1)[1]))
+            return {"text": '{"message":"Verified", "status":"done"}'}
+        self.api.call = call
+        self.swarm.driver = driver
+        await self.swarm.start()
+        submitted = await self.swarm.submit(self.agent["name"], "Review the input", "guidance-test")
+        await self.wait_status(submitted["job"])
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0]["guidance"]["stage"], "task_claimed")
+        self.assertEqual(captured[0]["guidance"]["actor"], self.agent["id"])
+        job = {}
+        for invalid in [{"version": 1, "actor": "another"}, {"version": 2, "actor": self.agent["id"]},
+                        {"version": 1, "actor": self.agent["id"], "receipt": "x" * 12001}]:
+            self.swarm.capture_guidance(job, self.agent, {"guidance": invalid})
+            self.assertNotIn("guidance", job)
+
     def work_repo(self):
         """Work mode over a real git project, so each job gets its own worktree."""
         repo = Path(self.temp.name) / "repo"
@@ -345,6 +370,27 @@ class SwarmTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.runs), 1)
         self.assertEqual(len(self.api.posts), 2)
 
+    async def test_explicit_outcomes_survive_lost_delivery_without_completing_blocked_work(self):
+        for outcome in ("blocked", "review", "done"):
+            async def driver(job, agent, prompt):
+                self.runs.append(job["id"])
+                self.assertEqual(job["brief"]["owner"], agent["id"])
+                self.assertEqual(job["brief"]["status"], "doing")
+                self.assertEqual(job["brief"]["version"], 2)
+                return {"text": json.dumps({"message": "Evidence or missing input", "status": outcome})}
+            self.swarm.driver = driver
+            self.api.drop_result = True
+            job = self.swarm.new_job("outcome-" + outcome, self.agent["id"], "Full task request and criteria", "thread-" + outcome)
+            self.swarm.save_job(job)
+            await self.swarm.process(job["id"])
+            self.assertEqual(self.store.get("job", job["id"])["status"], "delivering")
+            self.assertEqual(self.api.tasks[job["id"]]["status"], "doing")
+            await self.swarm.process(job["id"])
+            self.assertEqual(self.api.tasks[job["id"]]["status"], outcome)
+            self.assertEqual(self.api.tasks[job["id"]]["request"], "Full task request and criteria")
+            self.assertEqual(self.runs.count(job["id"]), 1)
+            self.assertEqual(self.store.get("job", job["id"])["status"], "done")  # delivery ended; task outcome is separate
+
     async def test_registration_lost_response_does_not_create_second_agent(self):
         self.api.drop_registration = True
         with self.assertRaises(httpx.ReadError):
@@ -410,6 +456,54 @@ class SwarmTests(unittest.IsolatedAsyncioTestCase):
                 "checkpoint": {"summary": "Prior investigation"}, **changes}
         self.api.tasks[task] = work
         return work
+
+    async def test_dependency_completion_defers_then_queues_authorized_work_once(self):
+        self.saved_mission("prereq", status="doing")
+        work = self.saved_mission(owner=self.agent["id"], creator="human-owner", dependencies=["prereq"])
+        created = {"id": 80, "type": "task.created", "actor": "human-owner", "objectId": "mission"}
+        await self.swarm.ingest(self.agent, created)
+        self.assertEqual(self.store.all("job"), [])
+        event = {"id": 81, "type": "task.updated", "actor": "other-worker", "objectId": "prereq"}
+        await self.swarm.ingest(self.agent, event)
+        self.assertEqual(self.store.all("job"), [])
+        self.api.tasks["prereq"]["status"] = "done"
+        for changes in [{"creator": "untrusted"}, {"owner": "other"}, {"status": "blocked"}, {"dependencies": ["prereq", "missing"]}]:
+            original = dict(work)
+            work.update(changes)
+            await self.swarm.ingest(self.agent, event)
+            self.assertEqual(self.store.all("job"), [])
+            work.clear(); work.update(original)
+        await self.swarm.ingest(self.agent, event)
+        await self.swarm.ingest(self.agent, {**event, "id": 82})
+        self.assertEqual(len(self.store.all("job")), 1)
+        job = self.store.all("job")[0]
+        self.assertEqual(job["task"], "mission")
+        self.assertEqual(self.runs, [])  # Scheduling still belongs to the running engine.
+        await self.swarm.process(job["id"])
+        self.assertEqual(self.api.tasks["mission"]["status"], "done")
+        self.assertEqual(len(self.runs), 1)
+        await self.swarm.ingest(self.agent, event)
+        self.assertEqual(len(self.store.all("job")), 1)
+
+    async def test_dependency_ready_rechecks_authority_and_preserves_uncertain_jobs(self):
+        self.saved_mission("prereq", status="done")
+        work = self.saved_mission(owner=self.agent["id"], creator="human-owner", dependencies=["prereq"])
+        event = {"id": 83, "type": "task.updated", "actor": self.agent["id"], "objectId": "prereq"}
+        await self.swarm.ingest(self.agent, event)
+        job = self.store.all("job")[0]
+        job["status"] = "uncertain"
+        self.swarm.save_job(job)
+        work["version"] = 2
+        await self.swarm.ingest(self.agent, {**event, "id": 84})
+        self.assertEqual(len(self.store.all("job")), 1)
+        job["status"] = "queued"
+        self.swarm.save_job(job)
+        config = self.store.config
+        config["allow"] = []
+        self.store.put("config", "main", config)
+        await self.swarm.process(job["id"])
+        self.assertEqual(self.runs, [])
+        self.assertEqual(self.api.claims, [])
 
     async def test_attached_mission_claims_once_and_finishes_original_task(self):
         self.swarm.running = True
@@ -669,6 +763,7 @@ class SwarmTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("swarm Scheduler: database or disk is full", log.getvalue())  # swarm.log keeps a line
         sent = await self.swarm.submit("fable", "after the error")
         await self.wait_status(sent["job"])  # the same scheduler task picked it up
+        await asyncio.gather(*list(self.swarm.active.values()))  # delivery saved before process cleanup
         self.assertEqual(len(self.swarm.background), 2)
         status = self.swarm.status()
         self.assertGreater(status["schedulerBeat"], 0)
@@ -1041,6 +1136,17 @@ class SocketTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ContractTests(unittest.TestCase):
+    def test_explicit_task_outcomes_validate_and_preserve_legacy_answers(self):
+        for status in ("done", "review", "blocked"):
+            turn = {"message": "Concrete result", "status": status, "delegate": []}
+            self.assertEqual(parse_turn(json.dumps(turn)), turn)
+        for status in ("doing", "arbitrary", 42, None, []):
+            with self.assertRaises(ValueError):
+                parse_turn(json.dumps({"message": "Result", "status": status}))
+        with self.assertRaises(ValueError):
+            parse_turn('{"message":"", "status":"done"}')
+        self.assertEqual(parse_turn("Legacy report"), {"message": "Legacy report", "delegate": []})
+
     def test_url_and_output_validation(self):
         self.assertEqual(workspace_url("https://example.test/w/demo#invite=secret")["invite"], "secret")
         for url in ("https://example.test/", "http://remote.test/w/demo", "https://user:pass@example.test/w/demo"):
