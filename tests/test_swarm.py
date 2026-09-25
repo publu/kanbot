@@ -345,6 +345,27 @@ class SwarmTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.runs), 1)
         self.assertEqual(len(self.api.posts), 2)
 
+    async def test_explicit_outcomes_survive_lost_delivery_without_completing_blocked_work(self):
+        for outcome in ("blocked", "review", "done"):
+            async def driver(job, agent, prompt):
+                self.runs.append(job["id"])
+                self.assertEqual(job["brief"]["owner"], agent["id"])
+                self.assertEqual(job["brief"]["status"], "doing")
+                self.assertEqual(job["brief"]["version"], 2)
+                return {"text": json.dumps({"message": "Evidence or missing input", "status": outcome})}
+            self.swarm.driver = driver
+            self.api.drop_result = True
+            job = self.swarm.new_job("outcome-" + outcome, self.agent["id"], "Full task request and criteria", "thread-" + outcome)
+            self.swarm.save_job(job)
+            await self.swarm.process(job["id"])
+            self.assertEqual(self.store.get("job", job["id"])["status"], "delivering")
+            self.assertEqual(self.api.tasks[job["id"]]["status"], "doing")
+            await self.swarm.process(job["id"])
+            self.assertEqual(self.api.tasks[job["id"]]["status"], outcome)
+            self.assertEqual(self.api.tasks[job["id"]]["request"], "Full task request and criteria")
+            self.assertEqual(self.runs.count(job["id"]), 1)
+            self.assertEqual(self.store.get("job", job["id"])["status"], "done")  # delivery ended; task outcome is separate
+
     async def test_registration_lost_response_does_not_create_second_agent(self):
         self.api.drop_registration = True
         with self.assertRaises(httpx.ReadError):
@@ -1041,6 +1062,17 @@ class SocketTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ContractTests(unittest.TestCase):
+    def test_explicit_task_outcomes_validate_and_preserve_legacy_answers(self):
+        for status in ("done", "review", "blocked"):
+            turn = {"message": "Concrete result", "status": status, "delegate": []}
+            self.assertEqual(parse_turn(json.dumps(turn)), turn)
+        for status in ("doing", "arbitrary", 42, None, []):
+            with self.assertRaises(ValueError):
+                parse_turn(json.dumps({"message": "Result", "status": status}))
+        with self.assertRaises(ValueError):
+            parse_turn('{"message":"", "status":"done"}')
+        self.assertEqual(parse_turn("Legacy report"), {"message": "Legacy report", "delegate": []})
+
     def test_url_and_output_validation(self):
         self.assertEqual(workspace_url("https://example.test/w/demo#invite=secret")["invite"], "secret")
         for url in ("https://example.test/", "http://remote.test/w/demo", "https://user:pass@example.test/w/demo"):

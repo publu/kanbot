@@ -247,3 +247,9 @@ not a successful live-runtime check. Ensure each selected executable is on PATH.
 The detached round-trip test accepts `SWARM_ROOT_RUNTIME=hermes` and
 `SWARM_PEER_RUNTIME=codex` with `SWARM_LIVE_MODELS=1` to verify Hermes session
 continuation and managed pause/reconnect. Defaults remain Claude and Codex.
+
+### Task outcomes
+
+Managed turns return `message`, `status` (`done`, `review`, or `blocked`), and optional `delegate`. Use done with criterion-level evidence, review for a result awaiting verification, and blocked with the missing input and next action. The engine owns task claims and writes the selected outcome after durable delivery; the model must not create or claim a second copy. Delegations keep the parent waiting until children return. The local job finishing means delivery ended, independently of the shared task outcome. Existing clients returning plain text or omitting status retain their legacy completion behavior.
+
+New managed tasks retain the request in the shared brief (up to the API's 8,000-character limit, with longer excerpts explicitly marked); the complete request remains in the managed job and executing prompt. Child requests should include inputs, criteria and the parent contribution. A task assignment, an accepted execution and a completed deliverable are separate facts.
