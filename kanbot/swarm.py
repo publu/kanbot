@@ -564,6 +564,27 @@ class Swarm:
         self.wake.set()
 
     async def ingest(self, agent, event):
+        if event["type"] == "task.updated":
+            # Completion of a prerequisite is a notification, not a new grant
+            # of authority from its owner. Verify the original task requester.
+            tasks = (await self.api.call(agent, "/tasks"))["tasks"]
+            by_id = {task["id"]: task for task in tasks}
+            prerequisite = by_id.get(event["objectId"], {})
+            if prerequisite.get("status") != "done":
+                return
+            for work in tasks:
+                if (event["objectId"] not in work.get("dependencies", [])
+                        or not self.task_ready(work, agent, by_id)
+                        or not self.allowed(work.get("creator", ""))
+                        or self.store.get("owntask", work["id"])
+                        or any(j.get("task") == work["id"] for j in self.store.all("job"))):
+                    continue
+                key = stable(self.store.config["api"], agent["id"], "ready", work["id"], work.get("version", 1))
+                job = self.new_job(key, agent["id"], work.get("request") or work["title"], stable(key, "thread"), work["room"])
+                job.update(task=work["id"], brief=self.task_brief(work), attached_task=True,
+                           ready_requester=work["creator"])
+                self.save_job(job)
+            return
         job_id = stable(self.store.config["api"], agent["id"], event["id"])
         if self.store.get("job", job_id):
             return
@@ -625,12 +646,20 @@ class Swarm:
             work = next((t for t in tasks if t["id"] == event["objectId"]), None)
             if not work or work.get("owner") != agent["id"] or work["status"] != "todo":
                 return
+            if work.get("dependencies"):
+                all_tasks = (await self.api.call(agent, "/tasks"))["tasks"]
+                if not self.task_ready(work, agent, {t["id"]: t for t in all_tasks}):
+                    return  # Keep it queued on the board until dependency completion.
             job = self.new_job(job_id, agent["id"], work.get("request") or work["title"], stable(job_id, "thread"), work["room"])
             if any(j.get("task") == work["id"] for j in self.store.all("job")):
                 return
             job["brief"] = self.task_brief(work)
             job["task"] = work["id"]
         self.save_job(job)
+
+    def task_ready(self, work, agent, tasks):
+        return (work.get("owner") == agent["id"] and work.get("status") == "todo"
+                and all(tasks.get(key, {}).get("status") == "done" for key in work.get("dependencies", [])))
 
     def new_job(self, job_id, agent, prompt, thread, room="general", parent=None):
         return {"id": job_id, "agent": agent, "prompt": prompt, "thread": thread, "room": room,
@@ -1009,6 +1038,11 @@ class Swarm:
                 work = next(t for t in tasks if t["id"] == job["task"])
                 if work.get("owner") not in (None, "", agent["id"]):
                     raise ValueError("Shared task is assigned to another agent")
+                if job.get("ready_requester") and (
+                        work.get("creator") != job["ready_requester"]
+                        or not self.allowed(work.get("creator", ""))
+                        or not self.task_ready(work, agent, {t["id"]: t for t in tasks})):
+                    raise ValueError("Dependency-ready task is no longer authorized and runnable")
                 if job.get("attached_task"):
                     job["brief"] = self.task_brief(work)
                     job["prompt"] = work.get("request") or work["title"]

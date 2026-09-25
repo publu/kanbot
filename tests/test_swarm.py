@@ -457,6 +457,54 @@ class SwarmTests(unittest.IsolatedAsyncioTestCase):
         self.api.tasks[task] = work
         return work
 
+    async def test_dependency_completion_defers_then_queues_authorized_work_once(self):
+        self.saved_mission("prereq", status="doing")
+        work = self.saved_mission(owner=self.agent["id"], creator="human-owner", dependencies=["prereq"])
+        created = {"id": 80, "type": "task.created", "actor": "human-owner", "objectId": "mission"}
+        await self.swarm.ingest(self.agent, created)
+        self.assertEqual(self.store.all("job"), [])
+        event = {"id": 81, "type": "task.updated", "actor": "other-worker", "objectId": "prereq"}
+        await self.swarm.ingest(self.agent, event)
+        self.assertEqual(self.store.all("job"), [])
+        self.api.tasks["prereq"]["status"] = "done"
+        for changes in [{"creator": "untrusted"}, {"owner": "other"}, {"status": "blocked"}, {"dependencies": ["prereq", "missing"]}]:
+            original = dict(work)
+            work.update(changes)
+            await self.swarm.ingest(self.agent, event)
+            self.assertEqual(self.store.all("job"), [])
+            work.clear(); work.update(original)
+        await self.swarm.ingest(self.agent, event)
+        await self.swarm.ingest(self.agent, {**event, "id": 82})
+        self.assertEqual(len(self.store.all("job")), 1)
+        job = self.store.all("job")[0]
+        self.assertEqual(job["task"], "mission")
+        self.assertEqual(self.runs, [])  # Scheduling still belongs to the running engine.
+        await self.swarm.process(job["id"])
+        self.assertEqual(self.api.tasks["mission"]["status"], "done")
+        self.assertEqual(len(self.runs), 1)
+        await self.swarm.ingest(self.agent, event)
+        self.assertEqual(len(self.store.all("job")), 1)
+
+    async def test_dependency_ready_rechecks_authority_and_preserves_uncertain_jobs(self):
+        self.saved_mission("prereq", status="done")
+        work = self.saved_mission(owner=self.agent["id"], creator="human-owner", dependencies=["prereq"])
+        event = {"id": 83, "type": "task.updated", "actor": self.agent["id"], "objectId": "prereq"}
+        await self.swarm.ingest(self.agent, event)
+        job = self.store.all("job")[0]
+        job["status"] = "uncertain"
+        self.swarm.save_job(job)
+        work["version"] = 2
+        await self.swarm.ingest(self.agent, {**event, "id": 84})
+        self.assertEqual(len(self.store.all("job")), 1)
+        job["status"] = "queued"
+        self.swarm.save_job(job)
+        config = self.store.config
+        config["allow"] = []
+        self.store.put("config", "main", config)
+        await self.swarm.process(job["id"])
+        self.assertEqual(self.runs, [])
+        self.assertEqual(self.api.claims, [])
+
     async def test_attached_mission_claims_once_and_finishes_original_task(self):
         self.swarm.running = True
         work = self.saved_mission()
@@ -715,6 +763,7 @@ class SwarmTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("swarm Scheduler: database or disk is full", log.getvalue())  # swarm.log keeps a line
         sent = await self.swarm.submit("fable", "after the error")
         await self.wait_status(sent["job"])  # the same scheduler task picked it up
+        await asyncio.gather(*list(self.swarm.active.values()))  # delivery saved before process cleanup
         self.assertEqual(len(self.swarm.background), 2)
         status = self.swarm.status()
         self.assertGreater(status["schedulerBeat"], 0)
