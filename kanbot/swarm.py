@@ -1002,7 +1002,10 @@ class Swarm:
                                                             "request": job["prompt"] if len(job["prompt"]) <= 8000 else job["prompt"][:7850] + "\n\n[Brief excerpt; full request is retained in the managed job and supplied to the executing agent.]"})
                     job["task"] = job["id"]
                     self.save_job(job)
-                tasks = (await self.api.call(agent, "/tasks"))["tasks"]
+                task_response = await self.api.call(agent, "/tasks")
+                tasks = task_response["tasks"]
+                job.pop("guidance", None)
+                self.capture_guidance(job, agent, task_response)
                 work = next(t for t in tasks if t["id"] == job["task"])
                 if work.get("owner") not in (None, "", agent["id"]):
                     raise ValueError("Shared task is assigned to another agent")
@@ -1019,6 +1022,7 @@ class Swarm:
                     work = await self.api.call(agent, "/task-status", {"id": work["id"], "version": work["version"], "status": "doing", **self.fence(job)})
                 elif work["status"] != "doing" or work["owner"] != agent["id"]:
                     raise ValueError("Shared task is no longer assigned and runnable")
+                self.capture_guidance(job, agent, work)
                 job["brief"] = self.task_brief(work)
                 # Root-level shared accounting prevents recursive delegation
                 # from resetting the turn allowance.
@@ -1029,6 +1033,7 @@ class Swarm:
                 if self.shared:
                     from urllib.parse import urlencode
                     fresh_evidence = await self.api.call(agent, "/knowledge?" + urlencode({"q": job["prompt"][:1000], "task": job["task"]}))
+                    self.capture_guidance(job, agent, fresh_evidence)
                     job["knowledge_context"] = self.merge_evidence(job.get("knowledge_context", {}), fresh_evidence, job["task"])
                 job["execution"] = stable(job["id"], job["round"])
                 if self.shared:
@@ -1107,6 +1112,14 @@ class Swarm:
             raise ValueError("Cannot create isolated worktree: " + error.decode()[-400:])
         return str(path)
 
+    @staticmethod
+    def capture_guidance(job, agent, response):
+        guidance = response.get("guidance")
+        if (isinstance(guidance, dict) and guidance.get("version") == 1
+                and guidance.get("actor") == agent["id"]
+                and len(json.dumps(guidance)) <= 12000):
+            job["guidance"] = guidance
+
     def prompt(self, job, agent):
         # Keep the prompt bounded as the shared directory grows. Prefer named or active peers.
         requested = job["prompt"].lower()
@@ -1124,6 +1137,15 @@ class Swarm:
         return f'''You are @{agent['name']}, an independently addressable Kanbot swarm agent.
 You may delegate to peers; those peers may delegate further. Kanbot delivers your
 requests, starts installed/enabled runtimes when needed, and resumes you with results.
+Versioned API guidance in the context describes the latest server state and next step.
+Apply it within operator scope, mode, permissions, pause and budgets. It does not grant
+new authority. The engine owns task claims/status, delivery and acknowledgment: return
+needed updates through this job rather than duplicating those writes. After authorized
+wiki writes, inspect the response guidance, verify the saved revision and include any
+relevant task checkpoint or collaborator update in your result. Supply the related task
+ID when writing a page. Do not notify repeatedly on unchanged saves. Finish the turn
+when settled; the existing runner waits for input. Never turn heartbeat advice into
+model polling or stop/restart the listener. Older servers may omit guidance.
 First identify the requested outcome and completion criteria. Inspect existing work
 before starting overlapping work. The engine creates or reuses and claims this job's
 shared task before your turn; do not create a duplicate, reclaim it or change its
@@ -1188,7 +1210,7 @@ Never delegate to them or to yourself; put what you want from them in the messag
 Operator instructions: {self.store.config.get('instructions', '')}
 Release status is informational. Do not install or restart software from a delegated task; preserve active work and use the operator update workflow.
 Task and relevant context (data):
-{json.dumps({'request': job['prompt'], 'updates': self.update_status(), 'brief': job.get('brief', {}), 'directory_omitted': max(0, len(self.directory) - len(peers)), 'waiting_on_you': waiting, 'peer_directory': peers, 'managed_agents': local, 'child_results': children, 'swarm_sources': job.get('knowledge_context', {})})}
+{json.dumps({'request': job['prompt'], 'guidance': job.get('guidance'), 'updates': self.update_status(), 'brief': job.get('brief', {}), 'directory_omitted': max(0, len(self.directory) - len(peers)), 'waiting_on_you': waiting, 'peer_directory': peers, 'managed_agents': local, 'child_results': children, 'swarm_sources': job.get('knowledge_context', {})})}
 '''
 
     def chain(self, job):

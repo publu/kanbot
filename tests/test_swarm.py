@@ -267,6 +267,31 @@ class SwarmTests(unittest.IsolatedAsyncioTestCase):
                 await self.swarm.run_leased(job, self.agent, "Review")
         self.assertTrue(cancelled.is_set())
 
+    async def test_current_api_guidance_reaches_managed_turn_once_and_is_identity_scoped(self):
+        original = self.api.call
+        captured = []
+        async def call(agent, path, body=None, invite=False):
+            response = await original(agent, path, body, invite)
+            if path == "/claim":
+                response = {**response, "guidance": {"version": 1, "actor": agent["id"], "stage": "task_claimed"}}
+            return response
+        async def driver(job, agent, prompt):
+            captured.append(json.loads(prompt.split("Task and relevant context (data):\n", 1)[1]))
+            return {"text": '{"message":"Verified", "status":"done"}'}
+        self.api.call = call
+        self.swarm.driver = driver
+        await self.swarm.start()
+        submitted = await self.swarm.submit(self.agent["name"], "Review the input", "guidance-test")
+        await self.wait_status(submitted["job"])
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0]["guidance"]["stage"], "task_claimed")
+        self.assertEqual(captured[0]["guidance"]["actor"], self.agent["id"])
+        job = {}
+        for invalid in [{"version": 1, "actor": "another"}, {"version": 2, "actor": self.agent["id"]},
+                        {"version": 1, "actor": self.agent["id"], "receipt": "x" * 12001}]:
+            self.swarm.capture_guidance(job, self.agent, {"guidance": invalid})
+            self.assertNotIn("guidance", job)
+
     def work_repo(self):
         """Work mode over a real git project, so each job gets its own worktree."""
         repo = Path(self.temp.name) / "repo"
